@@ -24,29 +24,107 @@ ABNT (NBR 6023) em destaque e o texto integral convertido do PDF.
 
 ## Instalação
 
-### Opção 1 — Binário standalone (não precisa de Python)
-
-Baixe o executável já pronto para o seu sistema na [página de
+Duas peças precisam estar instaladas: **a CLI** (este programa) e o
+**[Ollama](https://ollama.com)** (o motor de LLM local que ela chama). Os
+binários da CLI ficam na [página de
 Releases](https://github.com/dcprj/organizador-catalogador-pdf/releases) —
-`organizador-pdf-macos`, `organizador-pdf-linux` ou
-`organizador-pdf-windows.exe`. Dê permissão de execução (macOS/Linux) e rode
-direto:
+o repositório é privado, então baixe com o navegador já logado no GitHub, não
+por link direto sem autenticação.
+
+Escolha seu sistema:
+
+<details open>
+<summary><strong>macOS (Apple Silicon)</strong></summary>
+
+**1. Baixe a CLI** — pegue `organizador-pdf-macos` na página de Releases e:
 
 ```bash
 chmod +x organizador-pdf-macos
-./organizador-pdf-macos --help
 ```
 
-No macOS, o Gatekeeper pode bloquear o primeiro clique duplo por não ser um
-binário assinado/notarizado — rode `xattr -d com.apple.quarantine
-organizador-pdf-macos` uma vez, ou clique com botão direito → Abrir. O
-binário de macOS é gerado só para Apple Silicon (arm64); Macs Intel precisam
-da instalação via Python abaixo. Esse binário embute só a CLI em si — o
-[Ollama](#configurando-o-ollama) continua sendo instalado à parte.
+O Gatekeeper bloqueia binários não assinados/notarizados baixados pelo
+navegador. Se aparecer "não é possível abrir por vir de um desenvolvedor não
+identificado", rode uma vez:
 
-### Opção 2 — Via Python
+```bash
+xattr -d com.apple.quarantine organizador-pdf-macos
+```
 
-Requer **Python 3.10 ou superior** (macOS, Linux e Windows).
+(ou clique com o botão direito no arquivo → Abrir → confirmar). Só existe
+binário para **Apple Silicon (arm64)** — em Mac Intel, use a [instalação via
+Python](#instalação-via-python-qualquer-sistema) abaixo.
+
+**2. Instale o Ollama e baixe o modelo:**
+
+```bash
+brew install ollama
+brew services start ollama       # ou: ollama serve
+ollama pull qwen2.5:3b-instruct
+```
+
+**3. Teste:**
+
+```bash
+./organizador-pdf-macos --version
+```
+
+</details>
+
+<details>
+<summary><strong>Linux</strong></summary>
+
+**1. Baixe a CLI** — pegue `organizador-pdf-linux` na página de Releases e:
+
+```bash
+chmod +x organizador-pdf-linux
+```
+
+**2. Instale o Ollama e baixe o modelo:**
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen2.5:3b-instruct
+```
+
+(O instalador já deixa o serviço rodando via systemd na maioria das
+distribuições; se não, suba manualmente com `ollama serve &`.)
+
+**3. Teste:**
+
+```bash
+./organizador-pdf-linux --version
+```
+
+</details>
+
+<details>
+<summary><strong>Windows</strong></summary>
+
+**1. Baixe a CLI** — pegue `organizador-pdf-windows.exe` na página de
+Releases. O SmartScreen do Windows Defender costuma avisar "o Windows
+protegeu o computador" por não ser um binário assinado digitalmente — clique
+em **Mais informações → Executar assim mesmo**.
+
+**2. Instale o Ollama** — baixe o instalador em
+[ollama.com/download/windows](https://ollama.com/download/windows), rode e,
+no PowerShell:
+
+```powershell
+ollama pull qwen2.5:3b-instruct
+```
+
+**3. Teste** (PowerShell, na pasta onde baixou o arquivo):
+
+```powershell
+.\organizador-pdf-windows.exe --version
+```
+
+</details>
+
+### Instalação via Python (qualquer sistema)
+
+Alternativa a baixar o binário — útil em Mac Intel, ou se você quiser rodar a
+partir do código-fonte. Requer **Python 3.10 ou superior**.
 
 ```bash
 python3.12 -m venv .venv
@@ -60,26 +138,18 @@ Ou, sem instalar o pacote:
 pip install -r requirements.txt
 ```
 
-## Configurando o Ollama
+A partir daqui, o comando é `organizador-pdf` (ou `python -m organizador_pdf`)
+em vez do nome do binário — o resto do guia é igual. A instalação do Ollama
+segue os mesmos passos de cada sistema acima.
 
-**1. Instale o Ollama** (macOS via Homebrew, ou baixe em [ollama.com](https://ollama.com)):
+### Sobre o modelo
 
-```bash
-brew install ollama
-brew services start ollama       # ou: ollama serve
-```
-
-**2. Baixe o modelo.** Para máquinas com **8 GB de RAM**, o melhor equilíbrio
-entre qualidade e memória é o **Qwen2.5 3B Instruct** (~2 GB em disco, bom
-suporte a português):
-
-```bash
-ollama pull qwen2.5:3b-instruct
-```
-
-Se sua máquina tiver bastante mais RAM (16 GB+) e você quiser tentar um modelo
-maior, `qwen2.5:7b-instruct` (~4,7 GB) segue instrução um pouco melhor, mas em
-8 GB corre risco real de deixar a máquina lenta (troca de memória para disco).
+Para máquinas com **8 GB de RAM**, o melhor equilíbrio entre qualidade e
+memória é o **Qwen2.5 3B Instruct** (~2 GB em disco, bom suporte a
+português) — é o padrão (`ORGPDF_MODELO`, veja abaixo). Se sua máquina tiver
+bastante mais RAM (16 GB+) e você quiser tentar um modelo maior,
+`qwen2.5:7b-instruct` (~4,7 GB) segue instrução um pouco melhor, mas em 8 GB
+corre risco real de deixar a máquina lenta (troca de memória para disco).
 Nos testes deste projeto o ganho de qualidade não compensou o risco — veja
 "Limitações conhecidas" abaixo.
 
@@ -105,6 +175,11 @@ quiser mudar algo:
 | `ORGPDF_VERIFICAR_ONLINE` | `true`                     | Verifica ISBN/DOI extraído contra Crossref/Open Library (veja abaixo) |
 
 ## Uso
+
+Os exemplos abaixo usam `organizador-pdf` (nome do comando quando instalado
+via Python). Se você baixou o binário standalone, troque pelo caminho do
+executável — ex.: `./organizador-pdf-macos`, `./organizador-pdf-linux` ou
+`.\organizador-pdf-windows.exe` no PowerShell.
 
 ```bash
 # Simulação: mostra a estrutura planejada sem gravar nada
