@@ -1,8 +1,10 @@
 """Extração de metadados via LLM local (Ollama) e validação com Pydantic.
 
 Requer o Ollama instalado e rodando (https://ollama.com) e o modelo baixado
-com `ollama pull <modelo>`. Veja o README para instruções completas. Este
-aplicativo não usa nenhum provedor pago — tudo roda na própria máquina.
+com `ollama pull <modelo>`. Veja o README para instruções completas. O
+padrão é 100% local; provedores pagos (Anthropic, OpenAI, DeepSeek, Gemini,
+Grok) são opcionais e ficam em `provedores.py`, escolhidos explicitamente
+via `--provedor`.
 """
 
 from __future__ import annotations
@@ -129,7 +131,7 @@ class ErroFatalDeAPI(RuntimeError):
     """Falha que invalida o lote inteiro (Ollama fora do ar, modelo ausente)."""
 
 
-class ExtratorDeMetadados:
+class ExtratorOllama:
     """Envia o trecho inicial do documento a um Ollama local e valida a resposta."""
 
     def __init__(self, config: Config, cliente: Optional[httpx.Client] = None) -> None:
@@ -148,7 +150,7 @@ class ExtratorDeMetadados:
             "model": self.config.modelo,
             "messages": [
                 {"role": "system", "content": PROMPT_SISTEMA},
-                {"role": "user", "content": _montar_prompt(documento)},
+                {"role": "user", "content": montar_prompt_usuario(documento)},
             ],
             # `format` com um JSON Schema faz o Ollama restringir a geração à
             # gramática do esquema — equivalente à saída estruturada da API.
@@ -170,10 +172,7 @@ class ExtratorDeMetadados:
         except ValidationError as exc:
             raise ErroDeExtracao(f"metadados fora do esquema esperado: {exc}") from exc
 
-        metadados = normalizar_maiusculas_na_referencia(metadados)
-        return descartar_identificadores_nao_confirmados(
-            metadados, documento.markdown_inicial
-        )
+        return pos_processar(metadados, documento.markdown_inicial)
 
     def _chamar(self, corpo: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -325,6 +324,13 @@ def descartar_identificadores_nao_confirmados(
     return metadados.model_copy(update=atualizacoes)
 
 
+def pos_processar(metadados: Metadados, texto_fonte: str) -> Metadados:
+    """Aplica as duas proteções deterministas, na ordem — usado por todo extrator,
+    seja qual for o provedor (Ollama ou um LLM pago)."""
+    metadados = normalizar_maiusculas_na_referencia(metadados)
+    return descartar_identificadores_nao_confirmados(metadados, texto_fonte)
+
+
 def _normalizar_para_comparar(texto: str) -> str:
     """Remove espaços, hífens e caixa — para comparar códigos que podem estar
     formatados com espaçamento/traços levemente diferentes no texto."""
@@ -349,7 +355,7 @@ def _aparece_no_texto(valor: str, texto: str) -> bool:
     return re.search(rf"\b{padrao}\b", texto, flags=re.IGNORECASE) is not None
 
 
-def _montar_prompt(documento: DocumentoConvertido) -> str:
+def montar_prompt_usuario(documento: DocumentoConvertido) -> str:
     partes = [
         "Extraia os metadados bibliográficos do documento abaixo.",
         "",

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "organizador-pdf"
 version = "0.1.0"
-description = "CLI multiplataforma que converte PDFs em Markdown, extrai metadados bibliográficos com um LLM local (Ollama) e organiza os arquivos em uma árvore hierárquica padronizada. Sem provedores pagos."
+description = "CLI multiplataforma que converte PDFs em Markdown, extrai metadados bibliográficos com um LLM e organiza os arquivos em uma árvore hierárquica padronizada. Local e gratuito por padrão (Ollama); provedores pagos são opcionais."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -13,6 +13,7 @@ authors = [{ name = "Dario Pinheiro" }]
 keywords = ["pdf", "markdown", "obsidian", "abnt", "catalogacao", "llm", "ollama"]
 
 dependencies = [
+    "anthropic>=0.100",
     "httpx>=0.25",
     "pydantic>=2.7",
     "pymupdf4llm>=0.0.17",

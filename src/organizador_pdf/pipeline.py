@@ -12,9 +12,10 @@ from typing import Any, Callable, Iterable, Optional
 
 from .config import Config
 from .converter import DocumentoConvertido, ErroDeConversao, converter_pdf
-from .extractor import ErroDeExtracao, ErroFatalDeAPI, ExtratorDeMetadados
+from .extractor import ErroDeExtracao, ErroFatalDeAPI
 from .models import Metadados
 from .organizer import ErroDeOrganizacao, gerar_markdown, organizar
+from .provedores import criar_extrator
 from .verificacao import verificar_identificadores
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,7 @@ class Pipeline:
     ) -> None:
         self.config = config
         self.opcoes = opcoes
-        self.extrator = extrator or ExtratorDeMetadados(config)
+        self.extrator = extrator or criar_extrator(config)
 
     def processar_arquivo(self, caminho: Path) -> ResultadoDoArquivo:
         """Processa um PDF, devolvendo o erro no resultado em vez de propagá-lo.

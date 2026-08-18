@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -15,6 +16,22 @@ MODELO_PADRAO = "qwen2.5:3b-instruct"
 
 #: Endereço padrão do servidor Ollama.
 OLLAMA_URL_PADRAO = "http://localhost:11434"
+
+
+class Provedor(str, Enum):
+    """De onde vem o LLM usado na extração de metadados.
+
+    `OLLAMA` é o único que roda 100% localmente, sem chave de API e sem
+    custo por token — os demais são provedores pagos, opcionais, escolhidos
+    explicitamente pelo usuário (ver `--provedor`/`ORGPDF_PROVEDOR`).
+    """
+
+    OLLAMA = "ollama"
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
+    DEEPSEEK = "deepseek"
+    GEMINI = "gemini"
+    GROK = "grok"
 
 
 class ErroDeConfiguracao(RuntimeError):
@@ -38,6 +55,11 @@ class Config:
     #: envia o identificador, nunca o conteúdo do PDF. Desligue com
     #: ORGPDF_VERIFICAR_ONLINE=false para manter tudo 100% offline.
     verificar_online: bool = True
+    #: Qual LLM usar na extração. O padrão (`OLLAMA`) é local e gratuito;
+    #: os demais são provedores pagos, opcionais — exigem `api_key`.
+    provedor: Provedor = Provedor.OLLAMA
+    #: Chave de API do provedor pago escolhido. Sempre None para `OLLAMA`.
+    api_key: Optional[str] = None
 
     @classmethod
     def do_ambiente(
@@ -47,6 +69,8 @@ class Config:
         modelo: Optional[str] = None,
         ollama_url: Optional[str] = None,
         verificar_online: Optional[bool] = None,
+        provedor: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> "Config":
         """Carrega a configuração do `.env` e do ambiente.
 
@@ -67,9 +91,12 @@ class Config:
         if caminho_env:
             load_dotenv(dotenv_path=caminho_env, override=False)
 
+        provedor_resolvido = _provedor(provedor)
+        modelo_resolvido = _modelo(modelo, provedor_resolvido)
+        api_key_resolvida = _api_key(api_key, provedor_resolvido)
+
         return cls(
-            modelo=(modelo or os.getenv("ORGPDF_MODELO") or MODELO_PADRAO).strip()
-            or MODELO_PADRAO,
+            modelo=modelo_resolvido,
             max_paginas=_inteiro_positivo("ORGPDF_MAX_PAGINAS", 6),
             max_caracteres=_inteiro_positivo("ORGPDF_MAX_CARACTERES", 15_000),
             ollama_url=(ollama_url or os.getenv("ORGPDF_OLLAMA_URL") or OLLAMA_URL_PADRAO).strip()
@@ -79,7 +106,48 @@ class Config:
                 if verificar_online is not None
                 else _booleano("ORGPDF_VERIFICAR_ONLINE", True)
             ),
+            provedor=provedor_resolvido,
+            api_key=api_key_resolvida,
         )
+
+
+def _provedor(bruto: Optional[str]) -> Provedor:
+    valor = (bruto or os.getenv("ORGPDF_PROVEDOR") or Provedor.OLLAMA.value).strip().lower()
+    try:
+        return Provedor(valor)
+    except ValueError as exc:
+        opcoes = ", ".join(p.value for p in Provedor)
+        raise ErroDeConfiguracao(
+            f"provedor {valor!r} não reconhecido. Use um de: {opcoes}."
+        ) from exc
+
+
+def _modelo(bruto: Optional[str], provedor: Provedor) -> str:
+    valor = (bruto or os.getenv("ORGPDF_MODELO") or "").strip()
+    if valor:
+        return valor
+    if provedor is Provedor.OLLAMA:
+        return MODELO_PADRAO
+    raise ErroDeConfiguracao(
+        f"o provedor {provedor.value!r} exige um modelo explícito — use "
+        "--modelo ou ORGPDF_MODELO (ex.: claude-sonnet-5, gpt-5-mini, "
+        "deepseek-chat, gemini-2.5-flash, grok-4)."
+    )
+
+
+def _api_key(bruto: Optional[str], provedor: Provedor) -> Optional[str]:
+    if provedor is Provedor.OLLAMA:
+        return None
+    variavel_especifica = f"ORGPDF_{provedor.value.upper()}_API_KEY"
+    valor = (
+        bruto or os.getenv(variavel_especifica) or os.getenv("ORGPDF_API_KEY") or ""
+    ).strip()
+    if valor:
+        return valor
+    raise ErroDeConfiguracao(
+        f"o provedor {provedor.value!r} exige uma chave de API — use --apikey, "
+        f"ou defina {variavel_especifica} (ou ORGPDF_API_KEY) no .env."
+    )
 
 
 def _booleano(nome: str, padrao: bool) -> bool:

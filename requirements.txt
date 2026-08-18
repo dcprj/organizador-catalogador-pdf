@@ -1,4 +1,5 @@
 # Dependências mínimas — equivalente ao bloco [project.dependencies] do pyproject.toml
+anthropic>=0.100
 httpx>=0.25
 pydantic>=2.7
 pymupdf4llm>=0.0.17

@@ -1,12 +1,15 @@
 # Organizador e Catalogador Inteligente de PDFs
 
 Ferramenta de linha de comando que processa lotes de PDFs, converte cada um para
-Markdown estruturado, extrai metadados bibliográficos com um **LLM local (via
-[Ollama](https://ollama.com))** e organiza tanto os PDFs originais quanto os
-Markdowns em uma árvore de diretórios padronizada.
+Markdown estruturado, extrai metadados bibliográficos com um LLM e organiza
+tanto os PDFs originais quanto os Markdowns em uma árvore de diretórios
+padronizada.
 
-Não usa nenhum provedor pago — tudo roda na sua máquina, sem chave de API, sem
-custo por token e sem enviar o conteúdo dos seus PDFs para fora dela.
+Por padrão usa um **LLM local via [Ollama](https://ollama.com)** — sem chave
+de API, sem custo por token, nada sai da sua máquina. Se preferir, também dá
+para usar um provedor pago (Anthropic, OpenAI, DeepSeek, Gemini ou Grok) com
+o modelo de sua escolha — é uma troca explícita, nunca o padrão (veja
+[Provedores pagos (opcional)](#provedores-pagos-opcional)).
 
 ```
 destino/
@@ -173,6 +176,8 @@ quiser mudar algo:
 | `ORGPDF_MAX_PAGINAS`     | `6`                         | Páginas iniciais enviadas ao modelo      |
 | `ORGPDF_MAX_CARACTERES`  | `15000`                     | Teto de caracteres do trecho enviado     |
 | `ORGPDF_VERIFICAR_ONLINE` | `true`                     | Verifica ISBN/DOI extraído contra Crossref/Open Library (veja abaixo) |
+| `ORGPDF_PROVEDOR`        | `ollama`                    | Provedor do LLM — veja [Provedores pagos (opcional)](#provedores-pagos-opcional) |
+| `ORGPDF_API_KEY` / `ORGPDF_<PROVEDOR>_API_KEY` | —      | Chave de API do provedor pago escolhido  |
 
 ## Uso
 
@@ -210,8 +215,10 @@ Também funciona como módulo: `python -m organizador_pdf -i ... -o ...`.
 | `--recursive` / `-r`      | ligado                    | Busca em subpastas (`--no-recursive` / `-R` desliga)   |
 | `--mover`                 | desligado                 | Move o PDF original em vez de copiá-lo                 |
 | `--subpasta-md`           | —                         | Grava os `.md` em uma subpasta espelho                 |
-| `--modelo` / `-m`         | `qwen2.5:3b-instruct`     | Modelo do Ollama a usar                                |
+| `--modelo` / `-m`         | `qwen2.5:3b-instruct`     | Modelo a usar (do Ollama, ou do provedor pago escolhido) |
 | `--ollama-url`            | `http://localhost:11434`  | Endereço do servidor Ollama                            |
+| `--provedor` / `-p`       | `ollama`                 | `ollama`, `anthropic`, `openai`, `deepseek`, `gemini` ou `grok` |
+| `--apikey` / `-k`         | —                         | Chave de API do provedor pago (ignorada com `--provedor ollama`) |
 | `--limite` / `-n`         | —                         | Processa no máximo N arquivos                          |
 | `--log`                   | `erros.log`               | Arquivo de registro de erros                           |
 | `--env`                   | `./.env`                  | Caminho de um `.env` alternativo                       |
@@ -228,6 +235,58 @@ Também funciona como módulo: `python -m organizador_pdf -i ... -o ...`.
 
 ---
 
+## Provedores pagos (opcional)
+
+O padrão é sempre o Ollama local — nada nesta seção é necessário para usar o
+aplicativo. Se você quiser trocar qualidade/velocidade por custo por token
+(ex.: PDFs mais difíceis, lotes grandes onde a espera do CPU pesa mais que
+alguns centavos), pode apontar a extração para um provedor pago:
+
+```bash
+# Anthropic
+organizador-pdf -i ~/pdfs -o ~/Biblioteca --provedor anthropic \
+  --modelo claude-sonnet-5 --apikey sk-ant-...
+
+# OpenAI, DeepSeek, Gemini e Grok funcionam do mesmo jeito
+organizador-pdf -i ~/pdfs -o ~/Biblioteca --provedor openai \
+  --modelo gpt-5-mini --apikey sk-...
+```
+
+Ou, para não repetir `--apikey` toda vez, no `.env`:
+
+```bash
+ORGPDF_PROVEDOR=anthropic
+ORGPDF_MODELO=claude-sonnet-5
+ORGPDF_ANTHROPIC_API_KEY=sk-ant-...
+```
+
+**Como funciona por baixo dos panos:** a Anthropic usa o SDK oficial
+(`anthropic`), com saída estruturada validada contra o mesmo esquema Pydantic
+usado no Ollama. Os outros quatro (OpenAI, DeepSeek, Gemini e Grok) passam
+por um único adaptador que fala o dialeto de API compatível com a OpenAI
+(`/chat/completions`) que cada um deles expõe — é por isso que qualquer
+modelo desses provedores funciona sem precisar de código novo, só trocando
+`--modelo`.
+
+**Ressalvas:**
+
+- Suporte a saída estruturada estrita (JSON Schema) varia entre provedores.
+  A validação Pydantic que roda depois da chamada pega qualquer resposta fora
+  do formato esperado e transforma em um erro claro para aquele arquivo — o
+  lote continua, mas fica pior taxa de sucesso em provedores com suporte mais
+  fraco.
+- As duas proteções contra alucinação (aviso de divergência de nome de
+  arquivo e descarte de identificador não confirmado) valem para **qualquer**
+  provedor, pago ou não — um modelo pago também pode alucinar, e revisar os
+  itens marcados com `!` continua necessário.
+- **Nunca** passe `--apikey` em máquina compartilhada ou script versionado —
+  a chave fica visível no histórico do shell e na lista de processos (`ps`).
+  Prefira `ORGPDF_<PROVEDOR>_API_KEY` no `.env` (que já está no `.gitignore`).
+- Em modo `--verbose`, o log HTTP de debug é silenciado propositalmente
+  (`httpx`/`httpcore`) para a chave de API nunca aparecer no console.
+
+---
+
 ## Como funciona
 
 Para cada PDF, na ordem:
@@ -235,10 +294,10 @@ Para cada PDF, na ordem:
 1. **Conversão** (`converter.py`) — `pymupdf4llm` extrai o texto estruturado em
    Markdown, com o texto simples do PyMuPDF como plano B. PDFs sem texto
    extraível (digitalizados, sem OCR) falham com mensagem explícita.
-2. **Extração de metadados** (`extractor.py`) — apenas as **primeiras N
-   páginas** vão para o modelo local, que responde em JSON validado contra o
-   esquema Pydantic (saída estruturada via `format` do Ollama, não parsing de
-   texto livre).
+2. **Extração de metadados** (`extractor.py`/`provedores.py`) — apenas as
+   **primeiras N páginas** vão para o LLM escolhido, que responde em JSON
+   validado contra o esquema Pydantic (saída estruturada nativa do provedor,
+   não parsing de texto livre).
 3. **Geração do Markdown** (`organizer.py`) — YAML frontmatter + referência ABNT
    + conteúdo integral.
 4. **Organização** (`organizer.py`) — cria
@@ -312,7 +371,7 @@ aviso — elas reduzem o risco, não o eliminam.
 ## Desenvolvimento
 
 ```bash
-pytest              # 90 testes, sem chamadas de rede
+pytest              # 129 testes, sem chamadas de rede
 ```
 
 Estrutura do projeto:
@@ -322,15 +381,18 @@ src/organizador_pdf/
 ├── cli.py             # Ponto de entrada e parsing de argumentos (typer)
 ├── config.py          # Configuração via .env / variáveis de ambiente
 ├── converter.py       # PDF → Markdown (pymupdf4llm)
-├── extractor.py       # Integração com Ollama + esquema JSON + proteções
+├── extractor.py       # Extrator Ollama + prompt + esquema JSON + proteções
+├── provedores.py      # Extratores dos provedores pagos (opcionais)
+├── verificacao.py     # Verificação online de ISBN/DOI (Crossref/Open Library)
 ├── organizer.py       # Sanitização, diretórios, gravação
 ├── models.py          # Modelos Pydantic dos metadados
 ├── pipeline.py        # Orquestração resiliente por arquivo
 └── logging_utils.py   # Console + erros.log
 ```
 
-Os testes usam PDFs gerados em tempo de execução e um dublê HTTP do Ollama —
-nenhum teste depende de rede nem do Ollama estar rodando.
+Os testes usam PDFs gerados em tempo de execução e dublês HTTP para todo
+provedor (Ollama e os pagos) — nenhum teste depende de rede real nem de
+credenciais.
 
 ### Gerando o binário standalone
 

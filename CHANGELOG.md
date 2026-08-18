@@ -12,6 +12,15 @@ projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 - Manual de instalação por sistema operacional (macOS, Linux, Windows) no
   README, separando os passos de baixar a CLI e configurar o Ollama, com as
   ressalvas específicas de cada SO (Gatekeeper, SmartScreen, systemd).
+- Suporte opcional a provedores pagos (Anthropic, OpenAI, DeepSeek, Gemini,
+  Grok), escolhidos explicitamente via `--provedor`/`ORGPDF_PROVEDOR` — o
+  padrão continua sendo o Ollama local. `--modelo`/`-m` passa a aceitar
+  qualquer modelo do provedor escolhido, e `--apikey`/`-k` (ou
+  `ORGPDF_<PROVEDOR>_API_KEY`/`ORGPDF_API_KEY`) autentica a chamada. As
+  proteções contra alucinação (aviso de divergência, descarte de
+  identificador não confirmado) valem para todo provedor, pago ou não.
+- Fluxo de branches: desenvolvimento passa a acontecer em `develop`, com
+  merge para `main` e changelog atualizado a cada release validado.
 
 ## [0.1.0] - 2026-08-17
 

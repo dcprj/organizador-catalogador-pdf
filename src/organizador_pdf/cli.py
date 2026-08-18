@@ -21,7 +21,7 @@ from rich.table import Table
 from rich.tree import Tree
 
 from . import __version__
-from .config import Config, ErroDeConfiguracao
+from .config import Config, ErroDeConfiguracao, Provedor
 from .converter import ErroDeConversao, listar_pdfs
 from .extractor import ErroFatalDeAPI
 from .logging_utils import configurar_logs
@@ -102,6 +102,26 @@ def processar(
         "--ollama-url",
         help="Endereço do servidor Ollama. Padrão: http://localhost:11434.",
     ),
+    provedor: Optional[Provedor] = typer.Option(
+        None,
+        "--provedor",
+        "-p",
+        help=(
+            "Provedor do LLM. Padrão: ollama (local, grátis, privado). Os "
+            "demais são pagos, opcionais, e exigem --apikey."
+        ),
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--apikey",
+        "-k",
+        help=(
+            "Chave de API do provedor pago escolhido (ignorada com --provedor "
+            "ollama). Em máquina compartilhada, prefira ORGPDF_<PROVEDOR>_API_KEY "
+            "no .env em vez desta flag — ela fica visível no histórico do shell "
+            "e na lista de processos."
+        ),
+    ),
     limite: Optional[int] = typer.Option(
         None,
         "--limite",
@@ -128,7 +148,13 @@ def processar(
     console_log = configurar_logs(arquivo_log, verboso=verboso)
 
     try:
-        config = Config.do_ambiente(env_file, modelo=modelo, ollama_url=ollama_url)
+        config = Config.do_ambiente(
+            env_file,
+            modelo=modelo,
+            ollama_url=ollama_url,
+            provedor=provedor.value if provedor else None,
+            api_key=api_key,
+        )
     except ErroDeConfiguracao as exc:
         saida.print(f"[bold red]Erro de configuração:[/] {exc}")
         raise typer.Exit(code=2) from exc
@@ -207,11 +233,18 @@ def _cabecalho(
     dry_run: bool,
     mover: bool,
 ) -> None:
+    if config.provedor is Provedor.OLLAMA:
+        linha_modelo = f"[bold]Modelo:[/]  {config.modelo}  [dim](Ollama em {config.ollama_url})[/]"
+    else:
+        linha_modelo = (
+            f"[bold]Modelo:[/]  {config.modelo}  "
+            f"[dim](provedor pago: {config.provedor.value})[/]"
+        )
     linhas = [
         f"[bold]Origem:[/]  {origem.resolve()}",
         f"[bold]Destino:[/] {destino.resolve()}",
         f"[bold]PDFs:[/]    {len(pdfs)}",
-        f"[bold]Modelo:[/]  {config.modelo}  [dim](Ollama em {config.ollama_url})[/]",
+        linha_modelo,
         f"[bold]Análise:[/] {config.max_paginas} primeiras páginas "
         f"(até {config.max_caracteres} caracteres)",
         f"[bold]Modo:[/]    " + ("mover" if mover else "copiar"),
