@@ -66,6 +66,13 @@ class Config:
     provedor_fallback: Optional[Provedor] = None
     modelo_fallback: Optional[str] = None
     api_key_fallback: Optional[str] = None
+    #: Recorre a OCR (Tesseract) para PDFs sem texto extraível (digitalizados).
+    #: Só tem efeito se o Tesseract estiver instalado — sem isso, o
+    #: comportamento é o de sempre (falha explícita). Desligue com
+    #: ORGPDF_OCR=false para nunca tentar, mesmo com o Tesseract presente.
+    ocr: bool = True
+    #: Idioma do OCR, no formato de 3 letras do Tesseract (ex.: "por", "eng").
+    ocr_idioma: str = "por"
 
     @classmethod
     def do_ambiente(
@@ -80,6 +87,8 @@ class Config:
         provedor_fallback: Optional[str] = None,
         modelo_fallback: Optional[str] = None,
         api_key_fallback: Optional[str] = None,
+        ocr: Optional[bool] = None,
+        ocr_idioma: Optional[str] = None,
     ) -> "Config":
         """Carrega a configuração do `.env` e do ambiente.
 
@@ -137,6 +146,8 @@ class Config:
             provedor_fallback=provedor_fallback_resolvido,
             modelo_fallback=modelo_fallback_resolvido,
             api_key_fallback=api_key_fallback_resolvida,
+            ocr=ocr if ocr is not None else _booleano("ORGPDF_OCR", True),
+            ocr_idioma=(ocr_idioma or os.getenv("ORGPDF_OCR_IDIOMA") or "por").strip() or "por",
         )
 
 

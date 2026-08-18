@@ -105,6 +105,8 @@ class Pipeline:
                 caminho,
                 paginas_para_analise=self.config.max_paginas,
                 max_caracteres_analise=self.config.max_caracteres,
+                ocr=self.config.ocr,
+                ocr_idioma=self.config.ocr_idioma,
             )
 
             etapa = "extração de metadados"

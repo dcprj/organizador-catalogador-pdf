@@ -180,6 +180,8 @@ quiser mudar algo:
 | `ORGPDF_API_KEY` / `ORGPDF_<PROVEDOR>_API_KEY` | —      | Chave de API do provedor pago escolhido  |
 | `ORGPDF_PROVEDOR_FALLBACK` | —                         | Provedor pago acionado só se o principal falhar/tiver aviso |
 | `ORGPDF_MODELO_FALLBACK` | —                            | Modelo do provedor de fallback (obrigatório se usar o de cima) |
+| `ORGPDF_OCR`             | `true`                      | OCR automático em PDFs digitalizados (veja abaixo)       |
+| `ORGPDF_OCR_IDIOMA`      | `por`                       | Idioma do OCR (código de 3 letras do Tesseract)          |
 
 ## Uso
 
@@ -224,6 +226,8 @@ Também funciona como módulo: `python -m organizador_pdf -i ... -o ...`.
 | `--provedor-fallback`     | —                         | Provedor pago acionado só se o principal falhar/tiver aviso |
 | `--modelo-fallback`       | —                         | Modelo do provedor de fallback (obrigatório se usar o de cima) |
 | `--apikey-fallback`       | —                         | Chave de API do provedor de fallback                   |
+| `--ocr` / `--no-ocr`      | ligado                    | OCR automático em PDFs digitalizados (se o Tesseract estiver instalado) |
+| `--ocr-idioma`            | `por`                     | Idioma do OCR (código de 3 letras do Tesseract)         |
 | `--limite` / `-n`         | —                         | Processa no máximo N arquivos                          |
 | `--log`                   | `erros.log`               | Arquivo de registro de erros                           |
 | `--env`                   | `./.env`                  | Caminho de um `.env` alternativo                       |
@@ -320,13 +324,74 @@ modelo desses provedores funciona sem precisar de código novo, só trocando
 
 ---
 
+## OCR para PDFs digitalizados (opcional)
+
+Um PDF digitalizado (só imagem, sem camada de texto) não tem o que extrair
+diretamente — por padrão, o app tenta OCR automaticamente antes de desistir,
+usando o suporte nativo do `pymupdf4llm` a Tesseract. Não precisa de nenhuma
+configuração: se o Tesseract estiver instalado, é usado; se não estiver, o
+app volta ao comportamento de sempre (falha explícita nesse arquivo,
+sinalizando que digitalizados precisam de OCR).
+
+**Instale o Tesseract** (com o pacote de idioma português):
+
+<details>
+<summary><strong>macOS</strong></summary>
+
+```bash
+brew install tesseract tesseract-lang
+```
+
+</details>
+
+<details>
+<summary><strong>Linux (Debian/Ubuntu)</strong></summary>
+
+```bash
+sudo apt install tesseract-ocr tesseract-ocr-por
+```
+
+</details>
+
+<details>
+<summary><strong>Windows</strong></summary>
+
+Baixe o instalador em
+[github.com/UB-Mannheim/tesseract](https://github.com/UB-Mannheim/tesseract/wiki)
+e marque "Portuguese" na lista de idiomas durante a instalação.
+
+</details>
+
+Depois de instalado, nenhum passo extra é necessário — o próximo PDF
+digitalizado já usa OCR automaticamente.
+
+**Ressalvas:**
+
+- OCR é bem mais lento que extração direta de texto (renderiza cada página
+  como imagem e reconhece o texto nela) — um PDF digitalizado grande pode
+  levar minutos, não segundos.
+- Desligue com `--no-ocr` (ou `ORGPDF_OCR=false` no `.env`) para nunca
+  tentar, mesmo com o Tesseract instalado — útil se você prefere a falha
+  rápida e explícita a esperar o OCR de um PDF que sabe que não vale a pena.
+- `--ocr-idioma` (ou `ORGPDF_OCR_IDIOMA`, padrão `por`) usa o código de 3
+  letras do Tesseract — troque para `eng` em acervos majoritariamente em
+  inglês, por exemplo.
+- Só as páginas sem texto são reconhecidas via OCR (o `pymupdf4llm` decide
+  por página) — um PDF misto, com algumas páginas de texto normal e outras
+  digitalizadas, não perde qualidade nas que já têm texto.
+
+---
+
 ## Como funciona
 
 Para cada PDF, na ordem:
 
 1. **Conversão** (`converter.py`) — `pymupdf4llm` extrai o texto estruturado em
    Markdown, com o texto simples do PyMuPDF como plano B. PDFs sem texto
-   extraível (digitalizados, sem OCR) falham com mensagem explícita.
+   extraível (digitalizados) recorrem a OCR automaticamente se o Tesseract
+   estiver instalado — veja [OCR para PDFs digitalizados
+   (opcional)](#ocr-para-pdfs-digitalizados-opcional). Sem Tesseract, ou com
+   `--no-ocr`, falham com mensagem explícita, como sempre foi.
 2. **Extração de metadados** (`extractor.py`/`provedores.py`) — apenas as
    **primeiras N páginas** vão para o LLM escolhido, que responde em JSON
    validado contra o esquema Pydantic (saída estruturada nativa do provedor,
@@ -419,7 +484,7 @@ há aviso — elas reduzem o risco, não o eliminam.
 ## Desenvolvimento
 
 ```bash
-pytest              # 155 testes, sem chamadas de rede
+pytest              # 164 testes, sem chamadas de rede
 ```
 
 Estrutura do projeto:

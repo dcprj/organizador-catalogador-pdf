@@ -142,6 +142,20 @@ def processar(
         "--apikey-fallback",
         help="Chave de API do provedor de fallback (mesmas ressalvas de --apikey).",
     ),
+    ocr: Optional[bool] = typer.Option(
+        None,
+        "--ocr/--no-ocr",
+        help=(
+            "Recorre a OCR (Tesseract) para PDFs sem texto extraível "
+            "(digitalizados). Padrão: ligado, mas só tem efeito se o "
+            "Tesseract estiver instalado — veja o README."
+        ),
+    ),
+    ocr_idioma: Optional[str] = typer.Option(
+        None,
+        "--ocr-idioma",
+        help="Idioma do OCR, no formato de 3 letras do Tesseract. Padrão: por.",
+    ),
     limite: Optional[int] = typer.Option(
         None,
         "--limite",
@@ -177,6 +191,8 @@ def processar(
             provedor_fallback=provedor_fallback.value if provedor_fallback else None,
             modelo_fallback=modelo_fallback,
             api_key_fallback=api_key_fallback,
+            ocr=ocr,
+            ocr_idioma=ocr_idioma,
         )
     except ErroDeConfiguracao as exc:
         saida.print(f"[bold red]Erro de configuração:[/] {exc}")

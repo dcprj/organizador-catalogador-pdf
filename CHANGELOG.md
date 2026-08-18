@@ -32,6 +32,31 @@ projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   fallback) agora é gravado em `<destino>/revisao_manual/<área>/<subárea>/
   <tipo>/` em vez da árvore normal, mantendo a mesma organização mas isolada
   para facilitar a revisão manual.
+- OCR automático para PDFs digitalizados (`--ocr`/`--no-ocr`,
+  `--ocr-idioma`, ou `ORGPDF_OCR`/`ORGPDF_OCR_IDIOMA`), usando o suporte
+  nativo do `pymupdf4llm` a Tesseract — sem configuração extra: se o
+  Tesseract estiver instalado, é usado automaticamente; sem ele, o
+  comportamento continua o de sempre (falha explícita). Mensagens internas
+  do PyMuPDF (status de OCR por página) deixaram de poluir o console.
+
+### Modificado
+
+- `pymupdf4llm` passa a exigir `>=1.28` (era `>=0.0.17`) — versão mínima
+  com suporte a OCR nativo (`use_ocr`/`ocr_language`).
+
+### Corrigido
+
+- **Binário standalone (PyInstaller) silenciosamente sem o motor de layout
+  do `pymupdf4llm` desde o v0.1.0**: os modelos ONNX que `pymupdf`
+  (`layout/resources/`, ~49 MB) e `pymupdf4llm`
+  (`ocr/ocr_decision_model.onnx`) carregam do disco em tempo de execução não
+  eram coletados pela análise estática do PyInstaller — o binário caía sem
+  erro nenhum para extração de texto simples (sem estrutura de
+  título/tabela, sem OCR) em **todo** PDF processado, não só nos
+  digitalizados. Corrigido coletando os dados desses dois pacotes no spec
+  (`packaging/organizador-pdf.spec`); descoberto ao validar o OCR no binário
+  de ponta a ponta. Quem já baixou um binário do v0.1.0 nas Releases está
+  rodando com essa limitação até a próxima release.
 
 ### Corrigido
 

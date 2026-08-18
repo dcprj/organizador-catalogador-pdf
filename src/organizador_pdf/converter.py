@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+import io
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +36,8 @@ def converter_pdf(
     *,
     paginas_para_analise: int = 6,
     max_caracteres_analise: int = 15_000,
+    ocr: bool = True,
+    ocr_idioma: str = "por",
 ) -> DocumentoConvertido:
     """Converte um PDF em Markdown.
 
@@ -41,8 +45,20 @@ def converter_pdf(
     primeiras páginas (`markdown_inicial`), que é o único trecho enviado ao LLM
     — é onde ficam capa, folha de rosto e ficha catalográfica, e limitá-lo
     mantém o custo por documento baixo e previsível.
+
+    PDFs sem texto extraível (digitalizados) recorrem ao OCR nativo do
+    `pymupdf4llm` (Tesseract por baixo) quando `ocr=True` (padrão) e o
+    Tesseract está instalado — sem isso, falham com mensagem explícita,
+    como sempre foi. `ocr_idioma` é o idioma do OCR (formato Tesseract, ex.:
+    "por", "eng").
     """
     import pymupdf  # importado sob demanda: carregar o binário custa caro
+
+    # O PyMuPDF/pymupdf4llm imprime mensagens de status direto no
+    # stdout/stderr por padrão (ex.: "Using Tesseract for OCR processing...",
+    # uma vez por página em OCR) — puramente informativo, sem valor pro
+    # usuário e sem respeitar o nível de log do app. Descarta.
+    pymupdf.set_messages(stream=io.StringIO())
 
     try:
         documento = pymupdf.open(caminho)
@@ -58,18 +74,19 @@ def converter_pdf(
             raise ErroDeConversao("PDF sem páginas")
 
         metadados_embutidos = _metadados_uteis(documento.metadata or {})
-        markdown_completo = _para_markdown(documento, paginas=None)
+        markdown_completo = _para_markdown(
+            documento, paginas=None, ocr=ocr, ocr_idioma=ocr_idioma
+        )
 
         n = min(paginas_para_analise, total_paginas)
-        markdown_inicial = _para_markdown(documento, paginas=list(range(n)))
+        markdown_inicial = _para_markdown(
+            documento, paginas=list(range(n)), ocr=ocr, ocr_idioma=ocr_idioma
+        )
     finally:
         documento.close()
 
     if not markdown_completo.strip():
-        raise ErroDeConversao(
-            "nenhum texto extraível (PDF provavelmente é digitalizado; "
-            "seria necessário OCR)"
-        )
+        raise _erro_sem_texto(ocr)
 
     return DocumentoConvertido(
         caminho=caminho,
@@ -80,12 +97,62 @@ def converter_pdf(
     )
 
 
-def _para_markdown(documento, paginas: Optional[list[int]]) -> str:
-    """Converte páginas para Markdown, com texto simples como plano B."""
+@functools.lru_cache(maxsize=1)
+def ocr_disponivel() -> bool:
+    """Confere se o Tesseract (dados de idioma incluídos) está acessível.
+
+    Cacheado: um lote inteiro faz essa checagem no máximo uma vez, mesmo que
+    vários PDFs sem texto precisem gerar a mensagem de erro — evita repetir
+    o custo de resolver o caminho do Tesseract a cada arquivo.
+    """
+    import pymupdf
+
+    try:
+        return bool(pymupdf.get_tessdata())
+    except Exception as exc:  # noqa: BLE001 - qualquer falha aqui = OCR indisponível
+        logger.debug("Tesseract indisponível (%s)", exc)
+        return False
+
+
+def _erro_sem_texto(ocr: bool) -> ErroDeConversao:
+    if not ocr:
+        return ErroDeConversao(
+            "nenhum texto extraível (PDF provavelmente é digitalizado) e o OCR "
+            "está desligado (--no-ocr)."
+        )
+    if not ocr_disponivel():
+        return ErroDeConversao(
+            "nenhum texto extraível (PDF provavelmente é digitalizado). Instale "
+            "o Tesseract para habilitar OCR automático — veja o README."
+        )
+    return ErroDeConversao(
+        "nenhum texto extraível, mesmo com OCR — confira se o PDF não está "
+        "corrompido, em branco, ou com qualidade de imagem baixa demais."
+    )
+
+
+def _para_markdown(
+    documento, paginas: Optional[list[int]], *, ocr: bool = True, ocr_idioma: str = "por"
+) -> str:
+    """Converte páginas para Markdown, com texto simples como plano B.
+
+    `ocr`/`ocr_idioma` só têm efeito de fato quando a página não tem texto
+    extraível — o `pymupdf4llm` decide por página (`OCRMode.SELECT_KEEP_OLD`)
+    se vale a pena rodar OCR nela, e não faz nada com páginas que já têm
+    texto. Sem `ocr=True`, OCR nunca é tentado (`OCRMode.NEVER`).
+    """
     try:
         import pymupdf4llm
+        from pymupdf4llm.ocr import OCRMode
 
-        return pymupdf4llm.to_markdown(documento, pages=paginas, show_progress=False)
+        modo_ocr = OCRMode.SELECT_KEEP_OLD if ocr else OCRMode.NEVER
+        return pymupdf4llm.to_markdown(
+            documento,
+            pages=paginas,
+            show_progress=False,
+            use_ocr=modo_ocr,
+            ocr_language=ocr_idioma,
+        )
     except Exception as exc:  # noqa: BLE001 - qualquer falha cai para o plano B
         logger.debug("pymupdf4llm falhou (%s); usando extração de texto simples", exc)
         indices = paginas if paginas is not None else range(documento.page_count)

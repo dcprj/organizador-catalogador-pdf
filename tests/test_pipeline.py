@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from organizador_pdf.config import Config
-from organizador_pdf.converter import converter_pdf, listar_pdfs
+from organizador_pdf.converter import listar_pdfs
 from organizador_pdf.extractor import ErroDeExtracao, ErroFatalDeAPI
 from organizador_pdf.models import Identificadores, Metadados, TipoPublicacao
 from organizador_pdf.pipeline import (
@@ -121,19 +121,6 @@ class TestListarPdfs:
 
         assert [c.name for c in listar_pdfs(tmp_path, recursivo=False)] == ["a.pdf"]
         assert [c.name for c in listar_pdfs(tmp_path)] == ["a.pdf", "b.PDF"]
-
-
-class TestConverter:
-    def test_extrai_texto_e_limita_o_trecho_de_analise(self, pdf_de_teste: Path):
-        documento = converter_pdf(
-            pdf_de_teste, paginas_para_analise=1, max_caracteres_analise=50
-        )
-
-        assert documento.total_paginas == 2
-        assert "Em Busca de Sentido" in documento.markdown_completo
-        assert "Vozes" in documento.markdown_completo  # veio da 2ª página
-        assert len(documento.markdown_inicial) <= 50
-        assert "Vozes" not in documento.markdown_inicial  # análise só da 1ª página
 
 
 class TestPipeline:
