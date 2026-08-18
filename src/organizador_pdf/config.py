@@ -1,0 +1,109 @@
+"""Configuração da aplicação, carregada de variáveis de ambiente / arquivo .env."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+from dotenv import find_dotenv, load_dotenv
+
+#: Modelo local padrão (via Ollama): o que melhor equilibra qualidade e RAM
+#: em máquinas com 8 GB. Baixe com `ollama pull qwen2.5:3b-instruct`.
+MODELO_PADRAO = "qwen2.5:3b-instruct"
+
+#: Endereço padrão do servidor Ollama.
+OLLAMA_URL_PADRAO = "http://localhost:11434"
+
+
+class ErroDeConfiguracao(RuntimeError):
+    """Configuração ausente ou inválida."""
+
+
+@dataclass(frozen=True)
+class Config:
+    """Parâmetros de execução resolvidos a partir do ambiente.
+
+    Este aplicativo usa exclusivamente um LLM local via Ollama — sem chaves
+    de API, sem custo por token, sem enviar dados para fora da máquina.
+    """
+
+    modelo: str = MODELO_PADRAO
+    max_paginas: int = 6
+    max_caracteres: int = 15_000
+    ollama_url: str = OLLAMA_URL_PADRAO
+    #: Confere ISBN/DOI extraídos contra Crossref/Open Library (grátis, sem
+    #: chave). É a única chamada de rede do app além do próprio Ollama — só
+    #: envia o identificador, nunca o conteúdo do PDF. Desligue com
+    #: ORGPDF_VERIFICAR_ONLINE=false para manter tudo 100% offline.
+    verificar_online: bool = True
+
+    @classmethod
+    def do_ambiente(
+        cls,
+        env_file: Optional[Path] = None,
+        *,
+        modelo: Optional[str] = None,
+        ollama_url: Optional[str] = None,
+        verificar_online: Optional[bool] = None,
+    ) -> "Config":
+        """Carrega a configuração do `.env` e do ambiente.
+
+        Os parâmetros nomeados vêm da linha de comando e têm precedência
+        sobre o ambiente, para permitir testar uma combinação diferente sem
+        editar o `.env`.
+        """
+        # Sem `env_file` explícito, busca a partir do diretório onde o
+        # usuário está rodando o comando (usecwd=True) — não a partir de onde
+        # este pacote está instalado. Sem isso, uma instalação não-editável
+        # (pacote em site-packages) nunca encontraria o `.env` do projeto.
+        #
+        # Importante: só chamamos load_dotenv() quando um caminho foi de fato
+        # encontrado. Passar dotenv_path=None faz a biblioteca rodar sua
+        # PRÓPRIA busca interna (a partir do arquivo deste módulo, não do
+        # cwd) — reintroduzindo o mesmo problema que o usecwd=True corrige.
+        caminho_env = env_file or find_dotenv(usecwd=True) or None
+        if caminho_env:
+            load_dotenv(dotenv_path=caminho_env, override=False)
+
+        return cls(
+            modelo=(modelo or os.getenv("ORGPDF_MODELO") or MODELO_PADRAO).strip()
+            or MODELO_PADRAO,
+            max_paginas=_inteiro_positivo("ORGPDF_MAX_PAGINAS", 6),
+            max_caracteres=_inteiro_positivo("ORGPDF_MAX_CARACTERES", 15_000),
+            ollama_url=(ollama_url or os.getenv("ORGPDF_OLLAMA_URL") or OLLAMA_URL_PADRAO).strip()
+            or OLLAMA_URL_PADRAO,
+            verificar_online=(
+                verificar_online
+                if verificar_online is not None
+                else _booleano("ORGPDF_VERIFICAR_ONLINE", True)
+            ),
+        )
+
+
+def _booleano(nome: str, padrao: bool) -> bool:
+    bruto = os.getenv(nome)
+    if bruto is None or not bruto.strip():
+        return padrao
+    valor = bruto.strip().lower()
+    if valor in ("1", "true", "sim", "on", "verdadeiro"):
+        return True
+    if valor in ("0", "false", "nao", "não", "off", "falso"):
+        return False
+    raise ErroDeConfiguracao(
+        f"{nome} deve ser um valor booleano (true/false), recebi {bruto!r}."
+    )
+
+
+def _inteiro_positivo(nome: str, padrao: int) -> int:
+    bruto = os.getenv(nome)
+    if bruto is None or not bruto.strip():
+        return padrao
+    try:
+        valor = int(bruto)
+    except ValueError as exc:
+        raise ErroDeConfiguracao(f"{nome} deve ser um número inteiro, recebi {bruto!r}.") from exc
+    if valor <= 0:
+        raise ErroDeConfiguracao(f"{nome} deve ser maior que zero, recebi {valor}.")
+    return valor

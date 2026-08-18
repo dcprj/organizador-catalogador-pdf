@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "organizador-pdf"
+version = "0.1.0"
+description = "CLI multiplataforma que converte PDFs em Markdown, extrai metadados bibliográficos com um LLM local (Ollama) e organiza os arquivos em uma árvore hierárquica padronizada. Sem provedores pagos."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Dario Pinheiro" }]
+keywords = ["pdf", "markdown", "obsidian", "abnt", "catalogacao", "llm", "ollama"]
+
+dependencies = [
+    "httpx>=0.25",
+    "pydantic>=2.7",
+    "pymupdf4llm>=0.0.17",
+    "pymupdf>=1.24",
+    "python-dotenv>=1.0",
+    "PyYAML>=6.0",
+    "rich>=13.7",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+organizador-pdf = "organizador_pdf.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
