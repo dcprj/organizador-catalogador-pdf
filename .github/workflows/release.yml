@@ -45,7 +45,7 @@ jobs:
         run: mv dist/organizador-pdf dist/${{ matrix.asset }}
       - name: Renomear binário (Windows)
         if: runner.os == 'Windows'
-        run: Rename-Item dist/organizador-pdf.exe dist/${{ matrix.asset }}
+        run: Rename-Item dist/organizador-pdf.exe ${{ matrix.asset }}
 
       - uses: softprops/action-gh-release@v2
         with:
