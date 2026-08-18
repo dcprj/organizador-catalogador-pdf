@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from organizador_pdf.config import Config
+from organizador_pdf.config import Config, Provedor
 from organizador_pdf.converter import listar_pdfs
 from organizador_pdf.extractor import ErroDeExtracao, ErroFatalDeAPI
 from organizador_pdf.models import Identificadores, Metadados, TipoPublicacao
@@ -267,6 +267,8 @@ class TestFallbackDeProvedor:
         assert resultado.aviso is None
         assert fallback.chamadas == 0
         assert "revisao_manual" not in resultado.pdf_destino.parts
+        assert resultado.usou_fallback is False
+        assert resultado.provedor_usado == "ollama"  # Config() padrão
 
     def test_aviso_local_aciona_fallback_que_resolve(
         self, pdf_de_teste: Path, metadados: Metadados, tmp_path: Path
@@ -298,6 +300,7 @@ class TestFallbackDeProvedor:
         assert resultado.aviso is None
         assert resultado.metadados.titulo == "Historia da Filosofia Antiga"
         assert "revisao_manual" not in resultado.pdf_destino.parts
+        assert resultado.usou_fallback is True
 
     def test_aviso_persiste_apos_fallback_vai_para_revisao_manual(
         self, pdf_de_teste: Path, tmp_path: Path
@@ -321,6 +324,7 @@ class TestFallbackDeProvedor:
         assert resultado.metadados.titulo == "Outra Obra Qualquer"
         assert resultado.aviso is not None
         assert "revisao_manual" in resultado.pdf_destino.parts
+        assert resultado.usou_fallback is True
 
     def test_fallback_falha_mantem_resultado_local_com_aviso(
         self, pdf_de_teste: Path, tmp_path: Path
@@ -342,6 +346,8 @@ class TestFallbackDeProvedor:
         assert resultado.metadados.titulo == "Receita de Bolo de Cenoura"
         assert resultado.aviso is not None
         assert "revisao_manual" in resultado.pdf_destino.parts
+        # fallback foi tentado mas falhou; resultado final é o local
+        assert resultado.usou_fallback is False
 
     def test_falha_local_aciona_fallback_e_recupera_o_arquivo(
         self, pdf_de_teste: Path, metadados: Metadados, tmp_path: Path
@@ -357,6 +363,10 @@ class TestFallbackDeProvedor:
 
         assert resultado.situacao is Situacao.SUCESSO
         assert resultado.metadados.titulo == "Em Busca de Sentido"
+        assert resultado.usou_fallback is True
+        # config não tem provedor_fallback setado (extrator injetado direto) —
+        # o nome genérico é o esperado nesse cenário de teste isolado.
+        assert resultado.provedor_usado == "fallback"
 
     def test_falha_local_e_fallback_reporta_os_dois_erros(
         self, pdf_de_teste: Path, tmp_path: Path
@@ -387,6 +397,21 @@ class TestFallbackDeProvedor:
             pipeline.processar_arquivo(pdf_de_teste)
 
         assert fallback.chamadas == 0
+
+    def test_provedor_usado_reflete_config_provedor_fallback(
+        self, pdf_de_teste: Path, metadados: Metadados, tmp_path: Path
+    ):
+        pipeline = Pipeline(
+            Config(verificar_online=False, provedor_fallback=Provedor.ANTHROPIC),
+            OpcoesDoPipeline(destino=tmp_path / "biblioteca"),
+            extrator=ExtratorFalso(erro=ErroDeExtracao("cota excedida")),
+            extrator_fallback=ExtratorFalso(metadados),
+        )
+
+        resultado = pipeline.processar_arquivo(pdf_de_teste)
+
+        assert resultado.usou_fallback is True
+        assert resultado.provedor_usado == "anthropic"
 
 
 class TestVerificacaoOnlineNoPipeline:

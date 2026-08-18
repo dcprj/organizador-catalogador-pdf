@@ -7,6 +7,8 @@ projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ## [Não Lançado]
 
+## [0.2.0] - 2026-08-18
+
 ### Adicionado
 
 - Manual de instalação por sistema operacional (macOS, Linux, Windows) no
@@ -32,31 +34,41 @@ projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   fallback) agora é gravado em `<destino>/revisao_manual/<área>/<subárea>/
   <tipo>/` em vez da árvore normal, mantendo a mesma organização mas isolada
   para facilitar a revisão manual.
-- OCR automático para PDFs digitalizados (`--ocr`/`--no-ocr`,
-  `--ocr-idioma`, ou `ORGPDF_OCR`/`ORGPDF_OCR_IDIOMA`), usando o suporte
-  nativo do `pymupdf4llm` a Tesseract — sem configuração extra: se o
-  Tesseract estiver instalado, é usado automaticamente; sem ele, o
-  comportamento continua o de sempre (falha explícita). Mensagens internas
-  do PyMuPDF (status de OCR por página) deixaram de poluir o console.
+- `--resume`: retoma um lote interrompido (Ctrl+C, queda, Ollama fora do ar,
+  chave de API inválida) sem precisar repetir `--origem`/`--destino`/demais
+  opções — elas são reaplicadas automaticamente a partir da execução
+  anterior. Pula arquivos já concluídos (sucesso ou falha definitiva); só o
+  que ficou pra trás pela interrupção em si é retomado. Progresso salvo
+  incrementalmente em `~/.organizador-pdf/estado.json`, sem nunca persistir
+  `--apikey`/`--apikey-fallback`; limpo automaticamente quando um lote
+  termina por completo.
+- Registro de quando o provedor de fallback foi de fato usado (não só
+  tentado): marcador `$` na tabela de metadados do terminal, campos
+  `provedor_extracao`/`extraido_via_fallback` no frontmatter de cada `.md`
+  gerado, e uma contagem "extraído(s) localmente vs. via provedor pago" no
+  resumo final do lote.
+- `--max-paginas`/`--max-caracteres`: até então só existiam como
+  `ORGPDF_MAX_PAGINAS`/`ORGPDF_MAX_CARACTERES` no `.env`, únicos parâmetros
+  sem flag de linha de comando equivalente — agora seguem o mesmo padrão de
+  precedência (CLI > variável de ambiente > padrão) do resto da CLI.
 
 ### Modificado
 
 - `pymupdf4llm` passa a exigir `>=1.28` (era `>=0.0.17`) — versão mínima
-  com suporte a OCR nativo (`use_ocr`/`ocr_language`).
+  com `pymupdf4llm.ocr.OCRMode`, usado só para desligar explicitamente o OCR
+  automático da biblioteca (este app não faz OCR; PDFs digitalizados/
+  escaneados falham com mensagem explícita — veja o README).
 
 ### Corrigido
 
 - **Binário standalone (PyInstaller) silenciosamente sem o motor de layout
-  do `pymupdf4llm` desde o v0.1.0**: os modelos ONNX que `pymupdf`
-  (`layout/resources/`, ~49 MB) e `pymupdf4llm`
-  (`ocr/ocr_decision_model.onnx`) carregam do disco em tempo de execução não
-  eram coletados pela análise estática do PyInstaller — o binário caía sem
-  erro nenhum para extração de texto simples (sem estrutura de
-  título/tabela, sem OCR) em **todo** PDF processado, não só nos
-  digitalizados. Corrigido coletando os dados desses dois pacotes no spec
-  (`packaging/organizador-pdf.spec`); descoberto ao validar o OCR no binário
-  de ponta a ponta. Quem já baixou um binário do v0.1.0 nas Releases está
-  rodando com essa limitação até a próxima release.
+  do `pymupdf4llm` desde o v0.1.0**: os modelos ONNX que `pymupdf` carrega
+  do disco em tempo de execução (`layout/resources/`, ~49 MB) não eram
+  coletados pela análise estática do PyInstaller — o binário caía sem erro
+  nenhum para extração de texto simples (sem estrutura de título/tabela) em
+  **todo** PDF processado. Corrigido coletando os dados desse pacote no spec
+  (`packaging/organizador-pdf.spec`). Quem já baixou um binário do v0.1.0 nas
+  Releases está rodando com essa limitação até a próxima release.
 
 ### Corrigido
 

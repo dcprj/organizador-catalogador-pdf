@@ -11,13 +11,13 @@ from PyInstaller.utils.hooks import collect_data_files
 aqui = SPECPATH
 raiz = os.path.dirname(aqui)
 
-# `pymupdf` (motor de layout: modelos ONNX em layout/resources/) e
-# `pymupdf4llm` (decisão de quando vale a pena OCR: ocr/ocr_decision_model.onnx)
-# carregam arquivo de dados em tempo de execução via caminho no disco — a
-# análise estática do PyInstaller não os enxerga sozinha (só código Python é
-# rastreado por import), então precisam ser coletados explicitamente. Sem
-# isso, o binário cai silenciosamente para extração de texto simples (sem
-# layout, sem tabela, sem OCR) em todo PDF, sem erro nenhum.
+# `pymupdf` carrega os modelos ONNX do motor de layout (layout/resources/)
+# do disco em tempo de execução, por caminho — a análise estática do
+# PyInstaller não enxerga isso sozinha (só código Python é rastreado por
+# import), então precisa ser coletado explicitamente. Sem isso, o binário
+# cai silenciosamente para extração de texto simples (sem estrutura de
+# título/tabela) em todo PDF, sem erro nenhum. `pymupdf4llm` também é
+# coletado por segurança (dados auxiliares que ele possa carregar do disco).
 datas = collect_data_files("pymupdf") + collect_data_files("pymupdf4llm")
 
 a = Analysis(

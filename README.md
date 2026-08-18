@@ -180,8 +180,6 @@ quiser mudar algo:
 | `ORGPDF_API_KEY` / `ORGPDF_<PROVEDOR>_API_KEY` | —      | Chave de API do provedor pago escolhido  |
 | `ORGPDF_PROVEDOR_FALLBACK` | —                         | Provedor pago acionado só se o principal falhar/tiver aviso |
 | `ORGPDF_MODELO_FALLBACK` | —                            | Modelo do provedor de fallback (obrigatório se usar o de cima) |
-| `ORGPDF_OCR`             | `true`                      | OCR automático em PDFs digitalizados (veja abaixo)       |
-| `ORGPDF_OCR_IDIOMA`      | `por`                       | Idioma do OCR (código de 3 letras do Tesseract)          |
 
 ## Uso
 
@@ -205,6 +203,10 @@ organizador-pdf -i ~/pdfs -o ~/Biblioteca --no-recursive --limite 5
 
 # Usa um modelo diferente do Ollama (precisa já estar baixado)
 organizador-pdf -i ~/pdfs -o ~/Biblioteca --modelo qwen2.5:7b-instruct
+
+# Lote caiu no meio (Ctrl+C, queda de energia, Ollama fora do ar)? Retoma de
+# onde parou, sem precisar repetir --origem/--destino/etc.
+organizador-pdf --resume
 ```
 
 Também funciona como módulo: `python -m organizador_pdf -i ... -o ...`.
@@ -216,6 +218,7 @@ Também funciona como módulo: `python -m organizador_pdf -i ... -o ...`.
 | `--origem` / `-i`         | obrigatório               | Diretório com os PDFs a processar                      |
 | `--destino` / `-o`        | obrigatório               | Diretório raiz da árvore organizada                    |
 | `--dry-run`               | desligado                 | Analisa e exibe o plano sem copiar/mover nada          |
+| `--resume`                | desligado                 | Retoma o último lote interrompido, reaplicando seus parâmetros (veja abaixo) |
 | `--recursive` / `-r`      | ligado                    | Busca em subpastas (`--no-recursive` / `-R` desliga)   |
 | `--mover`                 | desligado                 | Move o PDF original em vez de copiá-lo                 |
 | `--subpasta-md`           | —                         | Grava os `.md` em uma subpasta espelho                 |
@@ -226,13 +229,32 @@ Também funciona como módulo: `python -m organizador_pdf -i ... -o ...`.
 | `--provedor-fallback`     | —                         | Provedor pago acionado só se o principal falhar/tiver aviso |
 | `--modelo-fallback`       | —                         | Modelo do provedor de fallback (obrigatório se usar o de cima) |
 | `--apikey-fallback`       | —                         | Chave de API do provedor de fallback                   |
-| `--ocr` / `--no-ocr`      | ligado                    | OCR automático em PDFs digitalizados (se o Tesseract estiver instalado) |
-| `--ocr-idioma`            | `por`                     | Idioma do OCR (código de 3 letras do Tesseract)         |
+| `--max-paginas`           | `6`                       | Páginas iniciais do PDF enviadas ao modelo              |
+| `--max-caracteres`        | `15000`                   | Teto de caracteres do trecho enviado ao modelo          |
 | `--limite` / `-n`         | —                         | Processa no máximo N arquivos                          |
 | `--log`                   | `erros.log`               | Arquivo de registro de erros                           |
 | `--env`                   | `./.env`                  | Caminho de um `.env` alternativo                       |
 | `--verbose` / `-v`        | desligado                 | Log detalhado                                          |
 | `--version`               | —                         | Mostra a versão e sai                                  |
+
+### Retomando um lote interrompido (`--resume`)
+
+Se o processamento for interrompido (Ctrl+C, queda de energia, Ollama fora do
+ar, chave de API inválida) no meio de um lote grande, `organizador-pdf
+--resume` continua de onde parou:
+
+- Reaplica automaticamente `--origem`, `--destino` e as demais opções da
+  execução interrompida — não repita nada, e as outras opções passadas junto
+  com `--resume` são ignoradas.
+- Pula os arquivos já concluídos, com sucesso **ou** falha — um arquivo que
+  falhou de forma definitiva (ex.: PDF corrompido) não é tentado de novo
+  automaticamente; rode sem `--resume` se quiser reprocessar esses casos.
+- O progresso é salvo em `~/.organizador-pdf/estado.json`, atualizado a cada
+  arquivo concluído — nunca guarda chave de API (`--apikey`/
+  `--apikey-fallback`): se você passou a chave direto na linha de comando
+  (em vez do `.env`), o `--resume` volta a pedi-la.
+- Um lote concluído por completo (sem interrupção) limpa esse estado — sem
+  lote pendente, `--resume` avisa e não faz nada.
 
 ### Códigos de saída
 
@@ -302,6 +324,15 @@ por um único adaptador que fala o dialeto de API compatível com a OpenAI
 modelo desses provedores funciona sem precisar de código novo, só trocando
 `--modelo`.
 
+**Registro de quando o fallback foi usado:** é só informativo, não é um aviso
+de divergência — mas fica registrado em três lugares:
+
+- No terminal, um `$` cian ao lado do arquivo na tabela de metadados extraídos.
+- No frontmatter do `.md` gerado: `provedor_extracao` (qual provedor de fato
+  extraiu) e `extraido_via_fallback` (`true`/`false`).
+- No painel de resumo, ao final do lote: quantos arquivos foram extraídos
+  localmente (Ollama) vs. via algum provedor pago (principal ou fallback).
+
 **Ressalvas:**
 
 - Suporte a saída estruturada estrita (JSON Schema) varia entre provedores.
@@ -324,74 +355,16 @@ modelo desses provedores funciona sem precisar de código novo, só trocando
 
 ---
 
-## OCR para PDFs digitalizados (opcional)
-
-Um PDF digitalizado (só imagem, sem camada de texto) não tem o que extrair
-diretamente — por padrão, o app tenta OCR automaticamente antes de desistir,
-usando o suporte nativo do `pymupdf4llm` a Tesseract. Não precisa de nenhuma
-configuração: se o Tesseract estiver instalado, é usado; se não estiver, o
-app volta ao comportamento de sempre (falha explícita nesse arquivo,
-sinalizando que digitalizados precisam de OCR).
-
-**Instale o Tesseract** (com o pacote de idioma português):
-
-<details>
-<summary><strong>macOS</strong></summary>
-
-```bash
-brew install tesseract tesseract-lang
-```
-
-</details>
-
-<details>
-<summary><strong>Linux (Debian/Ubuntu)</strong></summary>
-
-```bash
-sudo apt install tesseract-ocr tesseract-ocr-por
-```
-
-</details>
-
-<details>
-<summary><strong>Windows</strong></summary>
-
-Baixe o instalador em
-[github.com/UB-Mannheim/tesseract](https://github.com/UB-Mannheim/tesseract/wiki)
-e marque "Portuguese" na lista de idiomas durante a instalação.
-
-</details>
-
-Depois de instalado, nenhum passo extra é necessário — o próximo PDF
-digitalizado já usa OCR automaticamente.
-
-**Ressalvas:**
-
-- OCR é bem mais lento que extração direta de texto (renderiza cada página
-  como imagem e reconhece o texto nela) — um PDF digitalizado grande pode
-  levar minutos, não segundos.
-- Desligue com `--no-ocr` (ou `ORGPDF_OCR=false` no `.env`) para nunca
-  tentar, mesmo com o Tesseract instalado — útil se você prefere a falha
-  rápida e explícita a esperar o OCR de um PDF que sabe que não vale a pena.
-- `--ocr-idioma` (ou `ORGPDF_OCR_IDIOMA`, padrão `por`) usa o código de 3
-  letras do Tesseract — troque para `eng` em acervos majoritariamente em
-  inglês, por exemplo.
-- Só as páginas sem texto são reconhecidas via OCR (o `pymupdf4llm` decide
-  por página) — um PDF misto, com algumas páginas de texto normal e outras
-  digitalizadas, não perde qualidade nas que já têm texto.
-
----
-
 ## Como funciona
 
 Para cada PDF, na ordem:
 
 1. **Conversão** (`converter.py`) — `pymupdf4llm` extrai o texto estruturado em
-   Markdown, com o texto simples do PyMuPDF como plano B. PDFs sem texto
-   extraível (digitalizados) recorrem a OCR automaticamente se o Tesseract
-   estiver instalado — veja [OCR para PDFs digitalizados
-   (opcional)](#ocr-para-pdfs-digitalizados-opcional). Sem Tesseract, ou com
-   `--no-ocr`, falham com mensagem explícita, como sempre foi.
+   Markdown, com o texto simples do PyMuPDF como plano B. Este app **não faz
+   OCR**: um PDF digitalizado/escaneado (só imagem, sem camada de texto) falha
+   com uma mensagem explícita — rode um serviço de OCR externo (ex.:
+   [ocrmypdf](https://github.com/ocrmypdf/OCRmyPDF)) sobre o arquivo antes de
+   reprocessá-lo.
 2. **Extração de metadados** (`extractor.py`/`provedores.py`) — apenas as
    **primeiras N páginas** vão para o LLM escolhido, que responde em JSON
    validado contra o esquema Pydantic (saída estruturada nativa do provedor,
@@ -484,7 +457,7 @@ há aviso — elas reduzem o risco, não o eliminam.
 ## Desenvolvimento
 
 ```bash
-pytest              # 164 testes, sem chamadas de rede
+pytest              # 182 testes, sem chamadas de rede
 ```
 
 Estrutura do projeto:

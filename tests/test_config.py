@@ -70,6 +70,28 @@ class TestPrecedencia:
         with pytest.raises(ErroDeConfiguracao, match="maior que zero"):
             Config.do_ambiente()
 
+    def test_max_paginas_padrao_e_via_ambiente(self, monkeypatch):
+        assert Config.do_ambiente().max_paginas == 6
+        monkeypatch.setenv("ORGPDF_MAX_PAGINAS", "10")
+        assert Config.do_ambiente().max_paginas == 10
+
+    def test_max_paginas_via_cli_sobrescreve_ambiente(self, monkeypatch):
+        monkeypatch.setenv("ORGPDF_MAX_PAGINAS", "10")
+        assert Config.do_ambiente(max_paginas=3).max_paginas == 3
+
+    def test_max_paginas_via_cli_nao_positivo(self):
+        with pytest.raises(ErroDeConfiguracao, match="maior que zero"):
+            Config.do_ambiente(max_paginas=0)
+
+    def test_max_caracteres_padrao_e_via_ambiente(self, monkeypatch):
+        assert Config.do_ambiente().max_caracteres == 15_000
+        monkeypatch.setenv("ORGPDF_MAX_CARACTERES", "5000")
+        assert Config.do_ambiente().max_caracteres == 5000
+
+    def test_max_caracteres_via_cli_sobrescreve_ambiente(self, monkeypatch):
+        monkeypatch.setenv("ORGPDF_MAX_CARACTERES", "5000")
+        assert Config.do_ambiente(max_caracteres=1000).max_caracteres == 1000
+
 
 class TestProvedor:
     def test_padrao_e_ollama_sem_exigir_api_key(self):

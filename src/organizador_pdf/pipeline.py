@@ -61,6 +61,13 @@ class ResultadoDoArquivo:
     erro: Optional[str] = None
     etapa: Optional[str] = None
     aviso: Optional[str] = None
+    #: Nome do provedor que efetivamente extraiu os metadados usados (ex.:
+    #: "ollama", "anthropic") — não necessariamente `config.provedor`, pode
+    #: ser o de fallback. `None` para arquivos que falharam antes de extrair.
+    provedor_usado: Optional[str] = None
+    #: True quando o resultado final veio do provedor de fallback, não do
+    #: principal — só informativo, não é motivo de aviso por si só.
+    usou_fallback: bool = False
 
     @property
     def ok(self) -> bool:
@@ -105,12 +112,11 @@ class Pipeline:
                 caminho,
                 paginas_para_analise=self.config.max_paginas,
                 max_caracteres_analise=self.config.max_caracteres,
-                ocr=self.config.ocr,
-                ocr_idioma=self.config.ocr_idioma,
             )
 
             etapa = "extração de metadados"
-            metadados, aviso = self._extrair(documento, caminho.name)
+            metadados, aviso, usou_fallback = self._extrair(documento, caminho.name)
+            provedor_usado = self._nome_do_provedor_usado(usou_fallback)
 
             if self.config.verificar_online:
                 aviso_online = verificar_identificadores(metadados)
@@ -121,7 +127,9 @@ class Pipeline:
                 logger.warning("[%s] %s", caminho.name, aviso)
 
             etapa = "geração do Markdown"
-            markdown = self._montar_markdown(metadados, documento)
+            markdown = self._montar_markdown(
+                metadados, documento, provedor_usado=provedor_usado, usou_fallback=usou_fallback
+            )
 
             etapa = "organização"
             resultado = organizar(
@@ -142,6 +150,8 @@ class Pipeline:
                 pdf_destino=resultado.pdf_destino,
                 markdown_destino=resultado.markdown_destino,
                 aviso=aviso,
+                provedor_usado=provedor_usado,
+                usou_fallback=usou_fallback,
             )
 
         except ErroFatalDeAPI:
@@ -169,13 +179,15 @@ class Pipeline:
 
     def _extrair(
         self, documento: DocumentoConvertido, nome_arquivo: str
-    ) -> tuple[Metadados, Optional[str]]:
+    ) -> tuple[Metadados, Optional[str], bool]:
         """Extrai os metadados, acionando o fallback pago quando configurado
         e quando o resultado local falha ou sai com aviso de divergência.
 
         Sem `extrator_fallback`, o comportamento é idêntico a antes: sucesso
         (com ou sem aviso) devolve o resultado local, falha propaga
-        `ErroDeExtracao` para o chamador tratar como falha do arquivo.
+        `ErroDeExtracao` para o chamador tratar como falha do arquivo. O
+        terceiro item devolvido indica se o resultado final veio do
+        fallback — só informativo, registrado no relatório e no Markdown.
         """
         try:
             metadados = self.extrator.extrair(documento)
@@ -190,11 +202,12 @@ class Pipeline:
                 metadados = self.extrator_fallback.extrair(documento)
             except ErroDeExtracao as exc_fallback:
                 raise ErroDeExtracao(f"local: {exc}; fallback: {exc_fallback}") from exc_fallback
-            return metadados, _titulo_diverge_do_arquivo(nome_arquivo, metadados)
+            logger.info("[%s] extração concluída via provedor de fallback.", nome_arquivo)
+            return metadados, _titulo_diverge_do_arquivo(nome_arquivo, metadados), True
 
         aviso = _titulo_diverge_do_arquivo(nome_arquivo, metadados)
         if aviso is None or self.extrator_fallback is None:
-            return metadados, aviso
+            return metadados, aviso, False
 
         logger.info("[%s] %s — tentando provedor de fallback.", nome_arquivo, aviso)
         try:
@@ -204,18 +217,38 @@ class Pipeline:
                 "[%s] fallback também falhou (%s); mantendo resultado local (com aviso).",
                 nome_arquivo, exc,
             )
-            return metadados, aviso
+            return metadados, aviso, False
 
-        return metadados_fallback, _titulo_diverge_do_arquivo(nome_arquivo, metadados_fallback)
+        logger.info("[%s] extração concluída via provedor de fallback.", nome_arquivo)
+        return (
+            metadados_fallback,
+            _titulo_diverge_do_arquivo(nome_arquivo, metadados_fallback),
+            True,
+        )
+
+    def _nome_do_provedor_usado(self, usou_fallback: bool) -> str:
+        if not usou_fallback:
+            return self.config.provedor.value
+        # Em uso real, extrator_fallback vem sempre de config.provedor_fallback
+        # (ver criar_extrator_fallback) — o "fallback" genérico só aparece em
+        # testes que injetam um extrator de fallback sem configurar o campo.
+        return self.config.provedor_fallback.value if self.config.provedor_fallback else "fallback"
 
     def _montar_markdown(
-        self, metadados: Metadados, documento: DocumentoConvertido
+        self,
+        metadados: Metadados,
+        documento: DocumentoConvertido,
+        *,
+        provedor_usado: str,
+        usou_fallback: bool,
     ) -> str:
         return gerar_markdown(
             metadados,
             documento.markdown_completo,
             arquivo_origem=documento.caminho,
             total_paginas=documento.total_paginas,
+            provedor_extracao=provedor_usado,
+            extraido_via_fallback=usou_fallback,
         )
 
     @staticmethod

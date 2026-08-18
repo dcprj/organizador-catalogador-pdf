@@ -169,6 +169,8 @@ def gerar_markdown(
     *,
     arquivo_origem: Optional[Path] = None,
     total_paginas: Optional[int] = None,
+    provedor_extracao: Optional[str] = None,
+    extraido_via_fallback: bool = False,
 ) -> str:
     """Monta o `.md` com YAML frontmatter compatível com o Obsidian."""
     frontmatter: dict[str, object] = {
@@ -195,6 +197,8 @@ def gerar_markdown(
         "arquivo_origem": arquivo_origem.name if arquivo_origem else None,
         "total_paginas": total_paginas,
         "catalogado_em": date.today().isoformat(),
+        "provedor_extracao": provedor_extracao,
+        "extraido_via_fallback": extraido_via_fallback,
     }
 
     yaml_texto = yaml.safe_dump(

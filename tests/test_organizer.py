@@ -144,6 +144,28 @@ class TestGerarMarkdown:
         assert "Psicologia" in conteudo
         assert "\\u" not in conteudo
 
+    def test_registra_provedor_de_extracao(self, metadados: Metadados):
+        conteudo = gerar_markdown(
+            metadados, "corpo", provedor_extracao="ollama", extraido_via_fallback=False
+        )
+        dados = yaml.safe_load(conteudo.split("---", 2)[1])
+        assert dados["provedor_extracao"] == "ollama"
+        assert dados["extraido_via_fallback"] is False
+
+    def test_registra_quando_veio_do_fallback(self, metadados: Metadados):
+        conteudo = gerar_markdown(
+            metadados, "corpo", provedor_extracao="anthropic", extraido_via_fallback=True
+        )
+        dados = yaml.safe_load(conteudo.split("---", 2)[1])
+        assert dados["provedor_extracao"] == "anthropic"
+        assert dados["extraido_via_fallback"] is True
+
+    def test_padrao_sem_provedor_informado(self, metadados: Metadados):
+        conteudo = gerar_markdown(metadados, "corpo")
+        dados = yaml.safe_load(conteudo.split("---", 2)[1])
+        assert dados["provedor_extracao"] is None
+        assert dados["extraido_via_fallback"] is False
+
 
 class TestCaminhoDisponivel:
     def test_devolve_o_mesmo_quando_livre(self, tmp_path: Path):

@@ -66,13 +66,6 @@ class Config:
     provedor_fallback: Optional[Provedor] = None
     modelo_fallback: Optional[str] = None
     api_key_fallback: Optional[str] = None
-    #: Recorre a OCR (Tesseract) para PDFs sem texto extraível (digitalizados).
-    #: Só tem efeito se o Tesseract estiver instalado — sem isso, o
-    #: comportamento é o de sempre (falha explícita). Desligue com
-    #: ORGPDF_OCR=false para nunca tentar, mesmo com o Tesseract presente.
-    ocr: bool = True
-    #: Idioma do OCR, no formato de 3 letras do Tesseract (ex.: "por", "eng").
-    ocr_idioma: str = "por"
 
     @classmethod
     def do_ambiente(
@@ -87,8 +80,8 @@ class Config:
         provedor_fallback: Optional[str] = None,
         modelo_fallback: Optional[str] = None,
         api_key_fallback: Optional[str] = None,
-        ocr: Optional[bool] = None,
-        ocr_idioma: Optional[str] = None,
+        max_paginas: Optional[int] = None,
+        max_caracteres: Optional[int] = None,
     ) -> "Config":
         """Carrega a configuração do `.env` e do ambiente.
 
@@ -132,8 +125,10 @@ class Config:
 
         return cls(
             modelo=modelo_resolvido,
-            max_paginas=_inteiro_positivo("ORGPDF_MAX_PAGINAS", 6),
-            max_caracteres=_inteiro_positivo("ORGPDF_MAX_CARACTERES", 15_000),
+            max_paginas=_inteiro_positivo("ORGPDF_MAX_PAGINAS", 6, cli=max_paginas),
+            max_caracteres=_inteiro_positivo(
+                "ORGPDF_MAX_CARACTERES", 15_000, cli=max_caracteres
+            ),
             ollama_url=(ollama_url or os.getenv("ORGPDF_OLLAMA_URL") or OLLAMA_URL_PADRAO).strip()
             or OLLAMA_URL_PADRAO,
             verificar_online=(
@@ -146,8 +141,6 @@ class Config:
             provedor_fallback=provedor_fallback_resolvido,
             modelo_fallback=modelo_fallback_resolvido,
             api_key_fallback=api_key_fallback_resolvida,
-            ocr=ocr if ocr is not None else _booleano("ORGPDF_OCR", True),
-            ocr_idioma=(ocr_idioma or os.getenv("ORGPDF_OCR_IDIOMA") or "por").strip() or "por",
         )
 
 
@@ -208,14 +201,19 @@ def _booleano(nome: str, padrao: bool) -> bool:
     )
 
 
-def _inteiro_positivo(nome: str, padrao: int) -> int:
-    bruto = os.getenv(nome)
-    if bruto is None or not bruto.strip():
-        return padrao
-    try:
-        valor = int(bruto)
-    except ValueError as exc:
-        raise ErroDeConfiguracao(f"{nome} deve ser um número inteiro, recebi {bruto!r}.") from exc
+def _inteiro_positivo(nome: str, padrao: int, *, cli: Optional[int] = None) -> int:
+    if cli is not None:
+        valor = cli
+    else:
+        bruto = os.getenv(nome)
+        if bruto is None or not bruto.strip():
+            return padrao
+        try:
+            valor = int(bruto)
+        except ValueError as exc:
+            raise ErroDeConfiguracao(
+                f"{nome} deve ser um número inteiro, recebi {bruto!r}."
+            ) from exc
     if valor <= 0:
         raise ErroDeConfiguracao(f"{nome} deve ser maior que zero, recebi {valor}.")
     return valor
