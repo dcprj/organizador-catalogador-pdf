@@ -6,14 +6,25 @@
 # build reprodutível não importa de onde `pyinstaller` é chamado.
 import os
 
+from PyInstaller.utils.hooks import collect_data_files
+
 aqui = SPECPATH
 raiz = os.path.dirname(aqui)
+
+# `pymupdf` carrega os modelos ONNX do motor de layout (layout/resources/)
+# do disco em tempo de execução, por caminho — a análise estática do
+# PyInstaller não enxerga isso sozinha (só código Python é rastreado por
+# import), então precisa ser coletado explicitamente. Sem isso, o binário
+# cai silenciosamente para extração de texto simples (sem estrutura de
+# título/tabela) em todo PDF, sem erro nenhum. `pymupdf4llm` também é
+# coletado por segurança (dados auxiliares que ele possa carregar do disco).
+datas = collect_data_files("pymupdf") + collect_data_files("pymupdf4llm")
 
 a = Analysis(
     [os.path.join(aqui, "entrypoint.py")],
     pathex=[os.path.join(raiz, "src")],
     binaries=[],
-    datas=[],
+    datas=datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

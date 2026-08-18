@@ -11,7 +11,7 @@ from organizador_pdf.converter import DocumentoConvertido
 from organizador_pdf.extractor import (
     ErroDeExtracao,
     ErroFatalDeAPI,
-    ExtratorDeMetadados,
+    ExtratorOllama,
     descartar_identificadores_nao_confirmados,
     esquema_json_estrito,
     normalizar_maiusculas_na_referencia,
@@ -367,7 +367,7 @@ class TestExtrair:
                 200, json={"message": {"content": json.dumps(PAYLOAD_VALIDO)}}
             )
 
-        extrator = ExtratorDeMetadados(config_local(), cliente=cliente_com(handler))
+        extrator = ExtratorOllama(config_local(), cliente=cliente_com(handler))
         metadados = extrator.extrair(documento())
 
         assert metadados.titulo == "Em Busca de Sentido"
@@ -382,7 +382,7 @@ class TestExtrair:
                 200, json={"message": {"content": json.dumps(PAYLOAD_VALIDO)}}
             )
 
-        extrator = ExtratorDeMetadados(config_local(), cliente=cliente_com(handler))
+        extrator = ExtratorOllama(config_local(), cliente=cliente_com(handler))
         extrator.extrair(documento("TRECHO INICIAL"))
 
     def test_corrige_sobrenome_em_minusculas_automaticamente(self):
@@ -396,7 +396,7 @@ class TestExtrair:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"message": {"content": json.dumps(payload)}})
 
-        extrator = ExtratorDeMetadados(config_local(), cliente=cliente_com(handler))
+        extrator = ExtratorOllama(config_local(), cliente=cliente_com(handler))
         metadados = extrator.extrair(documento())
 
         assert metadados.referencia_abnt.startswith("FRANKL, Viktor E.")
@@ -411,7 +411,7 @@ class TestExtrair:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"message": {"content": json.dumps(payload)}})
 
-        extrator = ExtratorDeMetadados(config_local(), cliente=cliente_com(handler))
+        extrator = ExtratorOllama(config_local(), cliente=cliente_com(handler))
         metadados = extrator.extrair(documento())
 
         assert metadados.identificadores.doi is None
@@ -420,7 +420,7 @@ class TestExtrair:
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("recusado", request=request)
 
-        extrator = ExtratorDeMetadados(config_local(), cliente=cliente_com(handler))
+        extrator = ExtratorOllama(config_local(), cliente=cliente_com(handler))
 
         with pytest.raises(ErroFatalDeAPI, match="conectar"):
             extrator.extrair(documento())
@@ -429,7 +429,7 @@ class TestExtrair:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(404, json={"error": "model not found"})
 
-        extrator = ExtratorDeMetadados(config_local(), cliente=cliente_com(handler))
+        extrator = ExtratorOllama(config_local(), cliente=cliente_com(handler))
 
         with pytest.raises(ErroFatalDeAPI, match="ollama pull"):
             extrator.extrair(documento())
@@ -438,7 +438,7 @@ class TestExtrair:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"message": {"content": "não é json"}})
 
-        extrator = ExtratorDeMetadados(config_local(), cliente=cliente_com(handler))
+        extrator = ExtratorOllama(config_local(), cliente=cliente_com(handler))
 
         with pytest.raises(ErroDeExtracao, match="JSON"):
             extrator.extrair(documento())
@@ -449,7 +449,7 @@ class TestExtrair:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"message": {"content": json.dumps(invalido)}})
 
-        extrator = ExtratorDeMetadados(config_local(), cliente=cliente_com(handler))
+        extrator = ExtratorOllama(config_local(), cliente=cliente_com(handler))
 
         with pytest.raises(ErroDeExtracao, match="esquema"):
             extrator.extrair(documento())
@@ -458,7 +458,7 @@ class TestExtrair:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"message": {"content": ""}})
 
-        extrator = ExtratorDeMetadados(config_local(), cliente=cliente_com(handler))
+        extrator = ExtratorOllama(config_local(), cliente=cliente_com(handler))
 
         with pytest.raises(ErroDeExtracao, match="não devolveu conteúdo"):
             extrator.extrair(documento())
@@ -471,7 +471,7 @@ class TestExtrair:
             chamou = True
             return httpx.Response(200, json={"message": {"content": "{}"}})
 
-        extrator = ExtratorDeMetadados(config_local(), cliente=cliente_com(handler))
+        extrator = ExtratorOllama(config_local(), cliente=cliente_com(handler))
         doc = documento()
         doc.markdown_inicial = "   "
 

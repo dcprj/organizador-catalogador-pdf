@@ -107,6 +107,17 @@ class TestMontarDiretorio:
         pdf, _ = montar_diretorio(tmp_path, metadados)
         assert pdf == tmp_path / "Psicologia" / "Psicologia" / "Livros"
 
+    def test_revisao_manual_aninha_a_mesma_estrutura_numa_subpasta(
+        self, metadados: Metadados, tmp_path: Path
+    ):
+        pdf, md = montar_diretorio(tmp_path, metadados, revisao_manual=True)
+        assert pdf == tmp_path / "revisao_manual" / "Psicologia" / "Logoterapia" / "Livros"
+        assert md == pdf
+
+    def test_sem_revisao_manual_nao_aninha(self, metadados: Metadados, tmp_path: Path):
+        pdf, _ = montar_diretorio(tmp_path, metadados, revisao_manual=False)
+        assert "revisao_manual" not in pdf.parts
+
 
 class TestGerarMarkdown:
     def test_frontmatter_valido_e_secoes(self, metadados: Metadados):
@@ -132,6 +143,28 @@ class TestGerarMarkdown:
         conteudo = gerar_markdown(metadados, "corpo")
         assert "Psicologia" in conteudo
         assert "\\u" not in conteudo
+
+    def test_registra_provedor_de_extracao(self, metadados: Metadados):
+        conteudo = gerar_markdown(
+            metadados, "corpo", provedor_extracao="ollama", extraido_via_fallback=False
+        )
+        dados = yaml.safe_load(conteudo.split("---", 2)[1])
+        assert dados["provedor_extracao"] == "ollama"
+        assert dados["extraido_via_fallback"] is False
+
+    def test_registra_quando_veio_do_fallback(self, metadados: Metadados):
+        conteudo = gerar_markdown(
+            metadados, "corpo", provedor_extracao="anthropic", extraido_via_fallback=True
+        )
+        dados = yaml.safe_load(conteudo.split("---", 2)[1])
+        assert dados["provedor_extracao"] == "anthropic"
+        assert dados["extraido_via_fallback"] is True
+
+    def test_padrao_sem_provedor_informado(self, metadados: Metadados):
+        conteudo = gerar_markdown(metadados, "corpo")
+        dados = yaml.safe_load(conteudo.split("---", 2)[1])
+        assert dados["provedor_extracao"] is None
+        assert dados["extraido_via_fallback"] is False
 
 
 class TestCaminhoDisponivel:
@@ -184,6 +217,24 @@ class TestOrganizar:
         assert resultado.pdf_destino.stem == resultado.markdown_destino.stem
         assert resultado.pdf_destino.parent == (
             destino / "Psicologia" / "Logoterapia" / "Livros"
+        )
+
+    def test_revisao_manual_grava_na_subpasta(self, metadados: Metadados, tmp_path: Path):
+        origem = tmp_path / "entrada.pdf"
+        origem.write_bytes(b"%PDF-1.4 fake")
+        destino = tmp_path / "saida"
+
+        resultado = organizar(
+            metadados,
+            pdf_origem=origem,
+            destino=destino,
+            markdown="# md",
+            revisao_manual=True,
+        )
+
+        assert resultado.pdf_destino.exists()
+        assert resultado.pdf_destino.parent == (
+            destino / "revisao_manual" / "Psicologia" / "Logoterapia" / "Livros"
         )
 
     def test_mover_remove_a_origem(self, metadados: Metadados, tmp_path: Path):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,8 +42,17 @@ def converter_pdf(
     primeiras páginas (`markdown_inicial`), que é o único trecho enviado ao LLM
     — é onde ficam capa, folha de rosto e ficha catalográfica, e limitá-lo
     mantém o custo por documento baixo e previsível.
+
+    PDFs sem texto extraível (digitalizados/escaneados) falham com uma
+    mensagem explícita — este app não faz OCR. Rode um serviço de OCR externo
+    (ex.: ocrmypdf) sobre o arquivo antes de reprocessá-lo.
     """
     import pymupdf  # importado sob demanda: carregar o binário custa caro
+
+    # O PyMuPDF imprime mensagens de status direto no stdout/stderr por
+    # padrão — puramente informativo, sem valor pro usuário e sem respeitar
+    # o nível de log do app. Descarta.
+    pymupdf.set_messages(stream=io.StringIO())
 
     try:
         documento = pymupdf.open(caminho)
@@ -67,8 +77,9 @@ def converter_pdf(
 
     if not markdown_completo.strip():
         raise ErroDeConversao(
-            "nenhum texto extraível (PDF provavelmente é digitalizado; "
-            "seria necessário OCR)"
+            "nenhum texto extraível — o PDF provavelmente é digitalizado/"
+            "escaneado. Este app não faz OCR: rode um serviço externo (ex.: "
+            "ocrmypdf) sobre o arquivo antes de reprocessá-lo."
         )
 
     return DocumentoConvertido(
@@ -81,11 +92,20 @@ def converter_pdf(
 
 
 def _para_markdown(documento, paginas: Optional[list[int]]) -> str:
-    """Converte páginas para Markdown, com texto simples como plano B."""
+    """Converte páginas para Markdown, com texto simples como plano B.
+
+    `use_ocr=OCRMode.NEVER` é explícito de propósito: sem ele, o padrão do
+    `pymupdf4llm` (`SELECT_KEEP_OLD`) roda OCR automaticamente quando julga
+    valer a pena e o Tesseract estiver instalado na máquina — o que
+    contradiz a decisão de nunca fazer OCR neste app.
+    """
     try:
         import pymupdf4llm
+        from pymupdf4llm.ocr import OCRMode
 
-        return pymupdf4llm.to_markdown(documento, pages=paginas, show_progress=False)
+        return pymupdf4llm.to_markdown(
+            documento, pages=paginas, show_progress=False, use_ocr=OCRMode.NEVER
+        )
     except Exception as exc:  # noqa: BLE001 - qualquer falha cai para o plano B
         logger.debug("pymupdf4llm falhou (%s); usando extração de texto simples", exc)
         indices = paginas if paginas is not None else range(documento.page_count)

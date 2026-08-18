@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -15,6 +16,22 @@ MODELO_PADRAO = "qwen2.5:3b-instruct"
 
 #: Endereço padrão do servidor Ollama.
 OLLAMA_URL_PADRAO = "http://localhost:11434"
+
+
+class Provedor(str, Enum):
+    """De onde vem o LLM usado na extração de metadados.
+
+    `OLLAMA` é o único que roda 100% localmente, sem chave de API e sem
+    custo por token — os demais são provedores pagos, opcionais, escolhidos
+    explicitamente pelo usuário (ver `--provedor`/`ORGPDF_PROVEDOR`).
+    """
+
+    OLLAMA = "ollama"
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
+    DEEPSEEK = "deepseek"
+    GEMINI = "gemini"
+    GROK = "grok"
 
 
 class ErroDeConfiguracao(RuntimeError):
@@ -38,6 +55,17 @@ class Config:
     #: envia o identificador, nunca o conteúdo do PDF. Desligue com
     #: ORGPDF_VERIFICAR_ONLINE=false para manter tudo 100% offline.
     verificar_online: bool = True
+    #: Qual LLM usar na extração. O padrão (`OLLAMA`) é local e gratuito;
+    #: os demais são provedores pagos, opcionais — exigem `api_key`.
+    provedor: Provedor = Provedor.OLLAMA
+    #: Chave de API do provedor pago escolhido. Sempre None para `OLLAMA`.
+    api_key: Optional[str] = None
+    #: Provedor pago acionado só quando a extração do `provedor` principal
+    #: falha ou sai com aviso de divergência (ver `--provedor-fallback`).
+    #: None (padrão) desliga o recurso — nenhuma chamada extra é feita.
+    provedor_fallback: Optional[Provedor] = None
+    modelo_fallback: Optional[str] = None
+    api_key_fallback: Optional[str] = None
 
     @classmethod
     def do_ambiente(
@@ -47,6 +75,13 @@ class Config:
         modelo: Optional[str] = None,
         ollama_url: Optional[str] = None,
         verificar_online: Optional[bool] = None,
+        provedor: Optional[str] = None,
+        api_key: Optional[str] = None,
+        provedor_fallback: Optional[str] = None,
+        modelo_fallback: Optional[str] = None,
+        api_key_fallback: Optional[str] = None,
+        max_paginas: Optional[int] = None,
+        max_caracteres: Optional[int] = None,
     ) -> "Config":
         """Carrega a configuração do `.env` e do ambiente.
 
@@ -67,11 +102,33 @@ class Config:
         if caminho_env:
             load_dotenv(dotenv_path=caminho_env, override=False)
 
+        provedor_resolvido = _provedor(provedor, "ORGPDF_PROVEDOR", Provedor.OLLAMA)
+        modelo_resolvido = _modelo(modelo, "ORGPDF_MODELO", provedor_resolvido)
+        api_key_resolvida = _api_key(api_key, provedor_resolvido)
+
+        # Fallback é opt-in: só existe se um provedor foi de fato indicado
+        # (CLI ou ORGPDF_PROVEDOR_FALLBACK) — sem isso, nenhum modelo/chave é
+        # exigido e o recurso fica completamente desligado.
+        provedor_fallback_resolvido = _provedor(
+            provedor_fallback, "ORGPDF_PROVEDOR_FALLBACK", None
+        )
+        modelo_fallback_resolvido: Optional[str] = None
+        api_key_fallback_resolvida: Optional[str] = None
+        if provedor_fallback_resolvido is not None:
+            # Variável própria (ORGPDF_MODELO_FALLBACK) — não pode cair para
+            # ORGPDF_MODELO, que é do provedor *principal* e quase certamente
+            # um modelo incompatível com o provedor de fallback.
+            modelo_fallback_resolvido = _modelo(
+                modelo_fallback, "ORGPDF_MODELO_FALLBACK", provedor_fallback_resolvido
+            )
+            api_key_fallback_resolvida = _api_key(api_key_fallback, provedor_fallback_resolvido)
+
         return cls(
-            modelo=(modelo or os.getenv("ORGPDF_MODELO") or MODELO_PADRAO).strip()
-            or MODELO_PADRAO,
-            max_paginas=_inteiro_positivo("ORGPDF_MAX_PAGINAS", 6),
-            max_caracteres=_inteiro_positivo("ORGPDF_MAX_CARACTERES", 15_000),
+            modelo=modelo_resolvido,
+            max_paginas=_inteiro_positivo("ORGPDF_MAX_PAGINAS", 6, cli=max_paginas),
+            max_caracteres=_inteiro_positivo(
+                "ORGPDF_MAX_CARACTERES", 15_000, cli=max_caracteres
+            ),
             ollama_url=(ollama_url or os.getenv("ORGPDF_OLLAMA_URL") or OLLAMA_URL_PADRAO).strip()
             or OLLAMA_URL_PADRAO,
             verificar_online=(
@@ -79,7 +136,55 @@ class Config:
                 if verificar_online is not None
                 else _booleano("ORGPDF_VERIFICAR_ONLINE", True)
             ),
+            provedor=provedor_resolvido,
+            api_key=api_key_resolvida,
+            provedor_fallback=provedor_fallback_resolvido,
+            modelo_fallback=modelo_fallback_resolvido,
+            api_key_fallback=api_key_fallback_resolvida,
         )
+
+
+def _provedor(
+    bruto: Optional[str], variavel_ambiente: str, padrao: Optional[Provedor]
+) -> Optional[Provedor]:
+    valor = (bruto or os.getenv(variavel_ambiente) or "").strip().lower()
+    if not valor:
+        return padrao
+    try:
+        return Provedor(valor)
+    except ValueError as exc:
+        opcoes = ", ".join(p.value for p in Provedor)
+        raise ErroDeConfiguracao(
+            f"provedor {valor!r} não reconhecido. Use um de: {opcoes}."
+        ) from exc
+
+
+def _modelo(bruto: Optional[str], variavel_ambiente: str, provedor: Provedor) -> str:
+    valor = (bruto or os.getenv(variavel_ambiente) or "").strip()
+    if valor:
+        return valor
+    if provedor is Provedor.OLLAMA:
+        return MODELO_PADRAO
+    raise ErroDeConfiguracao(
+        f"o provedor {provedor.value!r} exige um modelo explícito — use "
+        "--modelo ou ORGPDF_MODELO (ex.: claude-sonnet-5, gpt-5-mini, "
+        "deepseek-v4-flash, gemini-2.5-flash, grok-4)."
+    )
+
+
+def _api_key(bruto: Optional[str], provedor: Provedor) -> Optional[str]:
+    if provedor is Provedor.OLLAMA:
+        return None
+    variavel_especifica = f"ORGPDF_{provedor.value.upper()}_API_KEY"
+    valor = (
+        bruto or os.getenv(variavel_especifica) or os.getenv("ORGPDF_API_KEY") or ""
+    ).strip()
+    if valor:
+        return valor
+    raise ErroDeConfiguracao(
+        f"o provedor {provedor.value!r} exige uma chave de API — use --apikey, "
+        f"ou defina {variavel_especifica} (ou ORGPDF_API_KEY) no .env."
+    )
 
 
 def _booleano(nome: str, padrao: bool) -> bool:
@@ -96,14 +201,19 @@ def _booleano(nome: str, padrao: bool) -> bool:
     )
 
 
-def _inteiro_positivo(nome: str, padrao: int) -> int:
-    bruto = os.getenv(nome)
-    if bruto is None or not bruto.strip():
-        return padrao
-    try:
-        valor = int(bruto)
-    except ValueError as exc:
-        raise ErroDeConfiguracao(f"{nome} deve ser um número inteiro, recebi {bruto!r}.") from exc
+def _inteiro_positivo(nome: str, padrao: int, *, cli: Optional[int] = None) -> int:
+    if cli is not None:
+        valor = cli
+    else:
+        bruto = os.getenv(nome)
+        if bruto is None or not bruto.strip():
+            return padrao
+        try:
+            valor = int(bruto)
+        except ValueError as exc:
+            raise ErroDeConfiguracao(
+                f"{nome} deve ser um número inteiro, recebi {bruto!r}."
+            ) from exc
     if valor <= 0:
         raise ErroDeConfiguracao(f"{nome} deve ser maior que zero, recebi {valor}.")
     return valor

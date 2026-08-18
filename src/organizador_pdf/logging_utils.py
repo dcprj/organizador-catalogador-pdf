@@ -41,7 +41,11 @@ def configurar_logs(arquivo_erros: Path, *, verboso: bool = False) -> Console:
             f"[yellow]Aviso:[/] não foi possível abrir {arquivo_erros} para log: {exc}"
         )
 
-    # A biblioteca HTTP usada para falar com o Ollama é ruidosa em nível INFO.
+    # httpx/httpcore são ruidosos em DEBUG (o modo --verbose sobe o root pra
+    # DEBUG) — e, com provedores pagos, o tráfego passa a carregar o header
+    # Authorization com a chave de API. Silenciar os dois evita que ela
+    # apareça no console em modo verboso.
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     return console
