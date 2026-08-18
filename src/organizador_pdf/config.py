@@ -131,7 +131,7 @@ def _modelo(bruto: Optional[str], provedor: Provedor) -> str:
     raise ErroDeConfiguracao(
         f"o provedor {provedor.value!r} exige um modelo explícito — use "
         "--modelo ou ORGPDF_MODELO (ex.: claude-sonnet-5, gpt-5-mini, "
-        "deepseek-chat, gemini-2.5-flash, grok-4)."
+        "deepseek-v4-flash, gemini-2.5-flash, grok-4)."
     )
 
 
