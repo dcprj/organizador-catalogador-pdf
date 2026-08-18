@@ -271,7 +271,10 @@ modelo desses provedores funciona sem precisar de código novo, só trocando
 **Ressalvas:**
 
 - Suporte a saída estruturada estrita (JSON Schema) varia entre provedores.
-  A validação Pydantic que roda depois da chamada pega qualquer resposta fora
+  A DeepSeek, por exemplo, rejeita `response_format: json_schema` — o app já
+  detecta isso e usa o modo `json_object` dela automaticamente (com um
+  exemplo de formato embutido no prompt, como a documentação deles exige). A
+  validação Pydantic que roda depois da chamada pega qualquer resposta fora
   do formato esperado e transforma em um erro claro para aquele arquivo — o
   lote continua, mas fica pior taxa de sucesso em provedores com suporte mais
   fraco.
@@ -371,7 +374,7 @@ aviso — elas reduzem o risco, não o eliminam.
 ## Desenvolvimento
 
 ```bash
-pytest              # 129 testes, sem chamadas de rede
+pytest              # 131 testes, sem chamadas de rede
 ```
 
 Estrutura do projeto:

@@ -209,6 +209,42 @@ class TestExtratorOpenAICompativel:
         assert metadados.titulo == "Em Busca de Sentido"
         assert metadados.tipo_publicacao is TipoPublicacao.LIVRO
 
+    def test_deepseek_usa_json_object_em_vez_de_json_schema(self):
+        # Caso real: a DeepSeek rejeita response_format=json_schema com 400
+        # "This response_format type is unavailable now" — só aceita
+        # json_object, e exige a palavra "json" + um exemplo no prompt.
+        def handler(request: httpx.Request) -> httpx.Response:
+            corpo = json.loads(request.content)
+            assert corpo["response_format"] == {"type": "json_object"}
+            conteudo_usuario = corpo["messages"][1]["content"]
+            assert "json" in conteudo_usuario.lower()
+            return httpx.Response(200, json=self._resposta_openai(PAYLOAD_VALIDO))
+
+        extrator = ExtratorOpenAICompativel(
+            config_openai_compat(Provedor.DEEPSEEK, modelo="deepseek-v4-flash"),
+            cliente=httpx.Client(
+                transport=httpx.MockTransport(handler), base_url="https://api.deepseek.com/v1"
+            ),
+        )
+
+        metadados = extrator.extrair(documento())
+        assert metadados.titulo == "Em Busca de Sentido"
+
+    def test_openai_grok_gemini_continuam_usando_json_schema_estrito(self):
+        for provedor in (Provedor.OPENAI, Provedor.GROK, Provedor.GEMINI):
+
+            def handler(request: httpx.Request) -> httpx.Response:
+                corpo = json.loads(request.content)
+                assert corpo["response_format"]["type"] == "json_schema"
+                assert corpo["response_format"]["json_schema"]["strict"] is True
+                return httpx.Response(200, json=self._resposta_openai(PAYLOAD_VALIDO))
+
+            extrator = criar_extrator(config_openai_compat(provedor))
+            extrator.cliente = httpx.Client(
+                transport=httpx.MockTransport(handler), base_url=extrator.cliente.base_url
+            )
+            extrator.extrair(documento())
+
     def test_base_url_correta_por_provedor(self):
         vistos = []
 

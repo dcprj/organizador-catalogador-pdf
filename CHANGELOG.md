@@ -22,6 +22,15 @@ projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 - Fluxo de branches: desenvolvimento passa a acontecer em `develop`, com
   merge para `main` e changelog atualizado a cada release validado.
 
+### Corrigido
+
+- Extração via DeepSeek falhava em todo arquivo com erro 400 ("This
+  response_format type is unavailable now"): a API deles rejeita
+  `response_format: json_schema` estrito, só aceita `json_object`. O
+  adaptador OpenAI-compatível agora detecta esse caso e usa o modo certo por
+  provedor, incluindo a palavra "json" e um exemplo de formato no prompt
+  (exigência documentada da própria DeepSeek para o modo `json_object`).
+
 ## [0.1.0] - 2026-08-17
 
 ### Adicionado

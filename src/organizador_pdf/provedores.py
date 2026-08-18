@@ -65,6 +65,43 @@ _NOME_EXIBICAO: dict[Provedor, str] = {
     Provedor.ANTHROPIC: "Anthropic",
 }
 
+#: Provedores cuja API rejeita `response_format: json_schema` estrito (só
+#: aceitam `json_object`, sem imposição de esquema no lado do servidor) —
+#: confirmado na prática com a DeepSeek: "This response_format type is
+#: unavailable now". A validação Pydantic depois da chamada é quem garante o
+#: formato nesses casos.
+_PROVEDORES_SEM_JSON_SCHEMA_ESTRITO = {Provedor.DEEPSEEK}
+
+#: A DeepSeek exige explicitamente, para o modo `json_object`: a palavra
+#: "json" no prompt e um exemplo do formato desejado (ver
+#: https://api-docs.deepseek.com/guides/json_mode). Os demais campos do
+#: exemplo são fictícios — só a forma do JSON importa aqui.
+_EXEMPLO_JSON = {
+    "tipo_publicacao": "Livro",
+    "area_principal": "Psicologia",
+    "subarea": "Logoterapia",
+    "titulo": "Em Busca de Sentido",
+    "subtitulo": "Um psicólogo no campo de concentração",
+    "autores": ["Frankl, Viktor E."],
+    "autor_principal": "Frankl, Viktor E.",
+    "editora_ou_periodico": "Vozes",
+    "ano": 2019,
+    "local": "Petrópolis",
+    "identificadores": {"isbn": None, "issn": None, "doi": None},
+    "referencia_abnt": (
+        "FRANKL, Viktor E. Em busca de sentido: um psicólogo no campo de "
+        "concentração. Petrópolis: Vozes, 2019."
+    ),
+}
+
+_INSTRUCAO_MODO_JSON_OBJETO = (
+    "\n\n## Formato da resposta\n"
+    "Responda em JSON. Devolva SOMENTE um objeto json válido, sem nenhum "
+    "texto antes ou depois, exatamente com estas chaves (exemplo de "
+    "formato — os valores abaixo são fictícios):\n"
+    + json.dumps(_EXEMPLO_JSON, ensure_ascii=False, indent=2)
+)
+
 
 class ExtratorAnthropic:
     """Envia o trecho inicial do documento à API da Anthropic (Claude)."""
@@ -159,20 +196,27 @@ class ExtratorOpenAICompativel:
         if not documento.markdown_inicial.strip():
             raise ErroDeExtracao("trecho inicial vazio; nada para analisar")
 
-        corpo = {
-            "model": self.config.modelo,
-            "messages": [
-                {"role": "system", "content": PROMPT_SISTEMA},
-                {"role": "user", "content": montar_prompt_usuario(documento)},
-            ],
-            "response_format": {
+        conteudo_usuario = montar_prompt_usuario(documento)
+        if self.config.provedor in _PROVEDORES_SEM_JSON_SCHEMA_ESTRITO:
+            response_format: dict[str, Any] = {"type": "json_object"}
+            conteudo_usuario += _INSTRUCAO_MODO_JSON_OBJETO
+        else:
+            response_format = {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "metadados_bibliograficos",
                     "strict": True,
                     "schema": self._esquema,
                 },
-            },
+            }
+
+        corpo = {
+            "model": self.config.modelo,
+            "messages": [
+                {"role": "system", "content": PROMPT_SISTEMA},
+                {"role": "user", "content": conteudo_usuario},
+            ],
+            "response_format": response_format,
             "temperature": 0,
         }
 
