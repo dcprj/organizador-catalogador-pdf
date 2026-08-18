@@ -21,6 +21,17 @@ projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
   identificador não confirmado) valem para todo provedor, pago ou não.
 - Fluxo de branches: desenvolvimento passa a acontecer em `develop`, com
   merge para `main` e changelog atualizado a cada release validado.
+- Fallback opcional para um provedor pago (`--provedor-fallback`/
+  `--modelo-fallback`/`--apikey-fallback`, ou `ORGPDF_PROVEDOR_FALLBACK`/
+  `ORGPDF_MODELO_FALLBACK`): quando o resultado do provedor principal sai com
+  aviso (divergência de nome de arquivo, identificador não confirmado, ou
+  verificação online) ou a extração falha, o app tenta de novo com o
+  provedor de fallback antes de desistir do arquivo. Desligado por padrão —
+  sem `--provedor-fallback`, nenhuma chamada extra é feita.
+- Qualquer arquivo que saia com aviso (de qualquer proteção, mesmo depois do
+  fallback) agora é gravado em `<destino>/revisao_manual/<área>/<subárea>/
+  <tipo>/` em vez da árvore normal, mantendo a mesma organização mas isolada
+  para facilitar a revisão manual.
 
 ### Corrigido
 

@@ -15,6 +15,7 @@ from organizador_pdf.provedores import (
     ExtratorAnthropic,
     ExtratorOpenAICompativel,
     criar_extrator,
+    criar_extrator_fallback,
 )
 
 
@@ -67,6 +68,43 @@ class TestCriarExtrator:
     def test_compativeis_com_openai(self, provedor):
         extrator = criar_extrator(config_openai_compat(provedor))
         assert isinstance(extrator, ExtratorOpenAICompativel)
+
+
+class TestCriarExtratorFallback:
+    def test_desligado_por_padrao_devolve_none(self):
+        assert criar_extrator_fallback(Config()) is None
+
+    def test_anthropic_como_fallback(self):
+        config = Config(
+            provedor_fallback=Provedor.ANTHROPIC,
+            modelo_fallback="claude-sonnet-5",
+            api_key_fallback="sk-ant-fallback",
+        )
+        assert isinstance(criar_extrator_fallback(config), ExtratorAnthropic)
+
+    def test_openai_compativel_como_fallback(self):
+        config = Config(
+            provedor_fallback=Provedor.DEEPSEEK,
+            modelo_fallback="deepseek-v4-pro",
+            api_key_fallback="sk-teste",
+        )
+        assert isinstance(criar_extrator_fallback(config), ExtratorOpenAICompativel)
+
+    def test_nao_usa_config_do_provedor_principal(self):
+        # O extrator de fallback deve ser construído com o modelo/chave de
+        # *fallback*, não vazar os do provedor principal.
+        config = Config(
+            provedor=Provedor.OPENAI,
+            modelo="gpt-5-mini",
+            api_key="sk-openai-principal",
+            provedor_fallback=Provedor.ANTHROPIC,
+            modelo_fallback="claude-sonnet-5",
+            api_key_fallback="sk-ant-fallback",
+        )
+        extrator = criar_extrator_fallback(config)
+        assert isinstance(extrator, ExtratorAnthropic)
+        assert extrator.config.modelo == "claude-sonnet-5"
+        assert extrator.config.api_key == "sk-ant-fallback"
 
 
 class TestExtratorAnthropic:

@@ -60,6 +60,12 @@ class Config:
     provedor: Provedor = Provedor.OLLAMA
     #: Chave de API do provedor pago escolhido. Sempre None para `OLLAMA`.
     api_key: Optional[str] = None
+    #: Provedor pago acionado só quando a extração do `provedor` principal
+    #: falha ou sai com aviso de divergência (ver `--provedor-fallback`).
+    #: None (padrão) desliga o recurso — nenhuma chamada extra é feita.
+    provedor_fallback: Optional[Provedor] = None
+    modelo_fallback: Optional[str] = None
+    api_key_fallback: Optional[str] = None
 
     @classmethod
     def do_ambiente(
@@ -71,6 +77,9 @@ class Config:
         verificar_online: Optional[bool] = None,
         provedor: Optional[str] = None,
         api_key: Optional[str] = None,
+        provedor_fallback: Optional[str] = None,
+        modelo_fallback: Optional[str] = None,
+        api_key_fallback: Optional[str] = None,
     ) -> "Config":
         """Carrega a configuração do `.env` e do ambiente.
 
@@ -91,9 +100,26 @@ class Config:
         if caminho_env:
             load_dotenv(dotenv_path=caminho_env, override=False)
 
-        provedor_resolvido = _provedor(provedor)
-        modelo_resolvido = _modelo(modelo, provedor_resolvido)
+        provedor_resolvido = _provedor(provedor, "ORGPDF_PROVEDOR", Provedor.OLLAMA)
+        modelo_resolvido = _modelo(modelo, "ORGPDF_MODELO", provedor_resolvido)
         api_key_resolvida = _api_key(api_key, provedor_resolvido)
+
+        # Fallback é opt-in: só existe se um provedor foi de fato indicado
+        # (CLI ou ORGPDF_PROVEDOR_FALLBACK) — sem isso, nenhum modelo/chave é
+        # exigido e o recurso fica completamente desligado.
+        provedor_fallback_resolvido = _provedor(
+            provedor_fallback, "ORGPDF_PROVEDOR_FALLBACK", None
+        )
+        modelo_fallback_resolvido: Optional[str] = None
+        api_key_fallback_resolvida: Optional[str] = None
+        if provedor_fallback_resolvido is not None:
+            # Variável própria (ORGPDF_MODELO_FALLBACK) — não pode cair para
+            # ORGPDF_MODELO, que é do provedor *principal* e quase certamente
+            # um modelo incompatível com o provedor de fallback.
+            modelo_fallback_resolvido = _modelo(
+                modelo_fallback, "ORGPDF_MODELO_FALLBACK", provedor_fallback_resolvido
+            )
+            api_key_fallback_resolvida = _api_key(api_key_fallback, provedor_fallback_resolvido)
 
         return cls(
             modelo=modelo_resolvido,
@@ -108,11 +134,18 @@ class Config:
             ),
             provedor=provedor_resolvido,
             api_key=api_key_resolvida,
+            provedor_fallback=provedor_fallback_resolvido,
+            modelo_fallback=modelo_fallback_resolvido,
+            api_key_fallback=api_key_fallback_resolvida,
         )
 
 
-def _provedor(bruto: Optional[str]) -> Provedor:
-    valor = (bruto or os.getenv("ORGPDF_PROVEDOR") or Provedor.OLLAMA.value).strip().lower()
+def _provedor(
+    bruto: Optional[str], variavel_ambiente: str, padrao: Optional[Provedor]
+) -> Optional[Provedor]:
+    valor = (bruto or os.getenv(variavel_ambiente) or "").strip().lower()
+    if not valor:
+        return padrao
     try:
         return Provedor(valor)
     except ValueError as exc:
@@ -122,8 +155,8 @@ def _provedor(bruto: Optional[str]) -> Provedor:
         ) from exc
 
 
-def _modelo(bruto: Optional[str], provedor: Provedor) -> str:
-    valor = (bruto or os.getenv("ORGPDF_MODELO") or "").strip()
+def _modelo(bruto: Optional[str], variavel_ambiente: str, provedor: Provedor) -> str:
+    valor = (bruto or os.getenv(variavel_ambiente) or "").strip()
     if valor:
         return valor
     if provedor is Provedor.OLLAMA:

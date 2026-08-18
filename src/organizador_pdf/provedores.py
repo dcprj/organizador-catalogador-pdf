@@ -10,6 +10,7 @@ significa que o resultado seja confiável sem revisão.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from typing import Any, Optional, Protocol
@@ -282,3 +283,22 @@ def criar_extrator(config: Config) -> Extrator:
     if config.provedor is Provedor.ANTHROPIC:
         return ExtratorAnthropic(config)
     return ExtratorOpenAICompativel(config)
+
+
+def criar_extrator_fallback(config: Config) -> Optional[Extrator]:
+    """Extrator de fallback (`config.provedor_fallback`), ou None se desligado.
+
+    Reaproveita `criar_extrator` construindo uma variante de `config` com o
+    provedor/modelo/chave trocados pelos de fallback — as classes de
+    extrator não precisam saber que são "o fallback", só recebem uma config
+    normal.
+    """
+    if config.provedor_fallback is None:
+        return None
+    config_fallback = dataclasses.replace(
+        config,
+        provedor=config.provedor_fallback,
+        modelo=config.modelo_fallback or config.modelo,
+        api_key=config.api_key_fallback,
+    )
+    return criar_extrator(config_fallback)

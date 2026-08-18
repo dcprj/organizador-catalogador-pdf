@@ -258,6 +258,150 @@ class TestPipeline:
         assert not pdf_de_teste.exists()
 
 
+class TestFallbackDeProvedor:
+    """`ExtratorFalso` faz o papel de local e de fallback nesses testes —
+    o pipeline só enxerga a interface `.extrair()`, não sabe (nem precisa
+    saber) de qual provedor concreto ela vem."""
+
+    def test_local_sem_aviso_nao_aciona_fallback(
+        self, pdf_de_teste: Path, metadados: Metadados, tmp_path: Path
+    ):
+        fallback = ExtratorFalso(metadados)
+        pipeline = Pipeline(
+            Config(verificar_online=False),
+            OpcoesDoPipeline(destino=tmp_path / "biblioteca"),
+            extrator=ExtratorFalso(metadados),
+            extrator_fallback=fallback,
+        )
+
+        resultado = pipeline.processar_arquivo(pdf_de_teste)
+
+        assert resultado.situacao is Situacao.SUCESSO
+        assert resultado.aviso is None
+        assert fallback.chamadas == 0
+        assert "revisao_manual" not in resultado.pdf_destino.parts
+
+    def test_aviso_local_aciona_fallback_que_resolve(
+        self, pdf_de_teste: Path, metadados: Metadados, tmp_path: Path
+    ):
+        renomeado = pdf_de_teste.with_name("HISTORIA-DA-FILOSOFIA-ANTIGA.pdf")
+        pdf_de_teste.rename(renomeado)
+        metadados_divergente = _meta(
+            "Receita de Bolo de Cenoura", autor_principal="Chef Anônimo"
+        )
+        # `metadados` (fixture) tem título "Em Busca de Sentido" — não bate
+        # com o nome do arquivo, mas serve só pra confirmar que o resultado
+        # final é o do FALLBACK, não o local; o que importa aqui é que o
+        # fallback devolva algo consistente com o próprio nome do arquivo.
+        metadados_ok = _meta(
+            "Historia da Filosofia Antiga", autor_principal="Bertrand Russell"
+        )
+        local = ExtratorFalso(metadados_divergente)
+        fallback = ExtratorFalso(metadados_ok)
+        pipeline = Pipeline(
+            Config(verificar_online=False),
+            OpcoesDoPipeline(destino=tmp_path / "biblioteca"),
+            extrator=local,
+            extrator_fallback=fallback,
+        )
+
+        resultado = pipeline.processar_arquivo(renomeado)
+
+        assert fallback.chamadas == 1
+        assert resultado.aviso is None
+        assert resultado.metadados.titulo == "Historia da Filosofia Antiga"
+        assert "revisao_manual" not in resultado.pdf_destino.parts
+
+    def test_aviso_persiste_apos_fallback_vai_para_revisao_manual(
+        self, pdf_de_teste: Path, tmp_path: Path
+    ):
+        renomeado = pdf_de_teste.with_name("HISTORIA-DA-FILOSOFIA-ANTIGA.pdf")
+        pdf_de_teste.rename(renomeado)
+        metadados_local = _meta("Receita de Bolo de Cenoura", autor_principal="Chef Anônimo")
+        metadados_fallback = _meta("Outra Obra Qualquer", autor_principal="Outro Autor")
+
+        pipeline = Pipeline(
+            Config(verificar_online=False),
+            OpcoesDoPipeline(destino=tmp_path / "biblioteca"),
+            extrator=ExtratorFalso(metadados_local),
+            extrator_fallback=ExtratorFalso(metadados_fallback),
+        )
+
+        resultado = pipeline.processar_arquivo(renomeado)
+
+        # O resultado final é o do fallback (não o local), mesmo que ainda
+        # tenha aviso — é a "melhor tentativa" disponível.
+        assert resultado.metadados.titulo == "Outra Obra Qualquer"
+        assert resultado.aviso is not None
+        assert "revisao_manual" in resultado.pdf_destino.parts
+
+    def test_fallback_falha_mantem_resultado_local_com_aviso(
+        self, pdf_de_teste: Path, tmp_path: Path
+    ):
+        renomeado = pdf_de_teste.with_name("HISTORIA-DA-FILOSOFIA-ANTIGA.pdf")
+        pdf_de_teste.rename(renomeado)
+        metadados_local = _meta("Receita de Bolo de Cenoura", autor_principal="Chef Anônimo")
+
+        pipeline = Pipeline(
+            Config(verificar_online=False),
+            OpcoesDoPipeline(destino=tmp_path / "biblioteca"),
+            extrator=ExtratorFalso(metadados_local),
+            extrator_fallback=ExtratorFalso(erro=ErroDeExtracao("fallback fora do ar")),
+        )
+
+        resultado = pipeline.processar_arquivo(renomeado)
+
+        assert resultado.situacao is Situacao.SUCESSO  # não vira falha do arquivo
+        assert resultado.metadados.titulo == "Receita de Bolo de Cenoura"
+        assert resultado.aviso is not None
+        assert "revisao_manual" in resultado.pdf_destino.parts
+
+    def test_falha_local_aciona_fallback_e_recupera_o_arquivo(
+        self, pdf_de_teste: Path, metadados: Metadados, tmp_path: Path
+    ):
+        pipeline = Pipeline(
+            Config(verificar_online=False),
+            OpcoesDoPipeline(destino=tmp_path / "biblioteca"),
+            extrator=ExtratorFalso(erro=ErroDeExtracao("cota excedida")),
+            extrator_fallback=ExtratorFalso(metadados),
+        )
+
+        resultado = pipeline.processar_arquivo(pdf_de_teste)
+
+        assert resultado.situacao is Situacao.SUCESSO
+        assert resultado.metadados.titulo == "Em Busca de Sentido"
+
+    def test_falha_local_e_fallback_reporta_os_dois_erros(
+        self, pdf_de_teste: Path, tmp_path: Path
+    ):
+        pipeline = Pipeline(
+            Config(verificar_online=False),
+            OpcoesDoPipeline(destino=tmp_path / "biblioteca"),
+            extrator=ExtratorFalso(erro=ErroDeExtracao("cota excedida")),
+            extrator_fallback=ExtratorFalso(erro=ErroDeExtracao("chave inválida")),
+        )
+
+        resultado = pipeline.processar_arquivo(pdf_de_teste)
+
+        assert resultado.situacao is Situacao.FALHA
+        assert "cota excedida" in resultado.erro
+        assert "chave inválida" in resultado.erro
+
+    def test_erro_fatal_local_nao_aciona_fallback(self, pdf_de_teste: Path, tmp_path: Path):
+        fallback = ExtratorFalso(erro=ErroFatalDeAPI("nunca deveria ser chamado"))
+        pipeline = Pipeline(
+            Config(verificar_online=False),
+            OpcoesDoPipeline(destino=tmp_path / "biblioteca"),
+            extrator=ExtratorFalso(erro=ErroFatalDeAPI("Ollama fora do ar")),
+            extrator_fallback=fallback,
+        )
+
+        with pytest.raises(ErroFatalDeAPI, match="Ollama fora do ar"):
+            pipeline.processar_arquivo(pdf_de_teste)
+
+        assert fallback.chamadas == 0
+
+
 class TestVerificacaoOnlineNoPipeline:
     """Testa só a integração (chamar ou não, e como o aviso se combina) —
     a lógica de comparação em si já é testada em test_verificacao.py."""

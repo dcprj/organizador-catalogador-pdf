@@ -15,7 +15,7 @@ from .converter import DocumentoConvertido, ErroDeConversao, converter_pdf
 from .extractor import ErroDeExtracao, ErroFatalDeAPI
 from .models import Metadados
 from .organizer import ErroDeOrganizacao, gerar_markdown, organizar
-from .provedores import criar_extrator
+from .provedores import criar_extrator, criar_extrator_fallback
 from .verificacao import verificar_identificadores
 
 logger = logging.getLogger(__name__)
@@ -85,10 +85,12 @@ class Pipeline:
         config: Config,
         opcoes: OpcoesDoPipeline,
         extrator: Optional[Any] = None,
+        extrator_fallback: Optional[Any] = None,
     ) -> None:
         self.config = config
         self.opcoes = opcoes
         self.extrator = extrator or criar_extrator(config)
+        self.extrator_fallback = extrator_fallback or criar_extrator_fallback(config)
 
     def processar_arquivo(self, caminho: Path) -> ResultadoDoArquivo:
         """Processa um PDF, devolvendo o erro no resultado em vez de propagá-lo.
@@ -106,9 +108,7 @@ class Pipeline:
             )
 
             etapa = "extração de metadados"
-            metadados = self.extrator.extrair(documento)
-
-            aviso = _titulo_diverge_do_arquivo(caminho.name, metadados)
+            metadados, aviso = self._extrair(documento, caminho.name)
 
             if self.config.verificar_online:
                 aviso_online = verificar_identificadores(metadados)
@@ -130,6 +130,7 @@ class Pipeline:
                 subpasta_markdown=self.opcoes.subpasta_markdown,
                 mover=self.opcoes.mover,
                 dry_run=self.opcoes.dry_run,
+                revisao_manual=bool(aviso),
             )
 
             return ResultadoDoArquivo(
@@ -163,6 +164,47 @@ class Pipeline:
             if ao_concluir:
                 ao_concluir(resultado)
         return resultados
+
+    def _extrair(
+        self, documento: DocumentoConvertido, nome_arquivo: str
+    ) -> tuple[Metadados, Optional[str]]:
+        """Extrai os metadados, acionando o fallback pago quando configurado
+        e quando o resultado local falha ou sai com aviso de divergência.
+
+        Sem `extrator_fallback`, o comportamento é idêntico a antes: sucesso
+        (com ou sem aviso) devolve o resultado local, falha propaga
+        `ErroDeExtracao` para o chamador tratar como falha do arquivo.
+        """
+        try:
+            metadados = self.extrator.extrair(documento)
+        except ErroDeExtracao as exc:
+            if self.extrator_fallback is None:
+                raise
+            logger.info(
+                "[%s] extração local falhou (%s); tentando provedor de fallback.",
+                nome_arquivo, exc,
+            )
+            try:
+                metadados = self.extrator_fallback.extrair(documento)
+            except ErroDeExtracao as exc_fallback:
+                raise ErroDeExtracao(f"local: {exc}; fallback: {exc_fallback}") from exc_fallback
+            return metadados, _titulo_diverge_do_arquivo(nome_arquivo, metadados)
+
+        aviso = _titulo_diverge_do_arquivo(nome_arquivo, metadados)
+        if aviso is None or self.extrator_fallback is None:
+            return metadados, aviso
+
+        logger.info("[%s] %s — tentando provedor de fallback.", nome_arquivo, aviso)
+        try:
+            metadados_fallback = self.extrator_fallback.extrair(documento)
+        except ErroDeExtracao as exc:
+            logger.warning(
+                "[%s] fallback também falhou (%s); mantendo resultado local (com aviso).",
+                nome_arquivo, exc,
+            )
+            return metadados, aviso
+
+        return metadados_fallback, _titulo_diverge_do_arquivo(nome_arquivo, metadados_fallback)
 
     def _montar_markdown(
         self, metadados: Metadados, documento: DocumentoConvertido

@@ -26,6 +26,8 @@ def ambiente_limpo(monkeypatch, tmp_path):
         "ORGPDF_DEEPSEEK_API_KEY",
         "ORGPDF_GEMINI_API_KEY",
         "ORGPDF_GROK_API_KEY",
+        "ORGPDF_PROVEDOR_FALLBACK",
+        "ORGPDF_MODELO_FALLBACK",
     ):
         monkeypatch.delenv(variavel, raising=False)
     # Impede que um .env do repositório vaze para dentro dos testes.
@@ -149,4 +151,74 @@ class TestProvedor:
         monkeypatch.setenv("ORGPDF_ANTHROPIC_API_KEY", "sk-sobrando")
         config = Config.do_ambiente()
         assert config.provedor is Provedor.OLLAMA
+        assert config.api_key is None
+
+
+class TestProvedorFallback:
+    def test_desligado_por_padrao(self):
+        config = Config.do_ambiente()
+        assert config.provedor_fallback is None
+        assert config.modelo_fallback is None
+        assert config.api_key_fallback is None
+
+    def test_ligado_via_cli_exige_modelo_e_api_key(self):
+        config = Config.do_ambiente(
+            provedor_fallback="anthropic",
+            modelo_fallback="claude-sonnet-5",
+            api_key_fallback="sk-ant-fallback",
+        )
+        assert config.provedor_fallback is Provedor.ANTHROPIC
+        assert config.modelo_fallback == "claude-sonnet-5"
+        assert config.api_key_fallback == "sk-ant-fallback"
+
+    def test_ligado_via_ambiente(self, monkeypatch):
+        monkeypatch.setenv("ORGPDF_PROVEDOR_FALLBACK", "openai")
+        config = Config.do_ambiente(modelo_fallback="gpt-5-mini", api_key_fallback="sk-teste")
+        assert config.provedor_fallback is Provedor.OPENAI
+
+    def test_sem_modelo_explicito_gera_erro(self):
+        with pytest.raises(ErroDeConfiguracao, match="modelo explícito"):
+            Config.do_ambiente(provedor_fallback="anthropic", api_key_fallback="sk-teste")
+
+    def test_sem_api_key_gera_erro(self):
+        with pytest.raises(ErroDeConfiguracao, match="chave de API"):
+            Config.do_ambiente(provedor_fallback="anthropic", modelo_fallback="claude-sonnet-5")
+
+    def test_api_key_reaproveita_variavel_especifica_do_provedor(self, monkeypatch):
+        # Mesma variável ORGPDF_<PROVEDOR>_API_KEY usada pelo provedor
+        # principal — evita duplicar configuração para quem usa o mesmo
+        # provedor pago nos dois papéis.
+        monkeypatch.setenv("ORGPDF_ANTHROPIC_API_KEY", "sk-ant-especifica")
+        config = Config.do_ambiente(
+            provedor_fallback="anthropic", modelo_fallback="claude-sonnet-5"
+        )
+        assert config.api_key_fallback == "sk-ant-especifica"
+
+    def test_provedor_invalido_gera_erro(self):
+        with pytest.raises(ErroDeConfiguracao, match="não reconhecido"):
+            Config.do_ambiente(provedor_fallback="chatgpt-3.5-turbo-plus")
+
+    def test_modelo_via_variavel_propria_nao_vaza_do_principal(self, monkeypatch):
+        # Bug real: a resolução do modelo de fallback chegou a reaproveitar
+        # ORGPDF_MODELO (do provedor *principal*) por engano — um modelo
+        # Ollama vazando para um provedor pago incompatível.
+        monkeypatch.setenv("ORGPDF_MODELO", "qwen2.5:3b-instruct")
+        monkeypatch.setenv("ORGPDF_MODELO_FALLBACK", "claude-sonnet-5")
+        config = Config.do_ambiente(provedor_fallback="anthropic", api_key_fallback="sk-teste")
+        assert config.modelo_fallback == "claude-sonnet-5"
+        assert config.modelo == "qwen2.5:3b-instruct"
+
+    def test_modelo_fallback_nao_cai_para_variavel_do_principal(self, monkeypatch):
+        monkeypatch.setenv("ORGPDF_MODELO", "qwen2.5:3b-instruct")
+        with pytest.raises(ErroDeConfiguracao, match="modelo explícito"):
+            Config.do_ambiente(provedor_fallback="anthropic", api_key_fallback="sk-teste")
+
+    def test_nao_interfere_no_provedor_principal(self):
+        config = Config.do_ambiente(
+            provedor_fallback="anthropic",
+            modelo_fallback="claude-sonnet-5",
+            api_key_fallback="sk-ant-fallback",
+        )
+        assert config.provedor is Provedor.OLLAMA
+        assert config.modelo == MODELO_PADRAO
         assert config.api_key is None

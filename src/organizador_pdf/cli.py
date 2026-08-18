@@ -122,6 +122,26 @@ def processar(
             "e na lista de processos."
         ),
     ),
+    provedor_fallback: Optional[Provedor] = typer.Option(
+        None,
+        "--provedor-fallback",
+        help=(
+            "Provedor pago acionado só quando a extração do --provedor principal "
+            "falhar ou sair com aviso de divergência. Desligado por padrão — "
+            "nenhuma chamada extra é feita sem isto. Exige --modelo-fallback e "
+            "uma chave de API (mesmas variáveis ORGPDF_<PROVEDOR>_API_KEY)."
+        ),
+    ),
+    modelo_fallback: Optional[str] = typer.Option(
+        None,
+        "--modelo-fallback",
+        help="Modelo do provedor de fallback. Obrigatório se --provedor-fallback for usado.",
+    ),
+    api_key_fallback: Optional[str] = typer.Option(
+        None,
+        "--apikey-fallback",
+        help="Chave de API do provedor de fallback (mesmas ressalvas de --apikey).",
+    ),
     limite: Optional[int] = typer.Option(
         None,
         "--limite",
@@ -154,6 +174,9 @@ def processar(
             ollama_url=ollama_url,
             provedor=provedor.value if provedor else None,
             api_key=api_key,
+            provedor_fallback=provedor_fallback.value if provedor_fallback else None,
+            modelo_fallback=modelo_fallback,
+            api_key_fallback=api_key_fallback,
         )
     except ErroDeConfiguracao as exc:
         saida.print(f"[bold red]Erro de configuração:[/] {exc}")
@@ -245,6 +268,14 @@ def _cabecalho(
         f"[bold]Destino:[/] {destino.resolve()}",
         f"[bold]PDFs:[/]    {len(pdfs)}",
         linha_modelo,
+    ]
+    if config.provedor_fallback is not None:
+        linhas.append(
+            f"[bold]Fallback:[/] {config.modelo_fallback}  "
+            f"[dim](provedor pago: {config.provedor_fallback.value}, só se houver "
+            "falha/aviso)[/]"
+        )
+    linhas += [
         f"[bold]Análise:[/] {config.max_paginas} primeiras páginas "
         f"(até {config.max_caracteres} caracteres)",
         f"[bold]Modo:[/]    " + ("mover" if mover else "copiar"),

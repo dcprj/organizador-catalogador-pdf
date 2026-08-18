@@ -116,22 +116,35 @@ def montar_nome_arquivo(metadados: Metadados) -> str:
     return nome
 
 
+#: Subpasta onde entram os arquivos que saíram da extração com algum aviso
+#: (divergência de nome de arquivo, identificador não confirmado pela
+#: verificação online, ou fallback pago que também ficou incerto) — em vez
+#: de ficarem espalhados na árvore normal só marcados por um "!" na tabela do
+#: terminal, ficam fisicamente separados para facilitar a revisão manual.
+PASTA_REVISAO_MANUAL = "revisao_manual"
+
+
 def montar_diretorio(
     destino: Path,
     metadados: Metadados,
     *,
     subpasta_markdown: Optional[str] = None,
+    revisao_manual: bool = False,
 ) -> tuple[Path, Path]:
     """Devolve (diretório do PDF, diretório do Markdown).
 
-    A estrutura é `<DESTINO>/<AREA>/<SUBAREA>/<PLURAL_DO_TIPO>/`. Quando
-    `subpasta_markdown` é informado, o `.md` vai para uma subpasta espelho.
+    A estrutura é `<DESTINO>/<AREA>/<SUBAREA>/<PLURAL_DO_TIPO>/`, ou
+    `<DESTINO>/revisao_manual/<AREA>/<SUBAREA>/<PLURAL_DO_TIPO>/` quando
+    `revisao_manual=True` — mesma categorização, só isolada num ponto único
+    para não se perder entre os arquivos sem aviso. Quando `subpasta_markdown`
+    é informado, o `.md` vai para uma subpasta espelho.
     """
+    raiz = destino / PASTA_REVISAO_MANUAL if revisao_manual else destino
     area = sanitizar(metadados.area_principal) or SEM_VALOR
     subarea = sanitizar(metadados.subarea) or area
     tipo = sanitizar(metadados.plural_do_tipo) or "Outros"
 
-    diretorio_pdf = destino / area / subarea / tipo
+    diretorio_pdf = raiz / area / subarea / tipo
     diretorio_md = diretorio_pdf
     if subpasta_markdown:
         diretorio_md = diretorio_pdf / (sanitizar(subpasta_markdown) or "Markdown")
@@ -210,10 +223,14 @@ def organizar(
     subpasta_markdown: Optional[str] = None,
     mover: bool = False,
     dry_run: bool = False,
+    revisao_manual: bool = False,
 ) -> ResultadoDaOrganizacao:
     """Grava o PDF renomeado e o Markdown no destino (ou apenas planeja)."""
     diretorio_pdf, diretorio_md = montar_diretorio(
-        destino, metadados, subpasta_markdown=subpasta_markdown
+        destino,
+        metadados,
+        subpasta_markdown=subpasta_markdown,
+        revisao_manual=revisao_manual,
     )
     nome = montar_nome_arquivo(metadados)
     destino_pdf = diretorio_pdf / f"{nome}.pdf"

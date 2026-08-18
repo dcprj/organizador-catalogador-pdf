@@ -178,6 +178,8 @@ quiser mudar algo:
 | `ORGPDF_VERIFICAR_ONLINE` | `true`                     | Verifica ISBN/DOI extraído contra Crossref/Open Library (veja abaixo) |
 | `ORGPDF_PROVEDOR`        | `ollama`                    | Provedor do LLM — veja [Provedores pagos (opcional)](#provedores-pagos-opcional) |
 | `ORGPDF_API_KEY` / `ORGPDF_<PROVEDOR>_API_KEY` | —      | Chave de API do provedor pago escolhido  |
+| `ORGPDF_PROVEDOR_FALLBACK` | —                         | Provedor pago acionado só se o principal falhar/tiver aviso |
+| `ORGPDF_MODELO_FALLBACK` | —                            | Modelo do provedor de fallback (obrigatório se usar o de cima) |
 
 ## Uso
 
@@ -219,6 +221,9 @@ Também funciona como módulo: `python -m organizador_pdf -i ... -o ...`.
 | `--ollama-url`            | `http://localhost:11434`  | Endereço do servidor Ollama                            |
 | `--provedor` / `-p`       | `ollama`                 | `ollama`, `anthropic`, `openai`, `deepseek`, `gemini` ou `grok` |
 | `--apikey` / `-k`         | —                         | Chave de API do provedor pago (ignorada com `--provedor ollama`) |
+| `--provedor-fallback`     | —                         | Provedor pago acionado só se o principal falhar/tiver aviso |
+| `--modelo-fallback`       | —                         | Modelo do provedor de fallback (obrigatório se usar o de cima) |
+| `--apikey-fallback`       | —                         | Chave de API do provedor de fallback                   |
 | `--limite` / `-n`         | —                         | Processa no máximo N arquivos                          |
 | `--log`                   | `erros.log`               | Arquivo de registro de erros                           |
 | `--env`                   | `./.env`                  | Caminho de um `.env` alternativo                       |
@@ -260,6 +265,31 @@ ORGPDF_MODELO=claude-sonnet-5
 ORGPDF_ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+### Fallback: pago só quando o local falhar ou ficar incerto
+
+Em vez de trocar o Ollama por um provedor pago de vez, dá para manter o
+Ollama como principal e só acionar um pago quando o resultado local sair com
+aviso (ou falhar) — assim o custo fica restrito aos casos realmente
+incertos:
+
+```bash
+organizador-pdf -i ~/pdfs -o ~/Biblioteca \
+  --provedor-fallback anthropic --modelo-fallback claude-sonnet-5 --apikey-fallback sk-ant-...
+```
+
+Ou no `.env` (reaproveita a mesma `ORGPDF_ANTHROPIC_API_KEY` já usada pelo
+provedor principal, se for o caso):
+
+```bash
+ORGPDF_PROVEDOR_FALLBACK=anthropic
+ORGPDF_MODELO_FALLBACK=claude-sonnet-5
+```
+
+O fallback funciona com qualquer combinação de provedor principal/fallback
+(inclusive dois pagos diferentes) e usa exatamente as mesmas proteções contra
+alucinação do resultado local — ver "Fallback para um provedor pago" em
+[Limitações conhecidas](#limitações-conhecidas) para o comportamento exato.
+
 **Como funciona por baixo dos panos:** a Anthropic usa o SDK oficial
 (`anthropic`), com saída estruturada validada contra o mesmo esquema Pydantic
 usado no Ollama. Os outros quatro (OpenAI, DeepSeek, Gemini e Grok) passam
@@ -278,10 +308,10 @@ modelo desses provedores funciona sem precisar de código novo, só trocando
   do formato esperado e transforma em um erro claro para aquele arquivo — o
   lote continua, mas fica pior taxa de sucesso em provedores com suporte mais
   fraco.
-- As duas proteções contra alucinação (aviso de divergência de nome de
-  arquivo e descarte de identificador não confirmado) valem para **qualquer**
-  provedor, pago ou não — um modelo pago também pode alucinar, e revisar os
-  itens marcados com `!` continua necessário.
+- As proteções contra alucinação (aviso de divergência de nome de arquivo,
+  descarte de identificador não confirmado, verificação online) valem para
+  **qualquer** provedor, pago ou não — um modelo pago também pode alucinar, e
+  revisar o que cai em `revisao_manual/` continua necessário.
 - **Nunca** passe `--apikey` em máquina compartilhada ou script versionado —
   a chave fica visível no histórico do shell e na lista de processos (`ps`).
   Prefira `ORGPDF_<PROVEDOR>_API_KEY` no `.env` (que já está no `.gitignore`).
@@ -304,8 +334,10 @@ Para cada PDF, na ordem:
 3. **Geração do Markdown** (`organizer.py`) — YAML frontmatter + referência ABNT
    + conteúdo integral.
 4. **Organização** (`organizer.py`) — cria
-   `<DESTINO>/<ÁREA>/<SUBÁREA>/<TIPO NO PLURAL>/`, sanitiza o nome do arquivo e
-   grava o par PDF + Markdown.
+   `<DESTINO>/<ÁREA>/<SUBÁREA>/<TIPO NO PLURAL>/` (ou
+   `<DESTINO>/revisao_manual/<ÁREA>/<SUBÁREA>/<TIPO NO PLURAL>/` quando há
+   aviso — veja [Limitações conhecidas](#limitações-conhecidas)), sanitiza o
+   nome do arquivo e grava o par PDF + Markdown.
 
 ### Tratamento de erros
 
@@ -345,8 +377,7 @@ para reduzir o dano quando isso acontece:
 
 - **Aviso de divergência**: compara o título/autor extraído com o nome do
   arquivo original. Se não houver nenhuma palavra significativa em comum, o
-  resultado é marcado com `!` na tabela final e listado em "Possíveis
-  divergências" — não bloqueia o processamento, só sinaliza para revisão manual.
+  resultado sai marcado com aviso.
 - **Identificadores não confirmados**: ISBN, ISSN e DOI só são aceitos se
   aparecerem literalmente no trecho do PDF analisado. Um valor que o modelo
   "lembrou" por conta própria (em vez de ler do documento) é descartado — do
@@ -364,17 +395,31 @@ padrão) e é a **única exceção ao funcionamento 100% offline**:
   APIs fora do ar, a checagem é ignorada em silêncio; para desativar de
   vez, defina `ORGPDF_VERIFICAR_ONLINE=false` no `.env`.
 
-**Sempre revise manualmente os itens marcados com `!`** antes de confiar nos
-dados para citar um trabalho. Nenhuma das três proteções garante que o
-restante dos metadados (título, autor, editora) esteja correto quando não há
-aviso — elas reduzem o risco, não o eliminam.
+Uma quarta é opcional e paga (`--provedor-fallback`, veja [Provedores pagos
+(opcional)](#provedores-pagos-opcional)):
+
+- **Fallback para um provedor pago**: quando o resultado local sai com
+  qualquer um dos avisos acima (ou quando a extração falha), o app tenta de
+  novo com o provedor de fallback configurado antes de desistir. Se o
+  segundo resultado vier sem aviso, ele substitui o local; se ainda vier com
+  aviso, o do fallback é o que fica (é a melhor tentativa disponível), e se o
+  fallback falhar o resultado local original é mantido. Desligado por
+  padrão — sem `--provedor-fallback`, nenhuma chamada extra é feita.
+
+**Qualquer arquivo que saia com aviso — de qualquer uma das quatro
+proteções, mesmo depois do fallback — é gravado em `<destino>/revisao_manual/`
+em vez da árvore normal**, mantendo a mesma organização por área/subárea/tipo
+só que isolada num ponto único, fácil de revisar (ou mover manualmente para
+o lugar certo depois de conferir). Nenhuma das quatro proteções garante que
+o restante dos metadados (título, autor, editora) esteja correto quando não
+há aviso — elas reduzem o risco, não o eliminam.
 
 ---
 
 ## Desenvolvimento
 
 ```bash
-pytest              # 131 testes, sem chamadas de rede
+pytest              # 155 testes, sem chamadas de rede
 ```
 
 Estrutura do projeto:

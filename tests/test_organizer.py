@@ -107,6 +107,17 @@ class TestMontarDiretorio:
         pdf, _ = montar_diretorio(tmp_path, metadados)
         assert pdf == tmp_path / "Psicologia" / "Psicologia" / "Livros"
 
+    def test_revisao_manual_aninha_a_mesma_estrutura_numa_subpasta(
+        self, metadados: Metadados, tmp_path: Path
+    ):
+        pdf, md = montar_diretorio(tmp_path, metadados, revisao_manual=True)
+        assert pdf == tmp_path / "revisao_manual" / "Psicologia" / "Logoterapia" / "Livros"
+        assert md == pdf
+
+    def test_sem_revisao_manual_nao_aninha(self, metadados: Metadados, tmp_path: Path):
+        pdf, _ = montar_diretorio(tmp_path, metadados, revisao_manual=False)
+        assert "revisao_manual" not in pdf.parts
+
 
 class TestGerarMarkdown:
     def test_frontmatter_valido_e_secoes(self, metadados: Metadados):
@@ -184,6 +195,24 @@ class TestOrganizar:
         assert resultado.pdf_destino.stem == resultado.markdown_destino.stem
         assert resultado.pdf_destino.parent == (
             destino / "Psicologia" / "Logoterapia" / "Livros"
+        )
+
+    def test_revisao_manual_grava_na_subpasta(self, metadados: Metadados, tmp_path: Path):
+        origem = tmp_path / "entrada.pdf"
+        origem.write_bytes(b"%PDF-1.4 fake")
+        destino = tmp_path / "saida"
+
+        resultado = organizar(
+            metadados,
+            pdf_origem=origem,
+            destino=destino,
+            markdown="# md",
+            revisao_manual=True,
+        )
+
+        assert resultado.pdf_destino.exists()
+        assert resultado.pdf_destino.parent == (
+            destino / "revisao_manual" / "Psicologia" / "Logoterapia" / "Livros"
         )
 
     def test_mover_remove_a_origem(self, metadados: Metadados, tmp_path: Path):
