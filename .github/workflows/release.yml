@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            asset: organizador-pdf-macos
+          - os: ubuntu-latest
+            asset: organizador-pdf-linux
+          - os: windows-latest
+            asset: organizador-pdf-windows.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[build]"
+      - run: pyinstaller packaging/organizador-pdf.spec
+
+      - name: Renomear binário (Unix)
+        if: runner.os != 'Windows'
+        run: mv dist/organizador-pdf dist/${{ matrix.asset }}
+      - name: Renomear binário (Windows)
+        if: runner.os == 'Windows'
+        run: Rename-Item dist/organizador-pdf.exe dist/${{ matrix.asset }}
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.asset }}

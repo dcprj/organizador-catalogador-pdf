@@ -24,6 +24,28 @@ ABNT (NBR 6023) em destaque e o texto integral convertido do PDF.
 
 ## Instalação
 
+### Opção 1 — Binário standalone (não precisa de Python)
+
+Baixe o executável já pronto para o seu sistema na [página de
+Releases](https://github.com/dcprj/organizador-catalogador-pdf/releases) —
+`organizador-pdf-macos`, `organizador-pdf-linux` ou
+`organizador-pdf-windows.exe`. Dê permissão de execução (macOS/Linux) e rode
+direto:
+
+```bash
+chmod +x organizador-pdf-macos
+./organizador-pdf-macos --help
+```
+
+No macOS, o Gatekeeper pode bloquear o primeiro clique duplo por não ser um
+binário assinado/notarizado — rode `xattr -d com.apple.quarantine
+organizador-pdf-macos` uma vez, ou clique com botão direito → Abrir. O
+binário de macOS é gerado só para Apple Silicon (arm64); Macs Intel precisam
+da instalação via Python abaixo. Esse binário embute só a CLI em si — o
+[Ollama](#configurando-o-ollama) continua sendo instalado à parte.
+
+### Opção 2 — Via Python
+
 Requer **Python 3.10 ou superior** (macOS, Linux e Windows).
 
 ```bash
@@ -234,3 +256,28 @@ src/organizador_pdf/
 
 Os testes usam PDFs gerados em tempo de execução e um dublê HTTP do Ollama —
 nenhum teste depende de rede nem do Ollama estar rodando.
+
+### Gerando o binário standalone
+
+```bash
+pip install -e ".[build]"
+pyinstaller packaging/organizador-pdf.spec
+./dist/organizador-pdf --version
+```
+
+`packaging/entrypoint.py` existe só para isso: o bootloader do PyInstaller
+executa o script como `__main__` solto, sem contexto de pacote, então o
+import precisa ser absoluto (`from organizador_pdf.cli import main`) em vez
+do relativo usado em `__main__.py` (que é para `python -m organizador_pdf`).
+
+### Publicando um release
+
+Empurrar uma tag `v*` dispara `.github/workflows/release.yml`: roda a
+suíte de testes e, se passar, builda o binário em macOS (arm64), Linux e
+Windows em paralelo e anexa os três à Release criada automaticamente para a
+tag.
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```

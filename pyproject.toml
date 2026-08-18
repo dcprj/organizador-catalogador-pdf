@@ -25,6 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+build = ["pyinstaller>=6.0"]
 
 [project.scripts]
 organizador-pdf = "organizador_pdf.cli:main"
