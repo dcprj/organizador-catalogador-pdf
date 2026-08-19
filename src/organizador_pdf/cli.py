@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 from rich.console import Console
@@ -179,6 +181,18 @@ def processar(
         min=1,
         help="Processa no máximo N arquivos (útil para testar o custo do lote).",
     ),
+    paralelo: int = typer.Option(
+        1,
+        "--paralelo",
+        "-j",
+        min=1,
+        help=(
+            "Quantos arquivos processar em paralelo (threads). Padrão: 1 "
+            "(sequencial, como sempre foi). Só compensa com provedor pago "
+            "remoto — o Ollama local não ganha nada rodando em paralelo, "
+            "pode até piorar por disputa de CPU/RAM."
+        ),
+    ),
     arquivo_log: Path = typer.Option(
         Path("erros.log"),
         "--log",
@@ -288,7 +302,7 @@ def processar(
             estado.parametros = parametros_atuais
         estado.salvar()
 
-    _cabecalho(config, origem, destino, pdfs, dry_run=dry_run, mover=mover)
+    _cabecalho(config, origem, destino, pdfs, dry_run=dry_run, mover=mover, paralelo=paralelo)
 
     opcoes = OpcoesDoPipeline(
         destino=destino,
@@ -312,24 +326,41 @@ def processar(
         transient=True,
     ) as progresso:
         tarefa = progresso.add_task("Processando PDFs", total=len(pdfs))
-        for pdf in pdfs:
-            progresso.update(tarefa, description=f"Processando {pdf.name[:45]}")
-            try:
-                resultados.append(pipeline.processar_arquivo(pdf))
-            except ErroFatalDeAPI as exc:
-                # Vale para todos os arquivos; insistir só gastaria tempo.
-                interrompido = str(exc)
-                logger.error("Lote interrompido: %s", exc)
-                break
-            except KeyboardInterrupt:
-                interrompido = "interrompido pelo usuário"
-                break
-            if rastrear_estado:
-                # Sucesso e falha definitiva contam como concluído — só o
-                # arquivo em andamento no momento de uma interrupção fica de
-                # fora, para ser retomado depois com --resume.
-                estado.marcar_concluido(pdf)
-            progresso.advance(tarefa)
+
+        if paralelo <= 1:
+            for pdf in pdfs:
+                progresso.update(tarefa, description=f"Processando {pdf.name[:45]}")
+                try:
+                    resultados.append(pipeline.processar_arquivo(pdf))
+                except ErroFatalDeAPI as exc:
+                    # Vale para todos os arquivos; insistir só gastaria tempo.
+                    interrompido = str(exc)
+                    logger.error("Lote interrompido: %s", exc)
+                    break
+                except KeyboardInterrupt:
+                    interrompido = "interrompido pelo usuário"
+                    break
+                if rastrear_estado:
+                    # Sucesso e falha definitiva contam como concluído — só o
+                    # arquivo em andamento no momento de uma interrupção fica
+                    # de fora, para ser retomado depois com --resume.
+                    estado.marcar_concluido(pdf)
+                progresso.advance(tarefa)
+        else:
+            progresso.update(
+                tarefa, description=f"Processando (até {paralelo} em paralelo)"
+            )
+            resultados_por_pdf, interrompido = _processar_em_paralelo(
+                pipeline,
+                pdfs,
+                paralelo=paralelo,
+                progresso=progresso,
+                tarefa=tarefa,
+                estado=estado if rastrear_estado else None,
+            )
+            # Ordem de conclusão em paralelo não é a ordem original da lista
+            # — reordena pra o relatório final sair determinístico.
+            resultados = [resultados_por_pdf[pdf] for pdf in pdfs if pdf in resultados_por_pdf]
 
     if rastrear_estado and not interrompido:
         EstadoDeExecucao.limpar()
@@ -348,6 +379,72 @@ def processar(
     raise typer.Exit(code=1 if houve_falha else 0)
 
 
+def _processar_em_paralelo(
+    pipeline: Pipeline,
+    pdfs: list[Path],
+    *,
+    paralelo: int,
+    progresso: Progress,
+    tarefa: Any,  # rich.progress.TaskID
+    estado: Optional[EstadoDeExecucao],
+) -> tuple[dict[Path, ResultadoDoArquivo], Optional[str]]:
+    """Processa vários arquivos ao mesmo tempo, no máximo `paralelo` em voo.
+
+    Janela deslizante (não "manda tudo de uma vez"): cada conclusão libera
+    espaço pra puxar o próximo da fila. Isso importa pra `ErroFatalDeAPI` —
+    ao detectá-lo, para de puxar trabalho novo imediatamente, então no
+    máximo `paralelo - 1` chamadas extras (as que já estavam em voo)
+    terminam, não o lote inteiro.
+    """
+    resultados: dict[Path, ResultadoDoArquivo] = {}
+    interrompido: Optional[str] = None
+    lock_estado = threading.Lock()
+    lock_progresso = threading.Lock()
+    fila = list(pdfs)
+    em_andamento: dict[Any, Path] = {}
+
+    with ThreadPoolExecutor(max_workers=paralelo) as executor:
+
+        def submeter_proximo() -> None:
+            if fila:
+                pdf = fila.pop(0)
+                em_andamento[executor.submit(pipeline.processar_arquivo, pdf)] = pdf
+
+        for _ in range(min(paralelo, len(fila))):
+            submeter_proximo()
+
+        try:
+            while em_andamento:
+                concluidos = wait(list(em_andamento.keys()), return_when=FIRST_COMPLETED).done
+                for futuro in concluidos:
+                    pdf = em_andamento.pop(futuro)
+                    try:
+                        resultado = futuro.result()
+                    except ErroFatalDeAPI as exc:
+                        if interrompido is None:
+                            interrompido = str(exc)
+                            logger.error("Lote interrompido: %s", exc)
+                        continue
+                    resultados[pdf] = resultado
+                    if estado is not None:
+                        with lock_estado:
+                            estado.marcar_concluido(pdf)
+                    with lock_progresso:
+                        progresso.advance(tarefa)
+                    if interrompido is None:
+                        submeter_proximo()
+        except KeyboardInterrupt:
+            if interrompido is None:
+                interrompido = "interrompido pelo usuário"
+            # Não recolhe os futuros ainda em voo — não dá pra abortar uma
+            # requisição HTTP já em andamento. O `with` acima aguarda eles
+            # terminarem antes de sair, mas nenhum outro é iniciado; o que
+            # não chegar a ser coletado aqui fica de fora de `resultados` e
+            # `estado`, então --resume os retoma depois.
+
+    return resultados, interrompido
+
+
 def _cabecalho(
     config: Config,
     origem: Path,
@@ -356,6 +453,7 @@ def _cabecalho(
     *,
     dry_run: bool,
     mover: bool,
+    paralelo: int = 1,
 ) -> None:
     if config.provedor is Provedor.OLLAMA:
         linha_modelo = f"[bold]Modelo:[/]  {config.modelo}  [dim](Ollama em {config.ollama_url})[/]"
@@ -381,6 +479,8 @@ def _cabecalho(
         f"(até {config.max_caracteres} caracteres)",
         f"[bold]Modo:[/]    " + ("mover" if mover else "copiar"),
     ]
+    if paralelo > 1:
+        linhas.append(f"[bold]Paralelo:[/] até {paralelo} arquivo(s) simultâneos")
     if dry_run:
         linhas.append("[bold yellow]DRY-RUN — nenhum arquivo será gravado.[/]")
     saida.print(Panel("\n".join(linhas), title="Organizador de PDF", expand=False))

@@ -4,11 +4,33 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+#: Sinal de que a página tem ficha catalográfica/identificadores — usado pra
+#: achar essa página mesmo quando um prefácio/dedicatória longos a empurram
+#: pra fora da janela inicial padrão (`paginas_para_analise`).
+_PADRAO_FICHA_CATALOGRAFICA = re.compile(
+    r"isbn|issn|\bdoi\b|ficha catalogr[áa]fica|catalogac?[aã]o na publicac?[aã]o|"
+    r"dados internacionais de catalogac?[aã]o|cip[\s-]brasil",
+    re.IGNORECASE,
+)
+
+#: Até onde vale procurar a ficha catalográfica além da janela inicial — a
+#: busca é local e barata (texto simples do PyMuPDF, não a conversão
+#: estruturada do pymupdf4llm), mas ainda assim limitada pra não custar
+#: tempo demais em PDFs muito grandes.
+JANELA_BUSCA_FICHA = 25
+
+#: Fração mínima do orçamento de caracteres reservada pra ficha catalográfica
+#: encontrada além da janela inicial — sem isso, o truncamento final por
+#: `max_caracteres_analise` poderia cortar exatamente o trecho que essa busca
+#: existe pra resgatar, se a capa/prefácio já preenchem o teto sozinhos.
+_FRACAO_MINIMA_PARA_FICHA = 1 / 3
 
 
 class ErroDeConversao(RuntimeError):
@@ -71,7 +93,21 @@ def converter_pdf(
         markdown_completo = _para_markdown(documento, paginas=None)
 
         n = min(paginas_para_analise, total_paginas)
-        markdown_inicial = _para_markdown(documento, paginas=list(range(n)))
+        markdown_capa = _para_markdown(documento, paginas=list(range(n)))
+
+        pagina_ficha = _procurar_ficha_catalografica(
+            documento, a_partir_de=n, total_paginas=total_paginas
+        )
+        if pagina_ficha is None:
+            markdown_inicial = markdown_capa
+        else:
+            paginas_ficha = [pagina_ficha]
+            if pagina_ficha + 1 < total_paginas:
+                paginas_ficha.append(pagina_ficha + 1)
+            markdown_ficha = _para_markdown(documento, paginas=paginas_ficha)
+            markdown_inicial = _combinar_com_orcamento(
+                markdown_capa, markdown_ficha, max_caracteres_analise
+            )
     finally:
         documento.close()
 
@@ -88,6 +124,47 @@ def converter_pdf(
         markdown_inicial=markdown_inicial[:max_caracteres_analise],
         total_paginas=total_paginas,
         metadados_embutidos=metadados_embutidos,
+    )
+
+
+def _procurar_ficha_catalografica(
+    documento, *, a_partir_de: int, total_paginas: int
+) -> Optional[int]:
+    """Acha a 1ª página, além da janela inicial, com sinal de ficha
+    catalográfica (ISBN/ISSN/DOI/"ficha catalográfica"/etc.).
+
+    Cobre o caso de um prefácio, dedicatória ou sumário longos empurrarem
+    essa página pra fora das N primeiras páginas enviadas por padrão. Usa
+    texto simples do PyMuPDF (rápido, sem custo de LLM) — só decide *quais*
+    páginas valem a pena mandar pro modelo, não substitui a conversão.
+    """
+    limite = min(total_paginas, JANELA_BUSCA_FICHA)
+    for indice in range(a_partir_de, limite):
+        try:
+            texto = documento[indice].get_text("text")
+        except Exception:  # noqa: BLE001 - página ilegível não trava a busca
+            logger.debug("página %d ilegível ao procurar ficha catalográfica", indice)
+            continue
+        if _PADRAO_FICHA_CATALOGRAFICA.search(texto):
+            return indice
+    return None
+
+
+def _combinar_com_orcamento(texto_principal: str, texto_extra: str, teto: int) -> str:
+    """Junta capa + ficha catalográfica reservando espaço mínimo pra 2ª.
+
+    Sem isso, o truncamento final por `max_caracteres_analise` cortaria a
+    string pela frente — se a capa/prefácio sozinhos já preenchem o teto, a
+    ficha catalográfica encontrada mais adiante nunca chegaria a aparecer,
+    justamente o caso que essa busca existe pra resgatar.
+    """
+    if not texto_extra.strip():
+        return texto_principal[:teto]
+    orcamento_extra = min(len(texto_extra), max(int(teto * _FRACAO_MINIMA_PARA_FICHA), 1))
+    orcamento_principal = max(teto - orcamento_extra, 0)
+    return (
+        f"{texto_principal[:orcamento_principal].rstrip()}\n\n"
+        f"[...]\n\n{texto_extra[:orcamento_extra]}"
     )
 
 

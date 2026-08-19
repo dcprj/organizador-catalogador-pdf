@@ -423,10 +423,10 @@ class TestVerificacaoOnlineNoPipeline:
     ):
         chamou = False
 
-        def falso(*args, **kwargs):
+        def falso(metadados, *args, **kwargs):
             nonlocal chamou
             chamou = True
-            return None
+            return metadados, None
 
         monkeypatch.setattr("organizador_pdf.pipeline.verificar_identificadores", falso)
 
@@ -444,7 +444,10 @@ class TestVerificacaoOnlineNoPipeline:
     ):
         monkeypatch.setattr(
             "organizador_pdf.pipeline.verificar_identificadores",
-            lambda metadados: "o ISBN pertence a outra obra segundo a Open Library",
+            lambda metadados: (
+                metadados,
+                "o ISBN pertence a outra obra segundo a Open Library",
+            ),
         )
 
         pipeline = Pipeline(
@@ -462,7 +465,10 @@ class TestVerificacaoOnlineNoPipeline:
     ):
         monkeypatch.setattr(
             "organizador_pdf.pipeline.verificar_identificadores",
-            lambda metadados: "o DOI pertence a outra obra segundo o Crossref",
+            lambda metadados: (
+                metadados,
+                "o DOI pertence a outra obra segundo o Crossref",
+            ),
         )
 
         renomeado = pdf_de_teste.with_name("HISTORIA-DA-FILOSOFIA-ANTIGA.pdf")

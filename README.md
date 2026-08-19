@@ -207,6 +207,10 @@ organizador-pdf -i ~/pdfs -o ~/Biblioteca --modelo qwen2.5:7b-instruct
 # Lote caiu no meio (Ctrl+C, queda de energia, Ollama fora do ar)? Retoma de
 # onde parou, sem precisar repetir --origem/--destino/etc.
 organizador-pdf --resume
+
+# Lote grande com provedor pago remoto: processa 4 arquivos ao mesmo tempo
+# (só compensa com provedor remoto — Ollama local não ganha nada com isso)
+organizador-pdf -i ~/pdfs -o ~/Biblioteca --provedor anthropic --apikey sk-ant-... --paralelo 4
 ```
 
 Também funciona como módulo: `python -m organizador_pdf -i ... -o ...`.
@@ -232,6 +236,7 @@ Também funciona como módulo: `python -m organizador_pdf -i ... -o ...`.
 | `--max-paginas`           | `6`                       | Páginas iniciais do PDF enviadas ao modelo              |
 | `--max-caracteres`        | `15000`                   | Teto de caracteres do trecho enviado ao modelo          |
 | `--limite` / `-n`         | —                         | Processa no máximo N arquivos                          |
+| `--paralelo` / `-j`       | `1`                       | Arquivos processados ao mesmo tempo (threads) — só compensa com provedor pago remoto |
 | `--log`                   | `erros.log`               | Arquivo de registro de erros                           |
 | `--env`                   | `./.env`                  | Caminho de um `.env` alternativo                       |
 | `--verbose` / `-v`        | desligado                 | Log detalhado                                          |
@@ -364,7 +369,11 @@ Para cada PDF, na ordem:
    OCR**: um PDF digitalizado/escaneado (só imagem, sem camada de texto) falha
    com uma mensagem explícita — rode um serviço de OCR externo (ex.:
    [ocrmypdf](https://github.com/ocrmypdf/OCRmyPDF)) sobre o arquivo antes de
-   reprocessá-lo.
+   reprocessá-lo. Se um prefácio, dedicatória ou sumário longos empurrarem a
+   ficha catalográfica pra além das `--max-paginas` iniciais, uma busca leve
+   (texto simples, sem custo de LLM) por ISBN/ISSN/DOI/"ficha catalográfica"
+   nas páginas seguintes acha essa página e a inclui na análise, mesmo fora
+   da janela padrão.
 2. **Extração de metadados** (`extractor.py`/`provedores.py`) — apenas as
    **primeiras N páginas** vão para o LLM escolhido, que responde em JSON
    validado contra o esquema Pydantic (saída estruturada nativa do provedor,
@@ -375,7 +384,11 @@ Para cada PDF, na ordem:
    `<DESTINO>/<ÁREA>/<SUBÁREA>/<TIPO NO PLURAL>/` (ou
    `<DESTINO>/revisao_manual/<ÁREA>/<SUBÁREA>/<TIPO NO PLURAL>/` quando há
    aviso — veja [Limitações conhecidas](#limitações-conhecidas)), sanitiza o
-   nome do arquivo e grava o par PDF + Markdown.
+   nome do arquivo e grava o par PDF + Markdown. Se o caminho final (destino +
+   área + subárea + tipo + nome) ultrapassar um limite seguro para o Windows
+   (MAX_PATH), o nome é encurtado dinamicamente para caber — ou, se nem um
+   nome mínimo couber, falha com uma mensagem clara em vez de tentar gravar
+   um caminho que o Windows recusaria.
 
 ### Tratamento de erros
 
@@ -431,7 +444,10 @@ padrão) e é a **única exceção ao funcionamento 100% offline**:
   título/autor devolvido é comparado com o que foi extraído. Só o código já
   obtido é enviado, nunca o PDF ou o texto extraído. Sem internet ou com as
   APIs fora do ar, a checagem é ignorada em silêncio; para desativar de
-  vez, defina `ORGPDF_VERIFICAR_ONLINE=false` no `.env`.
+  vez, defina `ORGPDF_VERIFICAR_ONLINE=false` no `.env`. Quando os dados
+  batem (confirmando que é a mesma obra), `editora_ou_periodico`/`ano`/
+  `local` que o modelo deixou em branco são preenchidos com o que a API
+  devolveu — nunca sobrescrevendo um valor que já tinha sido extraído.
 
 Uma quarta é opcional e paga (`--provedor-fallback`, veja [Provedores pagos
 (opcional)](#provedores-pagos-opcional)):
@@ -457,7 +473,7 @@ há aviso — elas reduzem o risco, não o eliminam.
 ## Desenvolvimento
 
 ```bash
-pytest              # 182 testes, sem chamadas de rede
+pytest              # 205 testes, sem chamadas de rede
 ```
 
 Estrutura do projeto:
