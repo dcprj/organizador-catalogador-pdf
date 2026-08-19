@@ -7,6 +7,33 @@ projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ## [Não Lançado]
 
+## [0.3.0] - 2026-08-19
+
+### Adicionado
+
+- Truncamento dinâmico de nome de arquivo para caber no limite seguro de
+  caminho do Windows (MAX_PATH): o orçamento de caracteres agora leva em
+  conta o comprimento real de `--destino` (livre, não controlado pelo app),
+  não só um teto fixo por segmento. Se nem um nome mínimo couber, falha com
+  mensagem clara em vez de tentar gravar um caminho inválido.
+- Busca por ficha catalográfica além da janela inicial de páginas: quando
+  prefácio/dedicatória/sumário longos empurram ISBN/ISSN/DOI/"ficha
+  catalográfica" para fora das `--max-paginas` páginas enviadas ao LLM, uma
+  busca leve (texto simples, sem custo de LLM) nas páginas seguintes acha
+  essa página e a inclui na análise, com orçamento de caracteres reservado
+  para não ser cortada pelo teto de `--max-caracteres`.
+- Enriquecimento de metadados via verificação online: quando o ISBN/DOI é
+  confirmado contra Crossref/Open Library (dados batendo, mesma obra),
+  `editora_ou_periodico`/`ano`/`local` que o LLM deixou em branco são
+  preenchidos com o que a API devolveu — nunca sobrescrevendo um valor já
+  extraído, e só quando a verificação já confirmou que é a mesma obra.
+- `--paralelo`/`-j`: processa N arquivos ao mesmo tempo (threads). Padrão 1
+  (sequencial, comportamento inalterado) — só compensa com provedor pago
+  remoto, já que o Ollama local não ganha nada rodando em paralelo. Uma
+  falha fatal de API para de puxar trabalho novo imediatamente (janela
+  deslizante, não dispara tudo de uma vez); gravação em disco e no estado
+  do `--resume` são serializadas para evitar corrida entre threads.
+
 ## [0.2.0] - 2026-08-18
 
 ### Adicionado

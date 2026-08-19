@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import threading
 import unicodedata
 from dataclasses import dataclass
 from datetime import date
@@ -30,7 +31,25 @@ MAX_CARACTERES_SEGMENTO = 120
 #: Limite do nome de arquivo completo, deixando folga para sufixos e extensão.
 MAX_CARACTERES_NOME_ARQUIVO = 180
 
+#: Alvo conservador para o comprimento do CAMINHO COMPLETO (diretório +
+#: nome + extensão). O Windows sem suporte a caminho longo habilitado
+#: (não é o padrão em toda instalação) limita chamadas de API clássicas a
+#: 260 caracteres — a folga aqui cobre letra de unidade, separadores e
+#: variação entre `\\` e `/`. MAX_CARACTERES_NOME_ARQUIVO sozinho não
+#: resolve isso: ele limita só o nome, sem saber o quão fundo é o
+#: `--destino` escolhido (livre, pode já consumir boa parte do limite).
+MAX_CARACTERES_CAMINHO = 240
+
+#: Abaixo disso, um nome de arquivo truncado deixaria de ser identificável
+#: — preferível falhar com uma mensagem clara a gravar algo inútil.
+MIN_CARACTERES_NOME_TRUNCADO = 20
+
 SEM_VALOR = "Sem informação"
+
+#: Serializa a checagem de colisão + gravação em `organizar()` — importa só
+#: quando o processamento roda em paralelo (`--paralelo`); em modo
+#: sequencial, adquirir um lock destravado é uma operação essencialmente grátis.
+_LOCK_ESCRITA = threading.Lock()
 
 
 class ErroDeOrganizacao(RuntimeError):
@@ -151,6 +170,27 @@ def montar_diretorio(
     return diretorio_pdf, diretorio_md
 
 
+def _truncar_para_caminho_seguro(nome: str, diretorio: Path, extensao: str) -> str:
+    """Encurta `nome` se `diretorio/nome{extensao}` ultrapassar `MAX_CARACTERES_CAMINHO`.
+
+    O orçamento fixo de `montar_nome_arquivo` (`MAX_CARACTERES_NOME_ARQUIVO`)
+    não sabe o quão fundo é `--destino` — essa checagem calcula o caminho de
+    verdade e corta o nome dinamicamente para caber, em vez de gerar um
+    caminho que o Windows recusaria a criar.
+    """
+    espaco_fixo = len(str(diretorio)) + 1 + len(extensao)  # +1 do separador
+    orcamento = MAX_CARACTERES_CAMINHO - espaco_fixo
+    if orcamento >= len(nome):
+        return nome
+    if orcamento < MIN_CARACTERES_NOME_TRUNCADO:
+        raise ErroDeOrganizacao(
+            f"o caminho de destino é longo demais ({diretorio}) — nem um nome "
+            f"de arquivo mínimo cabe dentro do limite seguro do Windows "
+            f"({MAX_CARACTERES_CAMINHO} caracteres). Escolha um --destino mais raso."
+        )
+    return nome[:orcamento].rstrip(" -.,;:")
+
+
 def caminho_disponivel(caminho: Path) -> Path:
     """Acrescenta ` (2)`, ` (3)`… se o caminho já existir."""
     if not caminho.exists():
@@ -237,6 +277,10 @@ def organizar(
         revisao_manual=revisao_manual,
     )
     nome = montar_nome_arquivo(metadados)
+    # `diretorio_md` é sempre igual ou mais fundo que `diretorio_pdf` (pode
+    # ter a subpasta espelho a mais) e ".pdf" é a extensão mais longa das
+    # duas — usar essa combinação garante que os dois caminhos finais cabem.
+    nome = _truncar_para_caminho_seguro(nome, diretorio_md, ".pdf")
     destino_pdf = diretorio_pdf / f"{nome}.pdf"
     destino_md = diretorio_md / f"{nome}.md"
 
@@ -252,16 +296,25 @@ def organizar(
         diretorio_pdf.mkdir(parents=True, exist_ok=True)
         diretorio_md.mkdir(parents=True, exist_ok=True)
 
-        destino_pdf = caminho_disponivel(destino_pdf)
-        # Mantém o par PDF/Markdown com o mesmo nome quando houve desambiguação.
-        destino_md = diretorio_md / f"{destino_pdf.stem}.md"
+        # `caminho_disponivel` é "conferir se existe, depois gravar" — com
+        # processamento concorrente (--paralelo), duas threads que geram o
+        # mesmo nome (metadados quase idênticos) poderiam ver o caminho como
+        # livre ao mesmo tempo e uma sobrescrever a outra. O lock serializa
+        # só essa checagem+gravação — é uma fração pequena do tempo por
+        # arquivo (a chamada ao LLM, não paralelizada por este lock, é o que
+        # de fato domina o tempo total).
+        with _LOCK_ESCRITA:
+            destino_pdf = caminho_disponivel(destino_pdf)
+            # Mantém o par PDF/Markdown com o mesmo nome quando houve
+            # desambiguação.
+            destino_md = diretorio_md / f"{destino_pdf.stem}.md"
 
-        if mover:
-            shutil.move(str(pdf_origem), destino_pdf)
-        else:
-            shutil.copy2(pdf_origem, destino_pdf)
+            if mover:
+                shutil.move(str(pdf_origem), destino_pdf)
+            else:
+                shutil.copy2(pdf_origem, destino_pdf)
 
-        destino_md.write_text(markdown, encoding="utf-8")
+            destino_md.write_text(markdown, encoding="utf-8")
     except OSError as exc:
         raise ErroDeOrganizacao(f"falha ao gravar em {diretorio_pdf}: {exc}") from exc
 

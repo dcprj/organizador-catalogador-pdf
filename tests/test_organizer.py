@@ -4,9 +4,15 @@ from pathlib import Path
 
 import yaml
 
+import pytest
+
 from organizador_pdf.models import Metadados, TipoPublicacao
 from organizador_pdf.organizer import (
+    ErroDeOrganizacao,
+    MAX_CARACTERES_CAMINHO,
     MAX_CARACTERES_NOME_ARQUIVO,
+    MIN_CARACTERES_NOME_TRUNCADO,
+    _truncar_para_caminho_seguro,
     caminho_disponivel,
     gerar_markdown,
     montar_diretorio,
@@ -263,3 +269,65 @@ class TestOrganizar:
         assert resultado.pdf_destino.name.endswith("(2).pdf")
         assert resultado.markdown_destino.name.endswith("(2).md")
         assert resultado.markdown_destino.exists()
+
+    def test_destino_profundo_trunca_o_nome_para_caber_no_limite_do_windows(
+        self, metadados: Metadados, tmp_path: Path
+    ):
+        origem = tmp_path / "entrada.pdf"
+        origem.write_bytes(b"%PDF-1.4 fake")
+        # tmp_path já é um caminho absoluto real; empilha subpastas em cima
+        # pra simular um --destino fundo (ex.: OneDrive aninhado no Windows).
+        destino = tmp_path.joinpath(*[f"pasta{i}" for i in range(10)])
+        metadados.titulo = "T" * 300  # nome, sem o truncamento novo, estouraria
+
+        resultado = organizar(
+            metadados, pdf_origem=origem, destino=destino, markdown="# md"
+        )
+
+        assert resultado.pdf_destino.exists()
+        assert len(str(resultado.pdf_destino)) <= MAX_CARACTERES_CAMINHO
+        assert resultado.pdf_destino.stem == resultado.markdown_destino.stem
+
+    def test_destino_absurdamente_profundo_falha_com_mensagem_clara(
+        self, metadados: Metadados, tmp_path: Path
+    ):
+        origem = tmp_path / "entrada.pdf"
+        origem.write_bytes(b"%PDF-1.4 fake")
+        destino = tmp_path.joinpath(*[f"subpasta-bem-comprida-{i}" for i in range(20)])
+
+        with pytest.raises(ErroDeOrganizacao, match="destino é longo demais"):
+            organizar(metadados, pdf_origem=origem, destino=destino, markdown="# md")
+
+
+class TestTruncarParaCaminhoSeguro:
+    """Unidade isolada (sem tocar disco) — a integração com `organizar` é
+    coberta acima; aqui o controle sobre o comprimento do diretório é total,
+    sem depender de o quão fundo é o `tmp_path` do ambiente de teste."""
+
+    def test_nao_mexe_quando_ja_cabe(self):
+        diretorio = Path("/destino/curto")
+        assert _truncar_para_caminho_seguro("nome", diretorio, ".pdf") == "nome"
+
+    def test_corta_exatamente_no_orcamento_disponivel(self):
+        diretorio = Path("/d" * 100)  # bem mais fundo que o razoável
+        nome = "N" * 300
+        resultado = _truncar_para_caminho_seguro(nome, diretorio, ".pdf")
+
+        assert len(resultado) < len(nome)
+        caminho_final = len(str(diretorio)) + 1 + len(resultado) + len(".pdf")
+        assert caminho_final <= MAX_CARACTERES_CAMINHO
+
+    def test_levanta_erro_quando_nem_o_minimo_cabe(self):
+        diretorio = Path("/d" * 200)  # não sobra nem o piso mínimo
+        with pytest.raises(ErroDeOrganizacao, match="destino é longo demais"):
+            _truncar_para_caminho_seguro("N" * 300, diretorio, ".pdf")
+
+    def test_nunca_devolve_abaixo_do_minimo(self):
+        # Orçamento levemente acima do piso: deve ou cortar respeitando o
+        # piso, ou levantar erro — nunca devolver algo menor que o piso.
+        diretorio = Path("/d" * 90)
+        try:
+            resultado = _truncar_para_caminho_seguro("N" * 300, diretorio, ".pdf")
+        except ErroDeOrganizacao:
+            return
+        assert len(resultado) >= MIN_CARACTERES_NOME_TRUNCADO

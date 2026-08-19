@@ -7,7 +7,17 @@ from organizador_pdf.models import Identificadores, Metadados, TipoPublicacao
 from organizador_pdf.verificacao import verificar_identificadores
 
 
-def _meta(titulo: str, autor_principal: str, *, isbn=None, issn=None, doi=None) -> Metadados:
+def _meta(
+    titulo: str,
+    autor_principal: str,
+    *,
+    isbn=None,
+    issn=None,
+    doi=None,
+    editora=None,
+    ano=None,
+    local=None,
+) -> Metadados:
     return Metadados(
         tipo_publicacao=TipoPublicacao.LIVRO,
         area_principal="Geral",
@@ -15,6 +25,9 @@ def _meta(titulo: str, autor_principal: str, *, isbn=None, issn=None, doi=None) 
         titulo=titulo,
         autores=[autor_principal],
         autor_principal=autor_principal,
+        editora_ou_periodico=editora,
+        ano=ano,
+        local=local,
         identificadores=Identificadores(isbn=isbn, issn=issn, doi=doi),
         referencia_abnt=titulo,
     )
@@ -44,7 +57,7 @@ class TestVerificarDoi:
                 },
             )
 
-        aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        _, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
         assert aviso is None
 
     def test_titulo_diferente_gera_aviso(self):
@@ -67,7 +80,7 @@ class TestVerificarDoi:
                 },
             )
 
-        aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        _, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
         assert aviso is not None
         assert "10.1000/outra-obra" in aviso
         assert "Deep Learning for Computer Vision" in aviso
@@ -78,7 +91,7 @@ class TestVerificarDoi:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(404)
 
-        aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        _, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
         assert aviso is None
 
     def test_prefixo_de_url_e_normalizado(self):
@@ -88,8 +101,31 @@ class TestVerificarDoi:
             assert request.url.path.endswith("10.1000/xyz")
             return httpx.Response(200, json={"message": {"title": ["Obra"], "author": []}})
 
-        aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        _, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
         assert aviso is None
+
+    def test_diverge_nao_enriquece_metadados(self):
+        # Título diverge -> não é a mesma obra -> não deve herdar dados
+        # da API, mesmo que ela tenha editora/ano.
+        metadados = _meta("Fenomenologia Existencial", "Silva, João", doi="10.1000/outra-obra")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "title": ["Culinária Regional Brasileira"],
+                        "author": [{"given": "John", "family": "Smith"}],
+                        "publisher": "Editora Que Não Deveria Aparecer",
+                        "published": {"date-parts": [[1999]]},
+                    }
+                },
+            )
+
+        resultado, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        assert aviso is not None
+        assert resultado.editora_ou_periodico is None
+        assert resultado.ano is None
 
 
 class TestVerificarIsbn:
@@ -112,7 +148,7 @@ class TestVerificarIsbn:
                 },
             )
 
-        aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        _, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
         assert aviso is None
 
     def test_titulo_diferente_gera_aviso(self):
@@ -133,7 +169,7 @@ class TestVerificarIsbn:
                 },
             )
 
-        aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        _, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
         assert aviso is not None
         assert "978-85-241-0001-2" in aviso
         assert "Manual de Enfermagem Pediátrica" in aviso
@@ -145,7 +181,7 @@ class TestVerificarIsbn:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={})
 
-        aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        _, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
         assert aviso is None
 
     def test_hifens_sao_removidos_antes_da_consulta(self):
@@ -158,6 +194,105 @@ class TestVerificarIsbn:
         verificar_identificadores(metadados, cliente=cliente_com(handler))
 
 
+class TestEnriquecimento:
+    """Preencher lacunas (editora/ano/local) só quando os dados batem —
+    nunca sobrescrever o que já foi extraído."""
+
+    def test_doi_preenche_editora_e_ano_ausentes(self):
+        metadados = _meta("Obra", "Autor, Nome", doi="10.1000/xyz")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "title": ["Obra"],
+                        "author": [{"given": "Nome", "family": "Autor"}],
+                        "publisher": "Editora Confirmada",
+                        "published": {"date-parts": [[2021, 3, 1]]},
+                    }
+                },
+            )
+
+        resultado, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        assert aviso is None
+        assert resultado.editora_ou_periodico == "Editora Confirmada"
+        assert resultado.ano == 2021
+
+    def test_doi_nao_sobrescreve_editora_ja_extraida(self):
+        metadados = _meta("Obra", "Autor, Nome", doi="10.1000/xyz", editora="Editora Original")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "title": ["Obra"],
+                        "author": [{"given": "Nome", "family": "Autor"}],
+                        "publisher": "Editora Da API",
+                    }
+                },
+            )
+
+        resultado, _ = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        assert resultado.editora_ou_periodico == "Editora Original"
+
+    def test_isbn_preenche_editora_ano_e_local_ausentes(self):
+        metadados = _meta("Obra", "Autor, Nome", isbn="978-85-323-1005-7")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "ISBN:9788532310057": {
+                        "title": "Obra",
+                        "authors": [{"name": "Nome Autor"}],
+                        "publishers": [{"name": "Vozes"}],
+                        "publish_date": "May 2019",
+                        "publish_places": [{"name": "Petrópolis"}],
+                    }
+                },
+            )
+
+        resultado, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        assert aviso is None
+        assert resultado.editora_ou_periodico == "Vozes"
+        assert resultado.ano == 2019
+        assert resultado.local == "Petrópolis"
+
+    def test_isbn_nao_sobrescreve_ano_ja_extraido(self):
+        metadados = _meta("Obra", "Autor, Nome", isbn="978-85-323-1005-7", ano=2015)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "ISBN:9788532310057": {
+                        "title": "Obra",
+                        "authors": [{"name": "Nome Autor"}],
+                        "publish_date": "1999",
+                    }
+                },
+            )
+
+        resultado, _ = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        assert resultado.ano == 2015
+
+    def test_sem_dado_extra_na_api_nao_altera_nada(self):
+        metadados = _meta("Obra", "Autor, Nome", doi="10.1000/xyz")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"message": {"title": ["Obra"], "author": []}},
+            )
+
+        resultado, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        assert aviso is None
+        assert resultado.editora_ou_periodico is None
+        assert resultado.ano is None
+
+
 class TestResiliencia:
     def test_sem_identificadores_nao_faz_chamada(self):
         chamou = False
@@ -168,7 +303,7 @@ class TestResiliencia:
             return httpx.Response(200, json={})
 
         metadados = _meta("Obra", "Autor, Nome")
-        aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        _, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
 
         assert aviso is None
         assert chamou is False
@@ -179,7 +314,7 @@ class TestResiliencia:
 
         metadados = _meta("Obra", "Autor, Nome", doi="10.1000/x", isbn="978-85-323-1005-7")
 
-        aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        _, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
         assert aviso is None
 
     def test_erro_500_da_api_nao_gera_aviso(self):
@@ -187,7 +322,7 @@ class TestResiliencia:
             return httpx.Response(500)
 
         metadados = _meta("Obra", "Autor, Nome", doi="10.1000/x")
-        aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        _, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
         assert aviso is None
 
     def test_doi_com_aviso_evita_chamada_extra_de_isbn(self):
@@ -213,7 +348,7 @@ class TestResiliencia:
             doi="10.1000/x",
             isbn="978-85-323-1005-7",
         )
-        aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
+        _, aviso = verificar_identificadores(metadados, cliente=cliente_com(handler))
 
         assert aviso is not None
         assert len(chamadas) == 1  # parou no DOI, não chegou a consultar o ISBN

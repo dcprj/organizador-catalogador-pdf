@@ -119,7 +119,7 @@ class Pipeline:
             provedor_usado = self._nome_do_provedor_usado(usou_fallback)
 
             if self.config.verificar_online:
-                aviso_online = verificar_identificadores(metadados)
+                metadados, aviso_online = verificar_identificadores(metadados)
                 if aviso_online:
                     aviso = f"{aviso} Além disso, {aviso_online}" if aviso else aviso_online
 
