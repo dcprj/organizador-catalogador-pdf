@@ -882,6 +882,196 @@ def test_cli_cabecalho_dynamic_banner():
     )
 
 
+# ==============================================================================
+# FASE 5: SEGURANÇA, VALIDAÇÃO DE ENTRADA, LOCK DE ESTADO E PRIVACIDADE
+# ==============================================================================
+
+
+def test_is_valid_isbn_checksum():
+    """Valida o cálculo de checksum estrito e verificação flexível de ISBN-10 e ISBN-13."""
+    from organizador_pdf.models import is_valid_isbn
+
+    # ISBN-10 válido numérico
+    assert is_valid_isbn("0-306-40615-2", strict=True)
+    # ISBN-10 válido com dígito X
+    assert is_valid_isbn("0-8044-2957-X", strict=True)
+    # ISBN-13 válido (978 e 979)
+    assert is_valid_isbn("978-0-306-40615-7", strict=True)
+    assert is_valid_isbn("9780132350884", strict=True)
+    assert is_valid_isbn("979-10-90636-07-1", strict=True)
+
+    # ISBN com checksum incorreto
+    assert not is_valid_isbn("9780132350885", strict=True)
+    assert is_valid_isbn("9780132350885", strict=False)  # Formato aceito em modo não-estrito
+
+    # Formatos ilegais
+    assert not is_valid_isbn("", strict=False)
+    assert not is_valid_isbn(None, strict=False)
+    assert not is_valid_isbn("12345", strict=False)
+    assert not is_valid_isbn("976-0-306-40615-7", strict=False)  # Não inicia com 978/979
+
+
+def test_is_valid_issn_checksum():
+    """Valida o cálculo de checksum estrito e formato de ISSN-8."""
+    from organizador_pdf.models import is_valid_issn
+
+    # ISSNs válidos
+    assert is_valid_issn("0378-5955", strict=True)
+    assert is_valid_issn("2434-561X", strict=True)
+
+    # Checksum incorreto
+    assert not is_valid_issn("0378-5956", strict=True)
+    assert is_valid_issn("0378-5956", strict=False)
+
+    # Inválidos
+    assert not is_valid_issn("", strict=False)
+    assert not is_valid_issn(None, strict=False)
+    assert not is_valid_issn("1234", strict=False)
+
+
+def test_normalizar_doi():
+    """Valida a remoção de prefixos comuns e limpeza de espaços em DOIs."""
+    from organizador_pdf.models import normalizar_doi
+
+    assert normalizar_doi("https://doi.org/10.1000/182") == "10.1000/182"
+    assert normalizar_doi("http://doi.org/10.1000/182") == "10.1000/182"
+    assert normalizar_doi("http://dx.doi.org/10.1000/182") == "10.1000/182"
+    assert normalizar_doi("doi: 10.1000/182") == "10.1000/182"
+    assert normalizar_doi("  10.1000/182  ") == "10.1000/182"
+    assert normalizar_doi(None) is None
+    assert normalizar_doi("") is None
+
+
+def test_lock_arquivo_estado_concurrency():
+    """Verifica que lock_arquivo_estado impede acesso simultâneo quando bloqueado."""
+    import time
+    from organizador_pdf.estado import lock_arquivo_estado, _HAS_FCNTL
+    import pytest
+
+    if not _HAS_FCNTL:
+        pytest.skip("fcntl não suportado neste sistema operacional")
+
+    with lock_arquivo_estado(timeout=1.0):
+        # Uma segunda tentativa concorrente com timeout curto deve expirar
+        with pytest.raises(TimeoutError, match="Não foi possível obter o lock do arquivo de estado"):
+            with lock_arquivo_estado(timeout=0.1):
+                pass
+
+
+def test_erro_pdf_escaneado(tmp_path):
+    """Verifica que PDFs sem camada de texto disparam ErroPdfEscaneado."""
+    import pymupdf
+    from organizador_pdf.converter import converter_pdf, ErroPdfEscaneado, ErroDeConversao
+    import pytest
+
+    pdf_sem_texto = tmp_path / "escaneado.pdf"
+    doc = pymupdf.open()
+    doc.new_page(width=595, height=842)  # Página em branco
+    doc.save(pdf_sem_texto)
+    doc.close()
+
+    with pytest.raises(ErroPdfEscaneado, match="Nenhum texto nativo extraível"):
+        converter_pdf(pdf_sem_texto)
+
+    assert issubclass(ErroPdfEscaneado, ErroDeConversao)
+
+
+def test_max_file_size_mb_limit(monkeypatch, tmp_path):
+    """Verifica proteção contra arquivos que excedem ORGPDF_MAX_FILE_SIZE_MB."""
+    import pymupdf
+    from organizador_pdf.converter import converter_pdf, ErroDeConversao
+    import pytest
+
+    pdf_file = tmp_path / "grande.pdf"
+    doc = pymupdf.open()
+    p = doc.new_page(width=595, height=842)
+    p.insert_text((50, 50), "Texto de teste suficiente.")
+    doc.save(pdf_file)
+    doc.close()
+
+    # Define o limite como 0 MB (qualquer arquivo > 0 bytes falha)
+    monkeypatch.setenv("ORGPDF_MAX_FILE_SIZE_MB", "0")
+
+    with pytest.raises(ErroDeConversao, match="Arquivo excede o tamanho máximo permitido"):
+        converter_pdf(pdf_file)
+
+
+def test_config_total_offline():
+    """Verifica o cálculo da propriedade Config.total_offline."""
+    from organizador_pdf.config import Config
+
+    # Modo 100% offline
+    c_off = Config(verificar_online=False, typesafe_api_key=None)
+    assert c_off.total_offline is True
+
+    # Com verificação online ativada
+    c_on = Config(verificar_online=True, typesafe_api_key=None)
+    assert c_on.total_offline is False
+
+    # Com verificação online desligada mas com chave typesafe
+    c_typesafe = Config(verificar_online=False, typesafe_api_key="ts_test_key")
+    assert c_typesafe.total_offline is False
+
+
+def test_metadata_enricher_doi_quoting_and_normalization():
+    """Verifica normalização de prefixo e encoding seguro de caracteres em DOIs."""
+    from unittest.mock import MagicMock
+    from organizador_pdf.metadata_api import MetadataEnricher
+
+    enricher = MetadataEnricher(timeout=5.0)
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"message": {"title": ["Test Paper"], "DOI": "10.1000/abc<123>"}}
+    enricher.session = MagicMock()
+    enricher.session.get.return_value = mock_resp
+
+    # Passa DOI com prefixo https://doi.org/ e caracteres especiais
+    res = enricher.fetch_crossref_by_doi("https://doi.org/10.1000/abc<123>")
+    assert res is not None
+    # Verifica que a URL foi codificada com urllib.parse.quote (substituindo < e > por %3C e %3E)
+    args, kwargs = enricher.session.get.call_args
+    assert "https://api.crossref.org/works/10.1000/abc%3C123%3E" in args[0]
+
+
+def test_cli_rejects_invalid_estrutura(tmp_path):
+    """Verifica que a CLI rejeita valor inválido para --estrutura."""
+    from typer.testing import CliRunner
+    from organizador_pdf.cli import app
+
+    runner = CliRunner()
+    origem = tmp_path / "origem"
+    destino = tmp_path / "destino"
+    origem.mkdir()
+    destino.mkdir()
+
+    res = runner.invoke(app, ["-i", str(origem), "-o", str(destino), "--estrutura", "invalida"])
+    assert res.exit_code == 2
+    assert "Opção de estrutura inválida" in res.output
+
+
+def test_cli_rejects_directory_conflicts(tmp_path):
+    """Verifica que a CLI impede destino igual à origem ou destino aninhado em modo recursivo."""
+    from typer.testing import CliRunner
+    from organizador_pdf.cli import app
+
+    runner = CliRunner()
+    origem = tmp_path / "origem"
+    origem.mkdir()
+
+    # Destino igual à origem
+    res_same = runner.invoke(app, ["-i", str(origem), "-o", str(origem)])
+    assert res_same.exit_code == 2
+    assert "não pode ser idêntico" in res_same.output
+
+    # Destino aninhado na origem com busca recursiva (-r ativado por padrão)
+    destino_aninhado = origem / "saida"
+    destino_aninhado.mkdir()
+    res_nested = runner.invoke(app, ["-i", str(origem), "-o", str(destino_aninhado)])
+    assert res_nested.exit_code == 2
+    assert "Conflito de diretórios" in res_nested.output
+
+
+
 
 
 

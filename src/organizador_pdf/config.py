@@ -46,6 +46,11 @@ class Config:
         """Provedor do motor de classificação."""
         return "typesafe" if self.typesafe_api_key else "deterministico_local"
 
+    @property
+    def total_offline(self) -> bool:
+        """Indica se a execução é 100% desconectada da rede (sem consultas bibliográficas e sem TypeSafe AI)."""
+        return (not self.verificar_online) and (not self.typesafe_api_key)
+
     @classmethod
     def do_ambiente(
         cls,

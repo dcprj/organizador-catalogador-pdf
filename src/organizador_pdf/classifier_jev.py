@@ -27,6 +27,9 @@ from .models import (
     PublicationType,
     ExtractedCandidates,
     JevValidationResult,
+    is_valid_isbn,
+    is_valid_issn,
+    normalizar_doi,
 )
 
 load_dotenv()
@@ -132,6 +135,22 @@ def extract_native_sample_text_with_count(
     """
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+    max_mb_str = os.getenv("ORGPDF_MAX_FILE_SIZE_MB", "500")
+    try:
+        max_bytes = int(max_mb_str) * 1024 * 1024
+    except ValueError:
+        max_bytes = 500 * 1024 * 1024
+
+    try:
+        file_size = os.path.getsize(pdf_path)
+        if file_size > max_bytes:
+            raise RuntimeError(
+                f"Arquivo excede o tamanho máximo permitido de {max_bytes // (1024 * 1024)} MB "
+                f"({file_size / (1024 * 1024):.1f} MB)."
+            )
+    except OSError:
+        pass
 
     if max_pages is not None:
         head_pages = max_pages
@@ -350,7 +369,7 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
     m_isbn = re.search(r"ISBN(?:-1[03])?[:\s]+([0-9Xx -]{10,17})", page_text, re.I)
     if m_isbn:
         raw_isbn = re.sub(r"[^0-9X]", "", m_isbn.group(1))
-        if len(raw_isbn) in (10, 13):
+        if len(raw_isbn) in (10, 13) and is_valid_isbn(raw_isbn, strict=False):
             isbn_val = raw_isbn
 
     # Extract subject area from first catalog entry e.g. '1. Neuropsicologia.' or '1. Psicologia clínica.'
@@ -530,7 +549,7 @@ def extract_candidate_metadata(
                         if m_isbn:
                             raw_val = m_isbn.group(1)
                             cleaned_digits = re.sub(r"[^0-9X]", "", raw_val)
-                            if len(cleaned_digits) in (10, 13):
+                            if len(cleaned_digits) in (10, 13) and is_valid_isbn(cleaned_digits, strict=False):
                                 candidates.isbn = cleaned_digits
                                 break
         except Exception as e:
@@ -564,12 +583,16 @@ def extract_candidate_metadata(
     # Extract DOI from front matter
     doi_match = DOI_REGEX.search(head_text)
     if doi_match:
-        candidates.doi = doi_match.group(0).rstrip(".;,")
+        norm_d = normalizar_doi(doi_match.group(0).rstrip(".;,"))
+        if norm_d:
+            candidates.doi = norm_d
 
     # Extract strict ISSN from front matter
     issn_match = ISSN_REGEX.search(head_text)
     if issn_match:
-        candidates.issn = issn_match.group(1).strip()
+        issn_cand = issn_match.group(1).strip()
+        if is_valid_issn(issn_cand, strict=False):
+            candidates.issn = issn_cand
 
     # Extract ISBN from front matter if not already found in CIP
     if not candidates.isbn:
@@ -577,7 +600,7 @@ def extract_candidate_metadata(
         if isbn_match:
             raw_val = isbn_match.group(1)
             cleaned_digits = re.sub(r"[^0-9X]", "", raw_val)
-            if len(cleaned_digits) in (10, 13):
+            if len(cleaned_digits) in (10, 13) and is_valid_isbn(cleaned_digits, strict=False):
                 candidates.isbn = cleaned_digits
 
     # 5. Filename metadata fallback
@@ -929,7 +952,7 @@ class JevClassifier:
 
         # Calibrated Noul probabilities
         doi_prob = 0.98 if candidates.doi and "/" in candidates.doi else 0.0
-        isbn_prob = 0.98 if candidates.isbn and len(candidates.isbn) in (10, 13) else 0.0
+        isbn_prob = 0.98 if candidates.isbn and is_valid_isbn(candidates.isbn, strict=False) else 0.0
         issn_prob = 0.97 if candidates.issn and "-" in candidates.issn else 0.0
         title_prob = 0.96 if candidates.raw_title and len(candidates.raw_title) > 4 and not candidates.raw_title.startswith("---") else 0.20
         authors_prob = 0.95 if candidates.raw_authors else 0.20

@@ -6,6 +6,8 @@ from .abnt_formatter import ABNTFormatter, format_abnt_reference
 from .classifier_jev import JevClassifier
 from .converter import (
     DocumentoConvertido,
+    ErroDeConversao,
+    ErroPdfEscaneado,
     MarkdownConverter,
     converter_pdf,
     generate_standardized_filename,
@@ -35,6 +37,8 @@ __all__ = [
     "format_abnt_reference",
     "JevClassifier",
     "DocumentoConvertido",
+    "ErroDeConversao",
+    "ErroPdfEscaneado",
     "MarkdownConverter",
     "converter_pdf",
     "generate_standardized_filename",

@@ -9,16 +9,53 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
+
+try:
+    import fcntl
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
 
 logger = logging.getLogger(__name__)
 
 #: Caminho padrão para o estado global do CLI
 CAMINHO_ESTADO = Path.home() / ".organizador-pdf" / "estado.json"
 DEFAULT_STATE_FILENAME = ".organizador_pdf_estado.json"
+
+
+@contextmanager
+def lock_arquivo_estado(timeout: float = 10.0):
+    """Bloqueio inter-processos via file lock para coordenar acessos concorrentes ao estado."""
+    CAMINHO_ESTADO.parent.mkdir(parents=True, exist_ok=True)
+    caminho_lock = CAMINHO_ESTADO.with_suffix(".lock")
+    with open(caminho_lock, "a") as f:
+        start = time.time()
+        if _HAS_FCNTL:
+            while True:
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except (BlockingIOError, OSError):
+                    if time.time() - start >= timeout:
+                        raise TimeoutError(
+                            f"Não foi possível obter o lock do arquivo de estado ({caminho_lock}) em {timeout}s. "
+                            "Outro processo do organizador-pdf pode estar em execução simultânea."
+                        )
+                    time.sleep(0.05)
+        try:
+            yield
+        finally:
+            if _HAS_FCNTL:
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
 
 
 @dataclass
@@ -93,7 +130,7 @@ class EstadoDeExecucao:
         self.marcar_sucesso(caminho)
 
     def salvar(self) -> None:
-        """Gravação atômica do estado via arquivo temporário + os.replace."""
+        """Gravação atômica do estado via arquivo temporário + os.replace sob lock de processo."""
         CAMINHO_ESTADO.parent.mkdir(parents=True, exist_ok=True)
         dados = {
             "versao": self.versao,
@@ -102,50 +139,53 @@ class EstadoDeExecucao:
             "falhas": self.falhas,
             "concluidos": sorted(self.sucessos),
         }
-        arquivo_tmp = CAMINHO_ESTADO.with_name(f"{CAMINHO_ESTADO.name}.{os.getpid()}.tmp")
-        try:
-            arquivo_tmp.write_text(
-                json.dumps(dados, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
-            os.replace(arquivo_tmp, CAMINHO_ESTADO)
-        except Exception:
-            if arquivo_tmp.exists():
-                arquivo_tmp.unlink(missing_ok=True)
-            raise
+        with lock_arquivo_estado():
+            arquivo_tmp = CAMINHO_ESTADO.with_name(f"{CAMINHO_ESTADO.name}.{os.getpid()}.tmp")
+            try:
+                arquivo_tmp.write_text(
+                    json.dumps(dados, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+                os.replace(arquivo_tmp, CAMINHO_ESTADO)
+            except Exception:
+                if arquivo_tmp.exists():
+                    arquivo_tmp.unlink(missing_ok=True)
+                raise
 
     @classmethod
     def carregar(cls) -> Optional["EstadoDeExecucao"]:
-        """Lê o estado salvo, ou None se não houver execução pendente."""
-        if not CAMINHO_ESTADO.exists():
-            return None
-        try:
-            dados = json.loads(CAMINHO_ESTADO.read_text(encoding="utf-8"))
-            if not isinstance(dados, dict):
+        """Lê o estado salvo sob lock de processo, ou None se não houver execução pendente."""
+        with lock_arquivo_estado():
+            if not CAMINHO_ESTADO.exists():
                 return None
-            params_raw = dados.get("parametros", {})
-            from dataclasses import fields
-            valid_field_names = {f.name for f in fields(ParametrosSalvos)}
-            filtered_params = {k: v for k, v in params_raw.items() if k in valid_field_names}
+            try:
+                dados = json.loads(CAMINHO_ESTADO.read_text(encoding="utf-8"))
+                if not isinstance(dados, dict):
+                    return None
+                params_raw = dados.get("parametros", {})
+                from dataclasses import fields
+                valid_field_names = {f.name for f in fields(ParametrosSalvos)}
+                filtered_params = {k: v for k, v in params_raw.items() if k in valid_field_names}
 
-            sucessos_raw = dados.get("sucessos")
-            if sucessos_raw is None:
-                sucessos_raw = dados.get("concluidos", [])
-            sucessos = set(sucessos_raw)
-            falhas = dict(dados.get("falhas", {}))
-            versao = int(dados.get("versao", 1))
+                sucessos_raw = dados.get("sucessos")
+                if sucessos_raw is None:
+                    sucessos_raw = dados.get("concluidos", [])
+                sucessos = set(sucessos_raw)
+                falhas = dict(dados.get("falhas", {}))
+                versao = int(dados.get("versao", 1))
 
-            return cls(
-                parametros=ParametrosSalvos(**filtered_params),
-                sucessos=sucessos,
-                falhas=falhas,
-                versao=versao,
-            )
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            return None
+                return cls(
+                    parametros=ParametrosSalvos(**filtered_params),
+                    sucessos=sucessos,
+                    falhas=falhas,
+                    versao=versao,
+                )
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError):
+                return None
 
     @staticmethod
     def limpar() -> None:
-        CAMINHO_ESTADO.unlink(missing_ok=True)
+        with lock_arquivo_estado():
+            CAMINHO_ESTADO.unlink(missing_ok=True)
 
 
 class EstadoManager:

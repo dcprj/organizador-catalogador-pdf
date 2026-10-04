@@ -13,6 +13,7 @@ import re
 import logging
 import threading
 from typing import Optional, List, Dict, Any, Set, Tuple
+import urllib.parse
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
@@ -23,6 +24,9 @@ from .models import (
     Identifiers,
     JevValidationResult,
     PublicationType,
+    is_valid_isbn,
+    is_valid_issn,
+    normalizar_doi,
 )
 
 load_dotenv()
@@ -217,7 +221,7 @@ class MetadataEnricher:
         candidates = jev_result.candidates
         probabilities = jev_result.probabilities
 
-        doi = candidates.doi
+        doi = normalizar_doi(candidates.doi)
         isbn = candidates.isbn
         issn = candidates.issn
         title_candidate = candidates.raw_title
@@ -261,7 +265,7 @@ class MetadataEnricher:
                 sources_consulted.append("OpenAlex (DOI)")
 
         # 2. Query by ISBN if present (direct authoritative identifier lookup)
-        if isbn:
+        if isbn and is_valid_isbn(isbn, strict=False):
             logger.info("ISBN found (%s, prob=%.2f). Querying Brasil API, Google Books & OpenLibrary.", isbn, isbn_prob)
             br_meta = self.fetch_brasil_api_isbn(isbn)
             if br_meta:
@@ -448,7 +452,9 @@ class MetadataEnricher:
     # ----------------- BRASIL API (CBL) -----------------
     def fetch_brasil_api_isbn(self, isbn: str) -> Optional[Dict[str, Any]]:
         """Fetch official Brazilian ISBN registration data from Brasil API (CBL / Mercado Editorial)."""
-        clean_isbn = re.sub(r"[^0-9X]", "", isbn)
+        clean_isbn = re.sub(r"[^0-9X]", "", str(isbn).upper())
+        if not is_valid_isbn(clean_isbn, strict=False):
+            return None
         cache_key = f"brasilapi:isbn:{clean_isbn}"
         hit, val = self._get_from_cache(cache_key)
         if hit:
@@ -501,13 +507,17 @@ class MetadataEnricher:
     # ----------------- CROSSREF API -----------------
     def fetch_crossref_by_doi(self, doi: str) -> Optional[Dict[str, Any]]:
         """Fetch metadata from Crossref API by DOI."""
-        norm_doi = doi.strip().lower()
+        clean_doi = normalizar_doi(doi)
+        if not clean_doi:
+            return None
+        norm_doi = clean_doi.lower()
         cache_key = f"crossref:doi:{norm_doi}"
         hit, val = self._get_from_cache(cache_key)
         if hit:
             return val
 
-        url = f"https://api.crossref.org/works/{doi}"
+        quoted_doi = urllib.parse.quote(clean_doi, safe="/")
+        url = f"https://api.crossref.org/works/{quoted_doi}"
         result = None
         try:
             resp = self.session.get(url, timeout=self._get_timeout())
@@ -604,7 +614,9 @@ class MetadataEnricher:
     # ----------------- GOOGLE BOOKS API -----------------
     def fetch_google_books_by_isbn(self, isbn: str) -> Optional[Dict[str, Any]]:
         """Fetch metadata from Google Books API by ISBN."""
-        clean_isbn = re.sub(r"[^0-9X]", "", isbn)
+        clean_isbn = re.sub(r"[^0-9X]", "", str(isbn).upper())
+        if not is_valid_isbn(clean_isbn, strict=False):
+            return None
         cache_key = f"gbooks:isbn:{clean_isbn}"
         hit, val = self._get_from_cache(cache_key)
         if hit:
@@ -720,7 +732,9 @@ class MetadataEnricher:
     # ----------------- OPENLIBRARY API -----------------
     def fetch_openlibrary_by_isbn(self, isbn: str) -> Optional[Dict[str, Any]]:
         """Fetch metadata from OpenLibrary API by ISBN."""
-        clean_isbn = re.sub(r"[^0-9X]", "", isbn)
+        clean_isbn = re.sub(r"[^0-9X]", "", str(isbn).upper())
+        if not is_valid_isbn(clean_isbn, strict=False):
+            return None
         cache_key = f"openlib:isbn:{clean_isbn}"
         hit, val = self._get_from_cache(cache_key)
         if hit:
@@ -781,13 +795,17 @@ class MetadataEnricher:
     # ----------------- OPENALEX API -----------------
     def fetch_openalex_by_doi(self, doi: str) -> Optional[Dict[str, Any]]:
         """Fetch publication metadata from OpenAlex by DOI."""
-        norm_doi = doi.strip().lower()
+        clean_doi = normalizar_doi(doi)
+        if not clean_doi:
+            return None
+        norm_doi = clean_doi.lower()
         cache_key = f"openalex:doi:{norm_doi}"
         hit, val = self._get_from_cache(cache_key)
         if hit:
             return val
 
-        url = f"https://api.openalex.org/works/https://doi.org/{doi}"
+        quoted_doi = urllib.parse.quote(clean_doi, safe="/")
+        url = f"https://api.openalex.org/works/https://doi.org/{quoted_doi}"
         result = None
         try:
             resp = self.session.get(url, timeout=self._get_timeout())

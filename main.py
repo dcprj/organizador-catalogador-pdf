@@ -166,6 +166,16 @@ def main() -> int:
         logger.error("A pasta de origem especificada não existe: %s", input_dir)
         return 1
 
+    if input_dir == output_dir:
+        logger.error("A pasta de destino não pode ser idêntica à pasta de origem.")
+        return 1
+
+    if args.recursive and (input_dir in output_dir.parents):
+        logger.error(
+            "Conflito de diretórios: a pasta de destino não pode estar dentro da origem quando a busca recursiva (-r) está ativada."
+        )
+        return 1
+
     if not args.dry_run:
         output_dir.mkdir(parents=True, exist_ok=True)
 

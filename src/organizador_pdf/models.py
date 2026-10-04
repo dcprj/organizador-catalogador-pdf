@@ -91,6 +91,62 @@ class Identificadores(BaseModel):
         return not any((self.isbn, self.issn, self.doi))
 
 
+def is_valid_isbn(isbn: Optional[str], strict: bool = True) -> bool:
+    """Valida formato e opcionalmente dígito verificador (checksum) de ISBN-10 e ISBN-13."""
+    if not isbn:
+        return False
+    clean = re.sub(r"[\s-]", "", str(isbn)).upper()
+    if len(clean) == 13 and clean.isdigit():
+        if not (clean.startswith("978") or clean.startswith("979")):
+            return False
+        if not strict:
+            return True
+        total = sum(int(c) * (1 if i % 2 == 0 else 3) for i, c in enumerate(clean))
+        return total % 10 == 0
+    elif len(clean) == 10:
+        digits = clean[:-1]
+        check = clean[-1]
+        if not digits.isdigit() or (not check.isdigit() and check != "X"):
+            return False
+        if not strict:
+            return True
+        total = sum(int(c) * (10 - i) for i, c in enumerate(digits))
+        check_val = 10 if check == "X" else int(check)
+        total += check_val
+        return total % 11 == 0
+    return False
+
+
+def is_valid_issn(issn: Optional[str], strict: bool = True) -> bool:
+    """Valida formato e opcionalmente dígito verificador (checksum) de ISSN-8."""
+    if not issn:
+        return False
+    clean = re.sub(r"[\s-]", "", str(issn)).upper()
+    if len(clean) != 8:
+        return False
+    digits = clean[:-1]
+    check = clean[-1]
+    if not digits.isdigit() or (not check.isdigit() and check != "X"):
+        return False
+    if not strict:
+        return True
+    total = sum(int(c) * (8 - i) for i, c in enumerate(digits))
+    check_val = 10 if check == "X" else int(check)
+    total += check_val
+    return total % 11 == 0
+
+
+def normalizar_doi(doi: Optional[str]) -> Optional[str]:
+    """Remove prefixos comuns de URL ou protocolo de um DOI e limpa espaços."""
+    if not doi:
+        return None
+    d = str(doi).strip()
+    for prefixo in ("https://doi.org/", "http://doi.org/", "http://dx.doi.org/", "doi:"):
+        if d.lower().startswith(prefixo):
+            d = d[len(prefixo):].strip()
+    return d
+
+
 # Alias de compatibilidade
 Identifiers = Identificadores
 

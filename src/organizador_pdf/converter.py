@@ -29,6 +29,10 @@ class ErroDeConversao(RuntimeError):
     """Falha ao ler ou processar o PDF."""
 
 
+class ErroPdfEscaneado(ErroDeConversao):
+    """Erro específico para PDFs escaneados ou imagens sem camada de texto nativa (requer OCR)."""
+
+
 @dataclass
 class DocumentoConvertido:
     """Resultado da leitura das páginas de análise de um PDF."""
@@ -148,6 +152,22 @@ def converter_pdf(
     """
     import pymupdf
 
+    max_mb_str = os.getenv("ORGPDF_MAX_FILE_SIZE_MB", "500")
+    try:
+        max_bytes = int(max_mb_str) * 1024 * 1024
+    except ValueError:
+        max_bytes = 500 * 1024 * 1024
+
+    try:
+        file_size = caminho.stat().st_size
+        if file_size > max_bytes:
+            raise ErroDeConversao(
+                f"Arquivo excede o tamanho máximo permitido de {max_bytes // (1024 * 1024)} MB "
+                f"({file_size / (1024 * 1024):.1f} MB)."
+            )
+    except OSError:
+        pass
+
     pymupdf.set_messages(stream=io.StringIO())
 
     try:
@@ -189,7 +209,7 @@ def converter_pdf(
         doc.close()
 
     if not texto_amostra.strip():
-        raise ErroDeConversao(
+        raise ErroPdfEscaneado(
             "Nenhum texto nativo extraível — o PDF provavelmente é digitalizado/escaneado. "
             "Dica: use uma ferramenta de OCR (ex.: ocrmypdf) para adicionar camada de texto antes de catalogar."
         )

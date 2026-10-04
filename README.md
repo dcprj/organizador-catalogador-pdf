@@ -131,10 +131,12 @@ Ao acionar `--interactive` (ou `--validate`), o sistema apresenta cada PDF passo
 Os testes são automatizados via `pytest` e operam com dublês de teste, sem depender de rede nem de credenciais externas:
 
 ```bash
+# Executar todos os testes unitários e de integração
 pytest
-```
 
-Resultado: **100% dos testes aprovados**.
+# Executar com relatório de cobertura detalhado
+pytest --cov=organizador_pdf --cov-report=term-missing
+```
 
 ---
 

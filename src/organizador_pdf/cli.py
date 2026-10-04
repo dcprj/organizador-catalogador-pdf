@@ -165,6 +165,10 @@ def processar(
     if plana:
         estrutura = "plana"
 
+    if estrutura not in ("cnpq", "plana"):
+        saida.print(f"[bold red]Opção de estrutura inválida: '{estrutura}'. As opções permitidas são 'cnpq' ou 'plana'.[/]")
+        raise typer.Exit(code=2)
+
     if interactive:
         if origem is None or destino is None:
             saida.print("[bold red]--origem e --destino são obrigatórios para o modo interativo.[/]")
@@ -208,11 +212,23 @@ def processar(
         if origem is None or destino is None:
             saida.print("[bold red]--origem e --destino são obrigatórios (ou use --resume).[/]")
             raise typer.Exit(code=2)
+
+        orig_res = origem.resolve()
+        dest_res = destino.resolve()
+        if orig_res == dest_res:
+            saida.print("[bold red]O diretório de destino não pode ser idêntico ao diretório de origem.[/]")
+            raise typer.Exit(code=2)
+        if recursive and (orig_res in dest_res.parents):
+            saida.print(
+                "[bold red]Conflito de diretórios: o diretório de destino não pode estar dentro da origem quando a busca recursiva (-r) está ativada, pois causaria um loop de varredura.[/]"
+            )
+            raise typer.Exit(code=2)
+
         if not dry_run:
             estado = EstadoDeExecucao(
                 parametros=ParametrosSalvos(
-                    origem=str(origem.resolve()),
-                    destino=str(destino.resolve()),
+                    origem=str(orig_res),
+                    destino=str(dest_res),
                     dry_run=dry_run,
                     recursive=recursive,
                     mover=mover,
@@ -497,16 +513,40 @@ def _relatorio(
         saida.print(tabela_avisos)
 
     if falhas:
-        tabela_erros = Table(title="Falhas", show_lines=False, expand=True)
-        tabela_erros.add_column("Arquivo", overflow="ellipsis", max_width=34)
-        tabela_erros.add_column("Etapa", max_width=22)
-        tabela_erros.add_column("Erro", overflow="fold")
-        for resultado in falhas:
-            tabela_erros.add_row(
-                resultado.origem.name, resultado.etapa or "—", resultado.erro or "—"
+        escaneados = [
+            r for r in falhas
+            if "digitalizado/escaneado" in (r.erro or "").lower() or "ocr" in (r.erro or "").lower()
+        ]
+        outras_falhas = [r for r in falhas if r not in escaneados]
+
+        if escaneados:
+            tabela_escaneados = Table(
+                title="📄 PDFs Escaneados / Sem Camada de Texto (Requer OCR)",
+                show_lines=False,
+                expand=True,
+                border_style="magenta",
             )
-        saida.print()
-        saida.print(tabela_erros)
+            tabela_escaneados.add_column("Arquivo", overflow="ellipsis", max_width=34)
+            tabela_escaneados.add_column("Diagnóstico e Solução Recomendada", overflow="fold")
+            for resultado in escaneados:
+                tabela_escaneados.add_row(
+                    resultado.origem.name,
+                    resultado.erro or "Nenhum texto nativo extraível (requer OCR prévio)",
+                )
+            saida.print()
+            saida.print(tabela_escaneados)
+
+        if outras_falhas:
+            tabela_erros = Table(title="Falhas de Processamento", show_lines=False, expand=True)
+            tabela_erros.add_column("Arquivo", overflow="ellipsis", max_width=34)
+            tabela_erros.add_column("Etapa", max_width=22)
+            tabela_erros.add_column("Erro", overflow="fold")
+            for resultado in outras_falhas:
+                tabela_erros.add_row(
+                    resultado.origem.name, resultado.etapa or "—", resultado.erro or "—"
+                )
+            saida.print()
+            saida.print(tabela_erros)
 
     simulados = sum(1 for r in resultados if r.situacao is Situacao.SIMULADO)
     gravados = sum(1 for r in resultados if r.situacao is Situacao.SUCESSO)
