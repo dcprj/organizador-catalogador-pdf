@@ -112,62 +112,70 @@ def explain_jev_classification(
         classify_kwargs["max_caracteres"] = max_caracteres
 
     if actual_api_key:
-        print(f"  {GREEN}✓ Chave TYPESAFE_API_KEY detectada.{RESET}")
-        print(f"  Enviando requisição para API TypeSafe AI com primitivas Choice e Noul...")
-        print(f"  - Parâmetros enviados:")
-        print(f"    • Amostra de texto: {len(combined_text[:3000])} caracteres")
-        print(f"    • Total de páginas: {total_pages}")
-        print(f"    • Candidatos extraídos: Título={candidates.raw_title!r}, Autores={candidates.raw_authors!r}")
-        res = classifier.classify_and_validate(pdf_path, **classify_kwargs)
-        print(f"  {GREEN}✓ Resposta da API TypeSafe:{RESET}")
-        print(f"    • Categoria escolhida: {BOLD}{res.classification}{RESET} (Confiança: {res.classification_confidence:.2f})")
-        print(f"    • Probabilidades dos campos: {res.probabilities}")
-        return res
+        try:
+            import typesafe_sdk  # noqa: F401
+            sdk_disponivel = True
+        except ModuleNotFoundError:
+            sdk_disponivel = False
+
+        if sdk_disponivel:
+            print(f"  {GREEN}✓ Chave TYPESAFE_API_KEY detectada e SDK typesafe-sdk carregado.{RESET}")
+            print(f"  Enviando requisição para API TypeSafe AI com primitivas Choice e Noul...")
+            print(f"  - Parâmetros enviados:")
+            print(f"    • Amostra de texto: {len(combined_text[:3000])} caracteres")
+            print(f"    • Total de páginas: {total_pages}")
+            print(f"    • Candidatos extraídos: Título={candidates.raw_title!r}, Autores={candidates.raw_authors!r}")
+            res = classifier.classify_and_validate(pdf_path, **classify_kwargs)
+            print(f"  {GREEN}✓ Resposta da API TypeSafe:{RESET}")
+            print(f"    • Categoria escolhida: {BOLD}{res.classification}{RESET} (Confiança: {res.classification_confidence:.2f})")
+            print(f"    • Probabilidades dos campos: {res.probabilities}")
+            return res
+        else:
+            print(f"  {YELLOW}⚠️  Chave TYPESAFE_API_KEY detectada, mas o pacote 'typesafe-sdk' não está instalado.{RESET}")
+            print(f"  {DIM}Para classificação remota, instale: pip install '.[typesafe]'{RESET}")
+            print(f"  Executando motor calibrado local de regras probabilísticas (System One Heuristics)...")
     else:
         print(f"  {YELLOW}ℹ Nenhuma TYPESAFE_API_KEY configurada no ambiente.{RESET}")
         print(f"  Executando motor calibrado local de regras probabilísticas (System One Heuristics)...")
 
-        # Heuristic explanation
-        lower_text = combined_text.lower()
-        thesis_markers = [
-            "tese apresentada", "dissertação apresentada",
-            "requisito para a obtenção do título de doutor",
-            "requisito para obtenção do título de doutor",
-            "requisito para obtenção do título de mestre",
-            "requisito para a obtenção do título de mestre",
-            "programa de pós-graduação stricto sensu",
-            "programa de pós-graduação",
-        ]
-        courseware_markers = [
-            "disciplina na modalidade a distância", "modalidade a distância",
-            "unisulvirtual", "ead", "livro didático", "material didático", "apostila"
-        ]
+    # Heuristic explanation
+    lower_text = combined_text.lower()
+    thesis_markers = [
+        "tese apresentada", "dissertação apresentada",
+        "requisito para a obtenção do título de doutor",
+        "requisito para obtenção do título de mestre",
+        "programa de pós-graduação",
+    ]
+    courseware_markers = [
+        "disciplina na modalidade a distância", "modalidade a distância",
+        "unisulvirtual", "ead", "livro didático", "material didático", "apostila"
+    ]
 
-        found_thesis = [m for m in thesis_markers if m in lower_text]
-        found_courseware = [m for m in courseware_markers if m in lower_text]
+    found_thesis = [m for m in thesis_markers if m in lower_text]
+    found_courseware = [m for m in courseware_markers if m in lower_text]
 
-        print(f"  - Análise estrutural:")
-        print(f"    • Total de páginas: {total_pages}")
-        if found_thesis:
-            print(f"    • {GREEN}Marcador de Tese/Dissertação detectado:{RESET} {found_thesis} (Indica 'outros' / tese ou dissertação acadêmica)")
-        if found_courseware:
-            print(f"    • {GREEN}Marcador de Apostila/EAD detectado:{RESET} {found_courseware} (Indica 'apostila')")
-        if candidates.isbn:
-            print(f"    • {GREEN}ISBN detectado:{RESET} {candidates.isbn} (Indica 'livro')")
-        if candidates.doi:
-            print(f"    • {GREEN}DOI detectado:{RESET} {candidates.doi} (Indica 'artigo_cientifico')")
-        if candidates.issn:
-            print(f"    • {GREEN}ISSN detectado:{RESET} {candidates.issn} (Indica 'revista')")
+    print(f"  - Análise estrutural:")
+    print(f"    • Total de páginas: {total_pages}")
+    if found_thesis:
+        print(f"    • {GREEN}Marcador de Tese/Dissertação detectado:{RESET} {found_thesis} (Indica 'outros' / tese ou dissertação acadêmica)")
+    if found_courseware:
+        print(f"    • {GREEN}Marcador de Apostila/EAD detectado:{RESET} {found_courseware} (Indica 'apostila')")
+    if candidates.isbn:
+        print(f"    • {GREEN}ISBN detectado:{RESET} {candidates.isbn} (Indica 'livro')")
+    if candidates.doi:
+        print(f"    • {GREEN}DOI detectado:{RESET} {candidates.doi} (Indica 'artigo_cientifico')")
+    if candidates.issn:
+        print(f"    • {GREEN}ISSN detectado:{RESET} {candidates.issn} (Indica 'revista')")
 
-        res = classifier.classify_and_validate(pdf_path, **classify_kwargs)
-        scores = res.raw_jev_data.get("calibrated_scores", {})
-        print(f"  - Pontuação detalhada calculada pelo Jev:")
-        for cat, score in scores.items():
-            bar = "■" * max(0, int(score))
-            print(f"    • {cat:18s}: {score:5.1f} {DIM}{bar}{RESET}")
+    res = classifier.classify_and_validate(pdf_path, **classify_kwargs)
+    scores = res.raw_jev_data.get("calibrated_scores", {})
+    print(f"  - Pontuação detalhada calculada pelo Jev:")
+    for cat, score in scores.items():
+        bar = "■" * max(0, int(score))
+        print(f"    • {cat:18s}: {score:5.1f} {DIM}{bar}{RESET}")
 
-        print(f"  {GREEN}✓ Classificação Jev:{RESET} {BOLD}{res.classification}{RESET} (Confiança: {res.classification_confidence:.2f})")
-        return res
+    print(f"  {GREEN}✓ Classificação Jev:{RESET} {BOLD}{res.classification}{RESET} (Confiança: {res.classification_confidence:.2f})")
+    return res
 
 
 def prompt_user_confirmation(

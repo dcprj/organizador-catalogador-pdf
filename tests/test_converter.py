@@ -1,8 +1,8 @@
 """Tests for Markdown conversion, YAML Frontmatter assembly, and filename standardization."""
 
 import yaml
-from src.converter import MarkdownConverter, generate_standardized_filename, sanitize_filename
-from src.models import PublicationMetadata, Identifiers
+from organizador_pdf.converter import MarkdownConverter, generate_standardized_filename, sanitize_filename
+from organizador_pdf.models import PublicationMetadata, Identifiers
 
 
 def test_sanitize_filename():

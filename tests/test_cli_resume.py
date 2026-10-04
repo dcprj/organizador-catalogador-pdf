@@ -55,7 +55,7 @@ def lote(tmp_path: Path) -> tuple[Path, Path, list[Path]]:
 
 
 def _resultado_sucesso(
-    caminho: Path, *, provedor_usado: str = "ollama", usou_fallback: bool = False
+    caminho: Path, *, provedor_usado: str = "deterministico_local", usou_fallback: bool = False
 ) -> ResultadoDoArquivo:
     return ResultadoDoArquivo(
         origem=caminho,
@@ -180,34 +180,35 @@ class TestInterrupcaoEResume:
         assert sorted(vistos) == [pdfs[1], pdfs[2]]
 
 
-class TestEstatisticaLocalVsPago:
-    def test_resumo_mostra_contagem_local_e_pago(self, lote, monkeypatch):
+class TestEstatisticaLocalVsTypeSafe:
+    def test_resumo_mostra_contagem_local_e_typesafe(self, lote, monkeypatch):
         origem, destino, pdfs = lote
 
         def falso_processar(self, caminho: Path) -> ResultadoDoArquivo:
             if caminho == pdfs[2]:
                 return _resultado_sucesso(
-                    caminho, provedor_usado="anthropic", usou_fallback=True
+                    caminho, provedor_usado="typesafe", usou_fallback=False
                 )
-            return _resultado_sucesso(caminho)
+            return _resultado_sucesso(caminho, provedor_usado="deterministico_local")
 
         monkeypatch.setattr(Pipeline, "processar_arquivo", falso_processar)
 
         resultado = runner.invoke(app, ["--origem", str(origem), "--destino", str(destino)])
 
         assert resultado.exit_code == 0, resultado.output
-        assert "2 extraído(s) localmente" in resultado.output
-        assert "1 via provedor pago" in resultado.output
-        # marcador informativo na linha do arquivo que usou fallback
-        assert "$ extraído pelo provedor de fallback" in resultado.output
+        assert "2 classificado(s) localmente (Jev System One)" in resultado.output
+        assert "1 via TypeSafe AI" in resultado.output
 
-    def test_sem_fallback_nenhum_marcador_de_fallback_aparece(self, lote, monkeypatch):
+    def test_sem_typesafe_mostra_apenas_motor_local(self, lote, monkeypatch):
         origem, destino, pdfs = lote
-        monkeypatch.setattr(Pipeline, "processar_arquivo", lambda self, c: _resultado_sucesso(c))
+        monkeypatch.setattr(
+            Pipeline,
+            "processar_arquivo",
+            lambda self, c: _resultado_sucesso(c, provedor_usado="deterministico_local"),
+        )
 
         resultado = runner.invoke(app, ["--origem", str(origem), "--destino", str(destino)])
 
         assert resultado.exit_code == 0, resultado.output
-        assert "3 extraído(s) localmente" in resultado.output
-        assert "0 via provedor pago" in resultado.output
-        assert "extraído pelo provedor de fallback" not in resultado.output
+        assert "3 classificado(s) pelo motor determinístico local (Jev System One)" in resultado.output
+        assert "via TypeSafe AI" not in resultado.output

@@ -138,6 +138,16 @@ def processar(
         "--validate",
         help="Executa em modo interativo de validação passo a passo com confirmação de metadados em tempo real.",
     ),
+    estrutura: str = typer.Option(
+        "cnpq",
+        "--estrutura",
+        help="Estrutura de organização das pastas: 'cnpq' (hierárquica CNPq) ou 'plana' (por categoria).",
+    ),
+    plana: bool = typer.Option(
+        False,
+        "--plana",
+        help="Atalho para organização em pasta plana por categoria (<destino>/<tipo>/).",
+    ),
     version: Optional[bool] = typer.Option(
         None,
         "--version",
@@ -183,7 +193,10 @@ def processar(
         paralelo = estado.parametros.paralelo or paralelo
         quarantine = getattr(estado.parametros, "quarantine", quarantine)
         enriquecimento_online = getattr(estado.parametros, "enriquecimento_online", enriquecimento_online)
+        estrutura = getattr(estado.parametros, "estrutura", "cnpq")
     else:
+        if plana:
+            estrutura = "plana"
         if origem is None or destino is None:
             saida.print("[bold red]--origem e --destino são obrigatórios (ou use --resume).[/]")
             raise typer.Exit(code=2)
@@ -199,6 +212,9 @@ def processar(
                     paralelo=paralelo,
                     quarantine=quarantine,
                     enriquecimento_online=enriquecimento_online,
+                    estrutura=estrutura,
+                    max_paginas=config.max_paginas,
+                    max_caracteres=config.max_caracteres,
                 )
             )
 
@@ -239,6 +255,7 @@ def processar(
         dry_run=dry_run,
         mover=mover,
         paralelo=paralelo,
+        estrutura=estrutura,
     )
 
     opcoes = OpcoesDoPipeline(
@@ -248,6 +265,7 @@ def processar(
         subpasta_markdown=subpasta_markdown,
         quarantine=quarantine,
         enriquecimento_online=enriquecimento_online,
+        estrutura=estrutura,
     )
     pipeline = Pipeline(config=config, opcoes=opcoes)
 
@@ -354,6 +372,7 @@ def _cabecalho(
     dry_run: bool,
     mover: bool,
     paralelo: int = 1,
+    estrutura: str = "cnpq",
 ) -> None:
     linhas = [
         f"[bold]Origem:[/]         {origem.resolve()}",
@@ -362,6 +381,7 @@ def _cabecalho(
         "[bold]Classificador:[/]  Jev System One (TypeSafe / Heurísticas Calibradas)",
         "[bold]Enriquecimento:[/] Ativo (Brasil API, Google Books, Crossref, OpenAlex)",
         "[bold]Análise:[/]        10 primeiras + 10 últimas páginas",
+        f"[bold]Estrutura:[/]      " + ("Plana por categoria (<destino>/<tipo>/)" if estrutura == "plana" else "Hierárquica CNPq (<destino>/<Área>/<Subárea>/<Tipo>/)"),
         f"[bold]Modo:[/]           " + ("mover" if mover else "copiar"),
     ]
     if paralelo > 1:
@@ -447,9 +467,12 @@ def _relatorio(
         f"[red]{len(falhas)} falha(s)[/] · {len(resultados)} total"
     )
     if sucessos:
-        locais = sum(1 for r in sucessos if r.provedor_usado in ("ollama", "deterministico_local"))
-        pagos = len(sucessos) - locais
-        resumo += f"\n[dim]{locais} extraído(s) localmente (Ollama) · {pagos} via provedor pago[/]"
+        typesafe_count = sum(1 for r in sucessos if getattr(r, "provedor_usado", "") == "typesafe")
+        locais = len(sucessos) - typesafe_count
+        if typesafe_count > 0:
+            resumo += f"\n[dim]{locais} classificado(s) localmente (Jev System One) · {typesafe_count} via TypeSafe AI[/]"
+        else:
+            resumo += f"\n[dim]{len(sucessos)} classificado(s) pelo motor determinístico local (Jev System One)[/]"
     if avisos:
         resumo += f"\n[yellow]{len(avisos)} com possível divergência/revisão manual[/]"
     if falhas or avisos:

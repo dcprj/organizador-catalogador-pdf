@@ -2,12 +2,12 @@
 
 from unittest.mock import MagicMock, patch
 import pytest
-from src.classifier_jev import (
+from organizador_pdf.classifier_jev import (
     extract_native_sample_text,
     extract_candidate_metadata,
     JevClassifier,
 )
-from src.models import ExtractedCandidates
+from organizador_pdf.models import ExtractedCandidates
 
 
 def test_extract_native_sample_text(sample_pdf_generator):
@@ -164,7 +164,7 @@ def test_jev_calibrated_fallback_courseware(sample_pdf_generator, monkeypatch):
 
 
 def test_parse_page_cip_single_author():
-    from src.classifier_jev import parse_page_cip
+    from organizador_pdf.classifier_jev import parse_page_cip
 
     sample_page = (
         "CIP-BRASIL. CATALOGAÇÃO NA PUBLICAÇÃO\n"
@@ -186,7 +186,7 @@ def test_parse_page_cip_single_author():
 
 
 def test_parse_page_cip_edited_collection():
-    from src.classifier_jev import parse_page_cip
+    from organizador_pdf.classifier_jev import parse_page_cip
 
     sample_page = (
         "N494\n"
@@ -209,7 +209,7 @@ def test_parse_page_cip_edited_collection():
 
 
 def test_parse_page_cip_multi_author_courseware():
-    from src.classifier_jev import parse_page_cip
+    from organizador_pdf.classifier_jev import parse_page_cip
 
     sample_page = (
         "Ficha catalográfica elaborada pela Biblioteca Universitária da Unisul\n"

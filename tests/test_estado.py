@@ -22,11 +22,12 @@ def _parametros(**sobrescritas) -> ParametrosSalvos:
         recursive=True,
         mover=False,
         subpasta_markdown=None,
-        modelo=None,
-        ollama_url=None,
-        provedor="ollama",
-        provedor_fallback=None,
-        modelo_fallback=None,
+        paralelo=1,
+        quarantine=True,
+        enriquecimento_online=True,
+        estrutura="cnpq",
+        max_paginas=10,
+        max_caracteres=30_000,
     )
     base.update(sobrescritas)
     return ParametrosSalvos(**base)
@@ -41,13 +42,35 @@ class TestCarregar:
         estado_mod.CAMINHO_ESTADO.write_text("{ isso não é json válido", encoding="utf-8")
         assert EstadoDeExecucao.carregar() is None
 
+    def test_ignora_campos_legados_ao_carregar(self):
+        estado_mod.CAMINHO_ESTADO.parent.mkdir(parents=True, exist_ok=True)
+        conteudo_antigo = {
+            "criado_em": "2025-01-01T00:00:00",
+            "parametros": {
+                "origem": "/antigo/in",
+                "destino": "/antigo/out",
+                "modelo": "qwen2.5:3b-instruct",
+                "provedor": "ollama",
+                "ollama_url": "http://localhost:11434",
+                "provedor_fallback": None,
+                "modelo_fallback": None,
+            },
+            "concluidos": [],
+        }
+        import json
+        estado_mod.CAMINHO_ESTADO.write_text(json.dumps(conteudo_antigo), encoding="utf-8")
+        recarregado = EstadoDeExecucao.carregar()
+        assert recarregado is not None
+        assert recarregado.parametros.origem == "/antigo/in"
+        assert recarregado.parametros.destino == "/antigo/out"
+
 
 class TestSalvarERecarregar:
     def test_round_trip_preserva_parametros_e_concluidos(self, tmp_path: Path):
         pdf = tmp_path / "a.pdf"
         pdf.write_bytes(b"%PDF-1.4")
 
-        original = EstadoDeExecucao(parametros=_parametros(modelo="qwen2.5:3b-instruct"))
+        original = EstadoDeExecucao(parametros=_parametros(max_paginas=5))
         original.marcar_concluido(pdf)
 
         recarregado = EstadoDeExecucao.carregar()

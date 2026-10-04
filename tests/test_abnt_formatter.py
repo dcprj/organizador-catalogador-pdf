@@ -1,8 +1,8 @@
 """Tests for ABNT NBR 6023:2018 formatter."""
 
 import pytest
-from src.models import PublicationMetadata, Identifiers
-from src.abnt_formatter import (
+from organizador_pdf.models import PublicationMetadata, Identifiers
+from organizador_pdf.abnt_formatter import (
     ABNTFormatter,
     format_single_author_abnt,
     format_authors_abnt,

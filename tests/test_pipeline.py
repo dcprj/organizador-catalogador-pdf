@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from organizador_pdf.config import Config, Provedor
+from organizador_pdf.config import Config
 from organizador_pdf.converter import listar_pdfs
 from organizador_pdf.extractor import ErroDeExtracao, ErroFatalDeAPI
 from organizador_pdf.models import Identificadores, Metadados, TipoPublicacao
@@ -268,7 +268,7 @@ class TestFallbackDeProvedor:
         assert fallback.chamadas == 0
         assert "revisao_manual" not in resultado.pdf_destino.parts
         assert resultado.usou_fallback is False
-        assert resultado.provedor_usado == "ollama"  # Config() padrão
+        assert resultado.provedor_usado == "deterministico_local"  # Config() padrão
 
     def test_aviso_local_aciona_fallback_que_resolve(
         self, pdf_de_teste: Path, metadados: Metadados, tmp_path: Path
@@ -398,11 +398,11 @@ class TestFallbackDeProvedor:
 
         assert fallback.chamadas == 0
 
-    def test_provedor_usado_reflete_config_provedor_fallback(
+    def test_provedor_usado_quando_usa_fallback(
         self, pdf_de_teste: Path, metadados: Metadados, tmp_path: Path
     ):
         pipeline = Pipeline(
-            Config(verificar_online=False, provedor_fallback=Provedor.ANTHROPIC),
+            Config(verificar_online=False),
             OpcoesDoPipeline(destino=tmp_path / "biblioteca"),
             extrator=ExtratorFalso(erro=ErroDeExtracao("cota excedida")),
             extrator_fallback=ExtratorFalso(metadados),
@@ -411,7 +411,7 @@ class TestFallbackDeProvedor:
         resultado = pipeline.processar_arquivo(pdf_de_teste)
 
         assert resultado.usou_fallback is True
-        assert resultado.provedor_usado == "anthropic"
+        assert resultado.provedor_usado == "fallback"
 
 
 class TestVerificacaoOnlineNoPipeline:

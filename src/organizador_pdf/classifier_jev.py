@@ -691,6 +691,15 @@ class JevClassifier:
         # Attempt to run through TypeSafe SDK if API key is present
         if self.api_key:
             try:
+                import typesafe_sdk  # noqa: F401
+            except ModuleNotFoundError:
+                logger.warning(
+                    "TYPESAFE_API_KEY configurada, mas o pacote 'typesafe-sdk' não está instalado "
+                    "(instale com: pip install '.[typesafe]'). Utilizando motor determinístico local."
+                )
+                return self._run_calibrated_fallback(combined_text, candidates, total_pages)
+
+            try:
                 return self._run_jev_sdk(combined_text, candidates, total_pages)
             except Exception as e:
                 logger.warning("TypeSafe SDK call failed (%s). Falling back to calibrated rules.", e)

@@ -51,6 +51,7 @@ class OpcoesDoPipeline:
     subpasta_markdown: Optional[str] = None
     quarantine: bool = True
     enriquecimento_online: bool = True
+    estrutura: str = "cnpq"
 
     @property
     def online(self) -> bool:
@@ -143,6 +144,7 @@ class Pipeline:
                 mover=self.opcoes.mover,
                 dry_run=self.opcoes.dry_run,
                 revisao_manual=revisao_manual,
+                estrutura=getattr(self.opcoes, "estrutura", "cnpq"),
             )
 
             return ResultadoDoArquivo(
@@ -210,10 +212,8 @@ class Pipeline:
 
     def _nome_do_provedor_usado(self, usou_fallback: bool) -> str:
         if not usou_fallback:
-            prov = getattr(self.config, "provedor", None)
-            return getattr(prov, "value", str(prov)) if prov else "deterministico_local"
-        prov_fb = getattr(self.config, "provedor_fallback", None)
-        return getattr(prov_fb, "value", str(prov_fb)) if prov_fb else "fallback"
+            return getattr(self.config, "provedor", "deterministico_local")
+        return "fallback"
 
     def _montar_markdown(
         self,

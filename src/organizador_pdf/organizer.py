@@ -127,14 +127,22 @@ def montar_diretorio(
     *,
     subpasta_markdown: Optional[str] = None,
     revisao_manual: bool = False,
+    estrutura: str = "cnpq",
 ) -> tuple[Path, Path]:
-    """Devolve (diretório do PDF, diretório do Markdown)."""
+    """Devolve (diretório do PDF, diretório do Markdown).
+
+    Suporta estrutura 'cnpq' (hierárquica por Área/Subárea/Tipo) ou 'plana' (direto por Tipo).
+    """
     raiz = destino / PASTA_REVISAO_MANUAL if revisao_manual else destino
-    area = sanitizar(metadados.area_principal) or SEM_VALOR
-    subarea = sanitizar(metadados.subarea) or area
     tipo = sanitizar(metadados.plural_do_tipo) or "Outros"
 
-    diretorio_pdf = raiz / area / subarea / tipo
+    if estrutura == "plana":
+        diretorio_pdf = raiz / tipo.lower()
+    else:
+        area = sanitizar(metadados.area_principal) or SEM_VALOR
+        subarea = sanitizar(metadados.subarea) or area
+        diretorio_pdf = raiz / area / subarea / tipo
+
     diretorio_md = diretorio_pdf
     if subpasta_markdown:
         diretorio_md = diretorio_pdf / (sanitizar(subpasta_markdown) or "Markdown")
@@ -260,6 +268,7 @@ def organizar(
     mover: bool = False,
     dry_run: bool = False,
     revisao_manual: bool = False,
+    estrutura: str = "cnpq",
 ) -> ResultadoDaOrganizacao:
     """Organiza o PDF renomeado e o Markdown no destino (ou apenas simula)."""
     diretorio_pdf, diretorio_md = montar_diretorio(
@@ -267,6 +276,7 @@ def organizar(
         metadados,
         subpasta_markdown=subpasta_markdown,
         revisao_manual=revisao_manual,
+        estrutura=estrutura,
     )
 
     # Usa nome padronizado legível
@@ -323,6 +333,7 @@ class PipelineOrganizer:
         online: Optional[bool] = None,
         max_paginas: int = 10,
         max_caracteres: int = 30000,
+        estrutura: str = "plana",
         **kwargs,
     ):
         if kwargs:
@@ -335,6 +346,7 @@ class PipelineOrganizer:
                 )
         self.max_paginas = max_paginas
         self.max_caracteres = max_caracteres
+        self.estrutura = estrutura
         rede = enriquecimento_online if online is None else online
         self.classifier = classifier or JevClassifier()
         self.enricher = enricher or MetadataEnricher(online=rede)
@@ -391,7 +403,13 @@ class PipelineOrganizer:
             pasta_tipo = out_base
             if precisa_revisao:
                 pasta_tipo = pasta_tipo / PASTA_REVISAO_MANUAL
-            pasta_tipo = pasta_tipo / classif_plural
+
+            if self.estrutura == "cnpq":
+                area = sanitizar(meta.area or "Outros") or SEM_VALOR
+                subarea = area
+                pasta_tipo = pasta_tipo / area / subarea / classif_plural
+            else:
+                pasta_tipo = pasta_tipo / classif_plural
 
             stem = generate_standardized_filename(meta, fallback_name=orig_p.name)
             target_pdf = pasta_tipo / f"{stem}.pdf"

@@ -3,7 +3,7 @@
 import subprocess
 import sys
 from pathlib import Path
-from src.organizer import PipelineOrganizer
+from organizador_pdf.organizer import PipelineOrganizer
 
 
 def test_pipeline_organizer_e2e(tmp_path: Path, sample_pdf_generator):

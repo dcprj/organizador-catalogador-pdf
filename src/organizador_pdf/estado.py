@@ -33,11 +33,9 @@ class ParametrosSalvos:
     paralelo: int = 1
     quarantine: bool = True
     enriquecimento_online: bool = True
-    modelo: Optional[str] = None
-    ollama_url: Optional[str] = None
-    provedor: Optional[str] = None
-    provedor_fallback: Optional[str] = None
-    modelo_fallback: Optional[str] = None
+    estrutura: str = "cnpq"
+    max_paginas: int = 10
+    max_caracteres: int = 30_000
 
 
 @dataclass
@@ -69,8 +67,12 @@ class EstadoDeExecucao:
             return None
         try:
             dados = json.loads(CAMINHO_ESTADO.read_text(encoding="utf-8"))
+            params_raw = dados.get("parametros", {})
+            from dataclasses import fields
+            valid_field_names = {f.name for f in fields(ParametrosSalvos)}
+            filtered_params = {k: v for k, v in params_raw.items() if k in valid_field_names}
             return cls(
-                parametros=ParametrosSalvos(**dados["parametros"]),
+                parametros=ParametrosSalvos(**filtered_params),
                 concluidos=set(dados.get("concluidos", [])),
             )
         except (json.JSONDecodeError, KeyError, TypeError):

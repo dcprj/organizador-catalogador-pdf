@@ -2,19 +2,19 @@
 
 from unittest.mock import patch
 import pytest
-from src.classifier_jev import (
+from organizador_pdf.classifier_jev import (
     extract_candidate_metadata,
     parse_page_cip,
 )
-from src.models import (
+from organizador_pdf.models import (
     PublicationMetadata,
     Identifiers,
     JevValidationResult,
     ExtractedCandidates,
 )
-from src.converter import generate_standardized_filename
-from src.abnt_formatter import format_single_author_abnt, ABNTFormatter
-from src.metadata_api import MetadataEnricher
+from organizador_pdf.converter import generate_standardized_filename
+from organizador_pdf.abnt_formatter import format_single_author_abnt, ABNTFormatter
+from organizador_pdf.metadata_api import MetadataEnricher
 
 
 def test_case_1_doi_enrichment_unconditional():

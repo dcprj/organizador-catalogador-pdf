@@ -2,15 +2,19 @@
 
 Ferramenta de linha de comando de alta precisão que processa lotes de PDFs, extrai metadados bibliográficos estruturados de forma determinística, gera arquivos Markdown companheiros (`.md`) com frontmatter YAML e referências ABNT (NBR 6023:2018), e organiza os arquivos em uma árvore de diretórios padronizada.
 
-A partir da versão **v0.4.0**, o projeto adota um **motor determinístico com o classificador Jev**:
-- **Classificador Bibliográfico Jev (Sempre Ativo)**: o modelo Jev é sempre utilizado como o núcleo de decisão classificatória da aplicação.
-  - **Sem chave configurada (padrão)**: executa o motor calibrado local de regras probabilísticas (*System One Heuristics*), 100% local, privado, rápido e com zero custo de tokens.
-  - **Com chave `TYPESAFE_API_KEY` (opcional)**: integra-se à API TypeSafe AI com as primitivas `Choice` e `Noul` para validação semântica profunda da amostra do documento.
-- **Extração de Ficha Catalográfica (CIP)**: identifica e decodifica blocos de catalogação na fonte (AACR2 / ISBD) nas páginas iniciais.
-- **Validação e Enriquecimento Multi-API Pública**: consulta gratuita contra Brasil API (Câmara Brasileira do Livro / ISBN), Google Books, Crossref (DOI), OpenAlex e OpenLibrary.
-- **Formatação ABNT NBR 6023:2018 Estrita**: manipulação correta de sobrenomes compostos e agnomes familiares (Filho, Neto, Júnior, Sobrinho).
-- **Markdown Companheiro Inteligente**: amostragem rápida das 10 primeiras e 10 últimas páginas para metadados (até 30.000 caracteres por padrão), sem duplicar o texto integral do PDF.
-- **Nomenclatura Visual Padronizada**: renomeação clara no formato `SOBRENOME, Nome - Título (Ano)`.
+A partir da versão **v0.4.0**, o projeto adota uma arquitetura determinística unificada:
+- **Classificador Bibliográfico Jev (Núcleo do Sistema)**:
+  - **Execução Local Padrão (*System One Heuristics*)**: 100% local, privado, ultra-rápido, sem custo de tokens e sem dependência de LLMs pesados externos. Opera com decodificação de Fichas Catalográficas (CIP/AACR2/ISBD) e regras probabilísticas calibradas.
+  - **Integração TypeSafe AI (Opcional)**: caso `TYPESAFE_API_KEY` esteja definida e o pacote opcional `typesafe-sdk` instalado (`pip install ".[typesafe]"`), realiza validação semântica profunda remota.
+- **Enriquecimento Bibliográfico em Bases Públicas (Configurável)**:
+  - Consulta bases abertas e gratuitas (Brasil API / CBL para ISBN, Crossref para DOI, OpenAlex, Google Books, OpenLibrary) utilizando apenas identificadores ou título (o arquivo PDF e o texto completo **nunca** são transmitidos).
+  - Pode ser completamente desativado definindo `ORGPDF_VERIFICAR_ONLINE=false` no arquivo `.env`.
+- **Formatação ABNT NBR 6023:2018 Estrita**: manipulação precisa de sobrenomes compostos, agnomes familiares (Filho, Neto, Júnior, Sobrinho) e instituições.
+- **Organização Flexível em Diretórios**:
+  - **Hierárquica CNPq (Padrão da CLI)**: `<destino>/<Grande Área>/<Área>/<Tipo>/`
+  - **Plana por Categoria (`--plana` ou `--estrutura plana`)**: `<destino>/<Tipo>/`
+- **Markdown Companheiro Inteligente**: amostragem rápida das primeiras e últimas páginas para metadados (até 30.000 caracteres por padrão), compatível com Obsidian, Logseq e Notion.
+- **Nomenclatura Visual Padronizada**: renomeação uniforme no formato `SOBRENOME, Nome - Título (Ano)`.
 
 ```
 destino/
@@ -21,10 +25,8 @@ destino/
 │   ├── SILVA, João; SANTOS, Maria - Aprendizado de Máquina em Saúde (2023).pdf
 │   └── SILVA, João; SANTOS, Maria - Aprendizado de Máquina em Saúde (2023).md
 └── revisao_manual/
-    └── ... (arquivos com divergência ou baixa confiança para inspeção humana)
+    └── ... (arquivos com possível divergência para conferência)
 ```
-
-O arquivo `.md` companheiro traz frontmatter YAML compatível com o Obsidian, Logseq e Notion, incluindo a referência ABNT formatada e metadados estruturados.
 
 ---
 
@@ -32,10 +34,10 @@ O arquivo `.md` companheiro traz frontmatter YAML compatível com o Obsidian, Lo
 
 Requer **Python 3.10 ou superior** (recomendado Python 3.12).
 
-### Instalação em Modo de Desenvolvimento
+### Instalação Básica (100% Local / Heurísticas Jev)
 
 ```bash
-# Clone ou acesse o diretório do repositório
+# Clone ou acesse o repositório
 git clone https://github.com/dcprj/organizador-catalogador-pdf.git
 cd organizador-catalogador-pdf
 
@@ -43,55 +45,69 @@ cd organizador-catalogador-pdf
 python3 -m venv .venv
 source .venv/bin/activate       # No Windows: .venv\Scripts\activate
 
-# Instale o pacote e suas dependências
-pip install -e ".[dev]"
+# Instalação padrão
+pip install -e .
 ```
 
-Também é possível instalar diretamente via `requirements.txt`:
+### Instalação com Suporte Opcional TypeSafe AI
+
+Se desejar suporte à classificação remota via TypeSafe AI:
 ```bash
-pip install -r requirements.txt
+pip install -e ".[typesafe]"
+```
+
+Para desenvolvimento e execução dos testes automatizados:
+```bash
+pip install -e ".[dev]"
 ```
 
 ---
 
 ## Uso
 
-O projeto oferece duas interfaces de execução complementares:
+O comando oficial é **`organizador-pdf`** (ou `python -m organizador_pdf`). O script `python main.py` também está disponível como atalho de compatibilidade, encaminhando para o mesmo pipeline.
 
-1. **`organizador-pdf` (ou `python -m organizador_pdf`)**: CLI oficial de alta performance recomendada para produção. Suporta processamento paralelo com múltiplos workers (`--paralelo`), retomada com `--resume`, subpasta customizada para Markdowns (`--subpasta-md`) e organiza os arquivos em uma **árvore taxonômica hierárquica CNPq** (`<destino>/<Grande Área>/<Área>/<Tipo>/`).
-2. **`python main.py`**: Ponto de entrada direto para organização em **estrutura plana por categoria** (`<destino>/<Tipo>/`), ideal para organização simplificada de bibliotecas pessoais.
+### Exemplos Rápidos
 
 ```bash
-# Simulação rápida: analisa e exibe a catalogação sem gravar nem mover nada
-organizador-pdf --origem ~/Downloads/meus_pdfs --destino ~/Biblioteca --dry-run
+# 1. Simulação (dry-run): analisa os PDFs e exibe a árvore sem alterar disco
+organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --dry-run
 
-# Processamento real (copia os PDFs e gera os Markdowns)
+# 2. Execução padrão (copia arquivos para a árvore hierárquica CNPq)
 organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca
 
-# Move os PDFs em vez de copiar, separando os .md em subpasta espelho
+# 3. Organização em estrutura plana por categoria (<destino>/<Tipo>/)
+organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --plana
+
+# 4. Mover arquivos originais em vez de copiar, salvando os .md em subpasta espelho
 organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --mover --subpasta-md Markdown
 
-# Processamento concorrente para grandes lotes
+# 5. Processamento paralelo acelerado (múltiplos workers)
 organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --paralelo 4
 
-# Retomada automática após interrupção (Ctrl+C ou queda)
+# 6. Modo interativo passo a passo (validação e edição assistida de metadados)
+organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --interactive
+
+# 7. Retomada resiliente após interrupção (Ctrl+C ou fechamento do terminal)
 organizador-pdf --resume
 ```
 
-### Opções da CLI
+### Opções da Linha de Comando
 
 | Opção | Padrão | Descrição |
 | :--- | :--- | :--- |
 | `--origem` / `--input` / `-i` | *obrigatório* | Diretório de origem contendo os arquivos PDF |
-| `--destino` / `--output` / `-o` | *obrigatório* | Diretório raiz de destino da árvore organizada |
+| `--destino` / `--output` / `-o` | *obrigatório* | Diretório raiz de destino da biblioteca organizada |
+| `--estrutura` | `cnpq` | Modelo de diretórios: `cnpq` (árvore taxonômica) ou `plana` (apenas categoria) |
+| `--plana` | `False` | Atalho para organizar em estrutura plana (`--estrutura plana`) |
 | `--dry-run` | `False` | Executa o pipeline sem realizar alterações em disco |
-| `--resume` | `False` | Retoma o lote pendente de onde parou |
+| `--resume` | `False` | Retoma o lote pendente exatamente de onde parou |
 | `--recursive` / `-r` | `True` | Varredura recursiva em subpastas (`--no-recursive` desativa) |
-| `--mover` | `False` | Move o arquivo PDF original em vez de copiar |
+| `--mover` | `False` | Move o arquivo PDF original em vez de copiar (padrão seguro: cópia) |
 | `--subpasta-md` | `None` | Grava os arquivos `.md` em subpasta espelho |
 | `--paralelo` / `-j` | `1` | Número de workers concorrentes para processar o lote |
-| `--quarantine` | `True` | Roteia itens de baixa confiança para `revisao_manual/` |
-| `--limite` / `-n` | `None` | Limita o número máximo de arquivos processados |
+| `--quarantine` | `True` | Roteia itens com divergência para `revisao_manual/` |
+| `--limite` / `-n` | `None` | Limita a quantidade máxima de arquivos processados no lote |
 | `--interactive` / `--validate` | `False` | Modo interativo passo a passo com confirmação de metadados |
 | `--log` | `erros.log` | Arquivo para registro detalhado de erros |
 | `--verbose` / `-v` | `False` | Habilita logs informativos detalhados no console |
@@ -99,55 +115,29 @@ organizador-pdf --resume
 
 ---
 
-## Validador Interativo (Diagnostic Tool)
+## Modo Interativo e Diagnóstico
 
-O projeto inclui uma ferramenta interativa no terminal para inspeção passo a passo e diagnósticos de classificação:
-
-```bash
-python scripts/interactive_validator.py --origem ~/Downloads/meus_pdfs --destino ~/Biblioteca
-```
-
-Recursos do Validador:
-1. Inspeção de páginas e camadas de texto nativo.
-2. Exibição de candidatos a metadados extraídos.
-3. Raciocínio de classificação e pontuação por tipo documental.
-4. Consulta ao vivo em APIs externas com visualização de similaridade.
-5. Confirmação ou ajuste campo a campo antes da gravação final.
-
----
-
-## Como Funciona o Pipeline
-
-1. **Amostragem Leve de Texto (`converter.py`)**:
-   Extrai o texto nativo das primeiras e últimas 10 páginas (até 30.000 caracteres por padrão, configurável via `ORGPDF_MAX_PAGINAS` e `ORGPDF_MAX_CARACTERES`) via PyMuPDF. PDFs escaneados (sem camada de texto nativa) são reportados para OCR prévio.
-2. **Classificação e Heurísticas (`classifier_jev.py`)**:
-   - Detecta Fichas Catalográficas (CIP) no padrão AACR2/ISBD.
-   - Aplica filtros de disclaimers de repositórios universitários para evitar alucinação de autores institucionais.
-   - Identifica elementos estruturais de teses, dissertações, artigos científicos com DOI/ISSN, revistas e apostilas.
-3. **Validação e Enriquecimento (`metadata_api.py`)**:
-   Se identificadores (ISBN, DOI) ou títulos forem encontrados, consulta bases bibliográficas públicas (Brasil API, Google Books, Crossref, OpenAlex, OpenLibrary) para validar ou preencher campos ausentes (ano, editora, local). Este enriquecimento bibliográfico pode ser desativado definindo `ORGPDF_VERIFICAR_ONLINE=false` no arquivo `.env` (o que não afeta a classificação do Jev).
-4. **Formatação ABNT (`abnt_formatter.py`)**:
-   Gera a referência padronizada conforme as normas da ABNT NBR 6023:2018.
-5. **Organização e Gravação Segura (`organizer.py`)**:
-   - Cria os diretórios categorizados por tipo.
-   - Aplica salvaguarda de comprimento de caminho (truncamento dinâmico para Windows MAX_PATH).
-   - Resolve colisões de nomes adicionando sufixos automáticos ` (2)`, ` (3)`.
-   - Direciona arquivos com avisos ou baixa confiabilidade para `revisao_manual/`.
+Ao acionar `--interactive` (ou `--validate`), o sistema apresenta cada PDF passo a passo no terminal:
+1. Inspeção de páginas e camada de texto nativo detectada.
+2. Exibição dos candidatos preliminares (Título, Autores, Ano, Editora, CIP, ISBN, DOI).
+3. Raciocínio detalhado da classificação Jev com pontuações calibradas por categoria.
+4. Consulta em tempo real a APIs bibliográficas com indicação de correspondência.
+5. Confirmação imediata ou modo de edição manual dos campos antes da gravação.
 
 ---
 
 ## Suíte de Testes
 
-Os testes são automatizados via `pytest` e não dependem de chamadas ativas de rede nem de credenciais externas:
+Os testes são automatizados via `pytest` e operam com dublês de teste, sem depender de rede nem de credenciais externas:
 
 ```bash
 pytest
 ```
 
-Resultado esperado: **Suíte completa de testes automatizados passando com 100% de sucesso.**
+Resultado: **100% dos testes aprovados**.
 
 ---
 
 ## Licença
 
-Distribuído sob os termos da licença MIT. Consulte o arquivo `LICENSE` para mais informações.
+Distribuído sob os termos da licença MIT. Consulte o arquivo `LICENSE` para mais detalhes.

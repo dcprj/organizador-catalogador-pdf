@@ -35,8 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemplos de Uso:
-  # Modo Automático em lote (copiando os originais sem apagar):
-  python main.py --input ./documentos_origem --output ./documentos_organizados --keep-original
+  # Processamento padrão em lote (copia os PDFs preservando os originais):
+  python main.py --input ./documentos_origem --output ./documentos_organizados
+
+  # Move os PDFs originais para o destino em vez de copiar:
+  python main.py --input ./documentos_origem --output ./documentos_organizados --mover
 
   # Simulação prévia sem alterar arquivos no disco:
   python main.py --input ./documentos_origem --output ./documentos_organizados --dry-run
@@ -87,7 +90,20 @@ Classificações Suportadas:
         "--keep-original",
         action="store_true",
         default=True,
-        help="Mantém os PDFs originais na pasta de origem (padrão do aplicativo).",
+        help=argparse.SUPPRESS,  # Mantido para retrocompatibilidade; copiar já é o padrão.
+    )
+    parser.add_argument(
+        "--estrutura",
+        choices=["plana", "cnpq"],
+        default="plana",
+        help="Estrutura de organização das pastas no destino: 'plana' (direto por categoria) ou 'cnpq' (hierárquica).",
+    )
+    parser.add_argument(
+        "--cnpq",
+        dest="estrutura",
+        action="store_const",
+        const="cnpq",
+        help="Atalho para organizar na árvore hierárquica taxonômica CNPq.",
     )
     parser.add_argument(
         "--dry-run",
@@ -173,6 +189,7 @@ def main() -> int:
     print(f"📂 Origem         : {input_dir}")
     print(f"🎯 Destino        : {output_dir}")
     print(f"📦 Mover          : {'Sim (movendo original)' if mover_original else 'Não (copiando)'}")
+    print(f"📁 Estrutura      : {'Plana por categoria (<destino>/<tipo>/)' if args.estrutura == 'plana' else 'Hierárquica CNPq (<destino>/<Área>/<Subárea>/<Tipo>/)'}")
     print(f"🔍 Recursivo      : {'Sim' if args.recursive else 'Não (somente raiz)'}")
     print(f"🔄 Retomada       : {'Ativa (--resume)' if args.resume else 'Padrão'}")
     print(f"🛡️  Quarentena     : {'Desativada (--no-quarantine)' if args.no_quarantine else 'Ativa (revisao_manual/)'}")
@@ -186,6 +203,7 @@ def main() -> int:
         max_paginas=config.max_paginas,
         max_caracteres=config.max_caracteres,
         enriquecimento_online=config.verificar_online,
+        estrutura=args.estrutura,
     )
     results = organizer.process_directory(
         input_dir=str(input_dir),

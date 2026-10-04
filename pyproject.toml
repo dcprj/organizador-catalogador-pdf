@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "organizador-pdf"
 version = "0.4.0"
-description = "CLI multiplataforma que organiza e cataloga PDFs com ABNT NBR 6023, Ficha Catalográfica (CIP), enriquecimento em APIs públicas e Markdown companion. 100% local, determinístico e gratuito."
+description = "CLI multiplataforma que organiza e cataloga PDFs com ABNT NBR 6023, Ficha Catalográfica (CIP), classificador Jev, enriquecimento opcional em APIs públicas e Markdown companion."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -24,6 +24,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+typesafe = ["typesafe-sdk>=0.1.0"]
 dev = ["pytest>=8.0"]
 build = ["pyinstaller>=6.0"]
 

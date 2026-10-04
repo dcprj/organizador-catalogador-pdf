@@ -11,11 +11,11 @@ import subprocess
 from pathlib import Path
 import pytest
 
-from src.estado import EstadoManager, DEFAULT_STATE_FILENAME
-from src.models import PublicationMetadata, Identifiers
-from src.organizer import PipelineOrganizer
-from src.converter import MarkdownConverter
-from src.classifier_jev import parse_page_cip
+from organizador_pdf.estado import EstadoManager, DEFAULT_STATE_FILENAME
+from organizador_pdf.models import PublicationMetadata, Identifiers
+from organizador_pdf.organizer import PipelineOrganizer
+from organizador_pdf.converter import MarkdownConverter
+from organizador_pdf.classifier_jev import parse_page_cip
 
 
 def test_estado_manager_lifecycle(tmp_path: Path):
@@ -261,8 +261,8 @@ def test_cli_new_flags_help():
 
 def test_metadata_enricher_offline_mode():
     """Verify that MetadataEnricher in offline mode does not make external requests."""
-    from src.metadata_api import MetadataEnricher
-    from src.models import ExtractedCandidates, JevValidationResult
+    from organizador_pdf.metadata_api import MetadataEnricher
+    from organizador_pdf.models import ExtractedCandidates, JevValidationResult
 
     enricher = MetadataEnricher(online=False)
     assert not enricher.online
@@ -289,7 +289,7 @@ def test_metadata_enricher_offline_mode():
 def test_cli_typer_flags_help():
     """Verify that organizador-pdf CLI Typer includes expected options."""
     from typer.testing import CliRunner
-    from src.organizador_pdf.cli import app
+    from organizador_pdf.cli import app
 
     runner = CliRunner(env={"COLUMNS": "160"})
     res = runner.invoke(app, ["--help"])
@@ -305,7 +305,7 @@ def test_cli_typer_flags_help():
 
 def test_resume_preserva_parametros(tmp_path: Path):
     """Verify that EstadoDeExecucao saves and restores execution parameters."""
-    from src.organizador_pdf.estado import EstadoDeExecucao, ParametrosSalvos
+    from organizador_pdf.estado import EstadoDeExecucao, ParametrosSalvos
 
     params = ParametrosSalvos(
         origem=str(tmp_path / "origem"),
@@ -322,7 +322,7 @@ def test_resume_preserva_parametros(tmp_path: Path):
 
 def test_jev_classifier_always_uses_jev(monkeypatch, sample_pdf_generator):
     """Verify that JevClassifier uses TYPESAFE_API_KEY if present, and local fallback if not."""
-    from src.organizador_pdf.classifier_jev import JevClassifier
+    from organizador_pdf.classifier_jev import JevClassifier
 
     # 1. With API key in environment
     monkeypatch.setenv("TYPESAFE_API_KEY", "dummy-secret-key")
@@ -355,7 +355,7 @@ def test_scripts_interactive_validator_shim_import():
 def test_main_propagates_config_limits(tmp_path: Path, monkeypatch):
     """Verify that main.py respects max_paginas and max_caracteres from Config."""
     from main import build_parser, Config
-    from src.organizador_pdf.organizer import PipelineOrganizer
+    from organizador_pdf.organizer import PipelineOrganizer
 
     monkeypatch.setenv("ORGPDF_MAX_PAGINAS", "8")
     monkeypatch.setenv("ORGPDF_MAX_CARACTERES", "12000")
@@ -374,8 +374,8 @@ def test_main_propagates_config_limits(tmp_path: Path, monkeypatch):
 def test_resume_preserva_execucao_cli(tmp_path: Path, sample_pdf_generator):
     """Test full pipeline resume via Typer CLI."""
     from typer.testing import CliRunner
-    from src.organizador_pdf.cli import app
-    from src.organizador_pdf.estado import EstadoDeExecucao, ParametrosSalvos
+    from organizador_pdf.cli import app
+    from organizador_pdf.estado import EstadoDeExecucao, ParametrosSalvos
 
     origem = tmp_path / "origem"
     destino = tmp_path / "destino"
@@ -409,7 +409,7 @@ def test_resume_preserva_execucao_cli(tmp_path: Path, sample_pdf_generator):
 
 def test_pipeline_organizer_limits_and_verificar_online(tmp_path: Path, sample_pdf_generator):
     """Verify that PipelineOrganizer passes max_paginas, max_caracteres, and online setting."""
-    from src.organizador_pdf.organizer import PipelineOrganizer
+    from organizador_pdf.organizer import PipelineOrganizer
 
     pages = ["A" * 500, "B" * 500, "C" * 500]
     pdf_path = sample_pdf_generator("limites.pdf", "Doc Limites", pages)
@@ -433,8 +433,8 @@ def test_pipeline_organizer_limits_and_verificar_online(tmp_path: Path, sample_p
 def test_deprecation_warnings_on_old_kwargs():
     """Verify that passing deprecated kwargs raises DeprecationWarning."""
     import pytest
-    from src.organizador_pdf.classifier_jev import JevClassifier
-    from src.organizador_pdf.organizer import PipelineOrganizer
+    from organizador_pdf.classifier_jev import JevClassifier
+    from organizador_pdf.organizer import PipelineOrganizer
 
     with pytest.deprecated_call():
         JevClassifier(permitir_rede=False)

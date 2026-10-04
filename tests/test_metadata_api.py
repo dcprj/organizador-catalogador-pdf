@@ -2,8 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 import pytest
-from src.metadata_api import MetadataEnricher
-from src.models import (
+from organizador_pdf.metadata_api import MetadataEnricher
+from organizador_pdf.models import (
     JevValidationResult,
     ExtractedCandidates,
 )
@@ -132,7 +132,7 @@ def test_metadata_enrichment_fallback_by_title_when_no_identifier():
 
 
 def test_filter_institutional_authors():
-    from src.metadata_api import filter_institutional_authors
+    from organizador_pdf.metadata_api import filter_institutional_authors
 
     raw_authors = [
         "Universidad de São Paulo",
@@ -148,7 +148,7 @@ def test_filter_institutional_authors():
 
 
 def test_clean_journal_name():
-    from src.metadata_api import clean_journal_name
+    from organizador_pdf.metadata_api import clean_journal_name
 
     assert clean_journal_name("Revista Affectio Societatis/Affectio Societatis") == "Affectio Societatis"
     assert clean_journal_name("Journal of Machine Learning") == "Journal of Machine Learning"
