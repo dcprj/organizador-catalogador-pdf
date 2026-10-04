@@ -1,216 +1,339 @@
-"""Extração e conversão de PDF para Markdown usando bibliotecas locais."""
+"""Extração leve de páginas de PDFs e montagem de Markdown de Acompanhamento (Companion).
+
+Regras de negócio:
+1. NÃO converte o miolo inteiro do PDF em Markdown (execução instantânea e sem gasto desnecessário).
+2. Para a análise e catalogação dos metadados, extrai texto nativo das 10 primeiras e 10 últimas páginas.
+3. O Markdown gerado é um arquivo de acompanhamento contendo apenas Frontmatter YAML padronizado
+   e a citação ABNT NBR 6023 completa formatada.
+4. Gera nomes de arquivos padronizados e legíveis para visualização clara no gerenciador de arquivos.
+"""
 
 from __future__ import annotations
 
 import io
 import logging
+import os
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
+import yaml
+
+from .models import Metadados, PublicationMetadata
 
 logger = logging.getLogger(__name__)
 
-#: Sinal de que a página tem ficha catalográfica/identificadores — usado pra
-#: achar essa página mesmo quando um prefácio/dedicatória longos a empurram
-#: pra fora da janela inicial padrão (`paginas_para_analise`).
-_PADRAO_FICHA_CATALOGRAFICA = re.compile(
-    r"isbn|issn|\bdoi\b|ficha catalogr[áa]fica|catalogac?[aã]o na publicac?[aã]o|"
-    r"dados internacionais de catalogac?[aã]o|cip[\s-]brasil",
-    re.IGNORECASE,
-)
-
-#: Até onde vale procurar a ficha catalográfica além da janela inicial — a
-#: busca é local e barata (texto simples do PyMuPDF, não a conversão
-#: estruturada do pymupdf4llm), mas ainda assim limitada pra não custar
-#: tempo demais em PDFs muito grandes.
-JANELA_BUSCA_FICHA = 25
-
-#: Fração mínima do orçamento de caracteres reservada pra ficha catalográfica
-#: encontrada além da janela inicial — sem isso, o truncamento final por
-#: `max_caracteres_analise` poderia cortar exatamente o trecho que essa busca
-#: existe pra resgatar, se a capa/prefácio já preenchem o teto sozinhos.
-_FRACAO_MINIMA_PARA_FICHA = 1 / 3
-
 
 class ErroDeConversao(RuntimeError):
-    """Falha ao ler ou converter o PDF."""
+    """Falha ao ler ou processar o PDF."""
 
 
 @dataclass
 class DocumentoConvertido:
-    """Resultado da conversão de um PDF."""
+    """Resultado da leitura das páginas de análise de um PDF."""
 
     caminho: Path
-    markdown_completo: str
     markdown_inicial: str
     total_paginas: int
     metadados_embutidos: dict[str, str] = field(default_factory=dict)
+    markdown_completo: str = ""
 
     @property
     def tem_texto(self) -> bool:
-        return bool(self.markdown_completo.strip())
+        return bool(self.markdown_inicial.strip())
+
+
+def sanitize_filename(name: str) -> str:
+    """Sanitiza uma string para uso seguro como nome de arquivo no macOS, Linux e Windows."""
+    # Substitui caracteres ilegais por hífen
+    cleaned = re.sub(r'[\/\\:\*\?"<>\|]', " - ", name)
+    # Colapsa hifens e espaços múltiplos
+    cleaned = re.sub(r"(?:\s*-\s*)+", " - ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .-_")
+    return cleaned
+
+
+def generate_standardized_filename(
+    metadata: PublicationMetadata,
+    fallback_name: Optional[str] = None,
+) -> str:
+    """Gera um nome de arquivo padronizado para fácil identificação visual em pastas.
+
+    Convenção:
+      - Com autor e ano:     SOBRENOME, Nome - Título (Ano)
+      - Múltiplos autores:   SOBRENOME, Nome et al. - Título (Ano)
+      - Com subtítulo curto: SOBRENOME, Nome - Título - Subtítulo (Ano)
+      - Sem autor:           Título (Ano)
+      - Sem ano:             SOBRENOME, Nome - Título
+    """
+    from .abnt_formatter import format_single_author_abnt
+
+    # 1. Componente de autor
+    author_part = ""
+    authors = metadata.authors or metadata.autores
+    if authors:
+        clean_authors = [
+            a.strip() for a in authors
+            if a.strip() and not re.search(r"^(?:et\s+al\.?|\[et\s+al\.?\]|\.\.\.|organizad|coord)", a.strip(), re.I)
+        ]
+        has_et_al = (
+            len(authors) > len(clean_authors)
+            or len(clean_authors) > 1
+            or any(re.search(r"\bet\s+al\b", a, re.I) for a in authors)
+        )
+        if clean_authors:
+            first_author_abnt = format_single_author_abnt(clean_authors[0])
+            first_author_abnt = re.sub(r"\s+et\s+al\.?$", "", first_author_abnt, flags=re.I).strip()
+            if has_et_al:
+                author_part = f"{first_author_abnt} et al."
+            else:
+                author_part = first_author_abnt
+
+    # 2. Componente de título e subtítulo (com desduplicação)
+    title_raw = metadata.title or metadata.titulo or "Documento"
+    title_part = title_raw.strip()
+    subtitle_raw = metadata.subtitle or metadata.subtitulo
+    if subtitle_raw:
+        sub = subtitle_raw.strip()
+        sub_norm = "".join(c for c in unicodedata.normalize("NFKD", sub) if not unicodedata.combining(c)).lower()
+        sub_norm = re.sub(r"[^\w\s]", "", sub_norm).strip()
+        title_norm = "".join(c for c in unicodedata.normalize("NFKD", title_part) if not unicodedata.combining(c)).lower()
+        title_norm = re.sub(r"[^\w\s]", "", title_norm).strip()
+        if sub_norm and sub_norm not in title_norm and len(title_part) + len(sub) <= 120:
+            title_part = f"{title_part} - {sub}"
+
+    # 3. Componente de ano
+    year_val = metadata.year or metadata.ano
+    year_part = f"({year_val})" if year_val else ""
+
+    # Monta os componentes
+    components = []
+    if author_part:
+        components.append(author_part)
+    components.append(title_part)
+    if year_part:
+        components.append(year_part)
+
+    stem = " - ".join(components) if len(components) > 1 else components[0]
+    stem = sanitize_filename(stem)
+
+    # Fallback se vazio ou curto
+    if not stem or len(stem) < 3:
+        stem = Path(fallback_name).stem if fallback_name else "documento_classificado"
+
+    # Trunca se ultrapassar 180 caracteres para segurança máxima no sistema de arquivos
+    if len(stem) > 180:
+        stem = stem[:177].rstrip(" .-_") + "..."
+
+    return stem
+
+
+# Alias em português
+gerar_nome_padronizado = generate_standardized_filename
+sanitizar_nome_arquivo = sanitize_filename
 
 
 def converter_pdf(
     caminho: Path,
     *,
-    paginas_para_analise: int = 6,
-    max_caracteres_analise: int = 15_000,
+    paginas_inicio: int = 10,
+    paginas_fim: int = 10,
+    max_caracteres_analise: int = 30_000,
+    **kwargs: Any,
 ) -> DocumentoConvertido:
-    """Converte um PDF em Markdown.
+    """Extrai texto das 10 primeiras e 10 últimas páginas do PDF para catalogação.
 
-    Devolve o Markdown completo (para o arquivo `.md` final) e um recorte das
-    primeiras páginas (`markdown_inicial`), que é o único trecho enviado ao LLM
-    — é onde ficam capa, folha de rosto e ficha catalográfica, e limitá-lo
-    mantém o custo por documento baixo e previsível.
-
-    PDFs sem texto extraível (digitalizados/escaneados) falham com uma
-    mensagem explícita — este app não faz OCR. Rode um serviço de OCR externo
-    (ex.: ocrmypdf) sobre o arquivo antes de reprocessá-lo.
+    Não converte o livro ou artigo inteiro para Markdown.
     """
-    import pymupdf  # importado sob demanda: carregar o binário custa caro
+    import pymupdf
 
-    # O PyMuPDF imprime mensagens de status direto no stdout/stderr por
-    # padrão — puramente informativo, sem valor pro usuário e sem respeitar
-    # o nível de log do app. Descarta.
     pymupdf.set_messages(stream=io.StringIO())
 
     try:
-        documento = pymupdf.open(caminho)
-    except Exception as exc:  # noqa: BLE001 - o PyMuPDF levanta tipos variados
-        raise ErroDeConversao(f"não foi possível abrir o PDF: {exc}") from exc
+        doc = pymupdf.open(caminho)
+    except Exception as exc:
+        raise ErroDeConversao(f"Não foi possível abrir o PDF: {exc}") from exc
 
     try:
-        if documento.is_encrypted and not documento.authenticate(""):
+        if doc.is_encrypted and not doc.authenticate(""):
             raise ErroDeConversao("PDF protegido por senha")
 
-        total_paginas = documento.page_count
+        total_paginas = doc.page_count
         if total_paginas == 0:
             raise ErroDeConversao("PDF sem páginas")
 
-        metadados_embutidos = _metadados_uteis(documento.metadata or {})
-        markdown_completo = _para_markdown(documento, paginas=None)
+        metadados_embutidos = _metadados_uteis(doc.metadata or {})
 
-        n = min(paginas_para_analise, total_paginas)
-        markdown_capa = _para_markdown(documento, paginas=list(range(n)))
-
-        pagina_ficha = _procurar_ficha_catalografica(
-            documento, a_partir_de=n, total_paginas=total_paginas
-        )
-        if pagina_ficha is None:
-            markdown_inicial = markdown_capa
+        # Seleciona as 10 primeiras páginas e as 10 últimas páginas
+        indices_inicio = list(range(min(paginas_inicio, total_paginas)))
+        if total_paginas > paginas_inicio:
+            fim_start = max(paginas_inicio, total_paginas - paginas_fim)
+            indices_fim = list(range(fim_start, total_paginas))
         else:
-            paginas_ficha = [pagina_ficha]
-            if pagina_ficha + 1 < total_paginas:
-                paginas_ficha.append(pagina_ficha + 1)
-            markdown_ficha = _para_markdown(documento, paginas=paginas_ficha)
-            markdown_inicial = _combinar_com_orcamento(
-                markdown_capa, markdown_ficha, max_caracteres_analise
-            )
-    finally:
-        documento.close()
+            indices_fim = []
 
-    if not markdown_completo.strip():
+        todos_indices = sorted(set(indices_inicio + indices_fim))
+
+        textos_paginas = []
+        for idx in todos_indices:
+            try:
+                page_text = doc[idx].get_text("text")
+                if page_text and page_text.strip():
+                    textos_paginas.append(f"--- [Página {idx + 1}] ---\n{page_text}")
+            except Exception as e:
+                logger.debug("Página %d ilegível em %s: %s", idx, caminho.name, e)
+
+        texto_amostra = "\n\n".join(textos_paginas)
+    finally:
+        doc.close()
+
+    if not texto_amostra.strip():
         raise ErroDeConversao(
-            "nenhum texto extraível — o PDF provavelmente é digitalizado/"
-            "escaneado. Este app não faz OCR: rode um serviço externo (ex.: "
-            "ocrmypdf) sobre o arquivo antes de reprocessá-lo."
+            "Nenhum texto nativo extraível — o PDF provavelmente é digitalizado/escaneado."
         )
 
     return DocumentoConvertido(
         caminho=caminho,
-        markdown_completo=markdown_completo,
-        markdown_inicial=markdown_inicial[:max_caracteres_analise],
+        markdown_inicial=texto_amostra[:max_caracteres_analise],
         total_paginas=total_paginas,
         metadados_embutidos=metadados_embutidos,
+        markdown_completo="",  # Miolo não é convertido por especificação do usuário
     )
-
-
-def _procurar_ficha_catalografica(
-    documento, *, a_partir_de: int, total_paginas: int
-) -> Optional[int]:
-    """Acha a 1ª página, além da janela inicial, com sinal de ficha
-    catalográfica (ISBN/ISSN/DOI/"ficha catalográfica"/etc.).
-
-    Cobre o caso de um prefácio, dedicatória ou sumário longos empurrarem
-    essa página pra fora das N primeiras páginas enviadas por padrão. Usa
-    texto simples do PyMuPDF (rápido, sem custo de LLM) — só decide *quais*
-    páginas valem a pena mandar pro modelo, não substitui a conversão.
-    """
-    limite = min(total_paginas, JANELA_BUSCA_FICHA)
-    for indice in range(a_partir_de, limite):
-        try:
-            texto = documento[indice].get_text("text")
-        except Exception:  # noqa: BLE001 - página ilegível não trava a busca
-            logger.debug("página %d ilegível ao procurar ficha catalográfica", indice)
-            continue
-        if _PADRAO_FICHA_CATALOGRAFICA.search(texto):
-            return indice
-    return None
-
-
-def _combinar_com_orcamento(texto_principal: str, texto_extra: str, teto: int) -> str:
-    """Junta capa + ficha catalográfica reservando espaço mínimo pra 2ª.
-
-    Sem isso, o truncamento final por `max_caracteres_analise` cortaria a
-    string pela frente — se a capa/prefácio sozinhos já preenchem o teto, a
-    ficha catalográfica encontrada mais adiante nunca chegaria a aparecer,
-    justamente o caso que essa busca existe pra resgatar.
-    """
-    if not texto_extra.strip():
-        return texto_principal[:teto]
-    orcamento_extra = min(len(texto_extra), max(int(teto * _FRACAO_MINIMA_PARA_FICHA), 1))
-    orcamento_principal = max(teto - orcamento_extra, 0)
-    return (
-        f"{texto_principal[:orcamento_principal].rstrip()}\n\n"
-        f"[...]\n\n{texto_extra[:orcamento_extra]}"
-    )
-
-
-def _para_markdown(documento, paginas: Optional[list[int]]) -> str:
-    """Converte páginas para Markdown, com texto simples como plano B.
-
-    `use_ocr=OCRMode.NEVER` é explícito de propósito: sem ele, o padrão do
-    `pymupdf4llm` (`SELECT_KEEP_OLD`) roda OCR automaticamente quando julga
-    valer a pena e o Tesseract estiver instalado na máquina — o que
-    contradiz a decisão de nunca fazer OCR neste app.
-    """
-    try:
-        import pymupdf4llm
-        from pymupdf4llm.ocr import OCRMode
-
-        return pymupdf4llm.to_markdown(
-            documento, pages=paginas, show_progress=False, use_ocr=OCRMode.NEVER
-        )
-    except Exception as exc:  # noqa: BLE001 - qualquer falha cai para o plano B
-        logger.debug("pymupdf4llm falhou (%s); usando extração de texto simples", exc)
-        indices = paginas if paginas is not None else range(documento.page_count)
-        partes = []
-        for indice in indices:
-            try:
-                partes.append(documento[indice].get_text("text"))
-            except Exception:  # noqa: BLE001 - páginas corrompidas são ignoradas
-                logger.debug("página %d ilegível em %s", indice, documento.name)
-        return "\n\n".join(parte for parte in partes if parte)
 
 
 def _metadados_uteis(brutos: dict) -> dict[str, str]:
-    """Filtra os metadados embutidos do PDF que ajudam a extração."""
     interessantes = ("title", "author", "subject", "keywords", "creator", "producer")
     return {
-        chave: str(valor).strip()
-        for chave, valor in brutos.items()
-        if chave in interessantes and valor and str(valor).strip()
+        k: str(v).strip()
+        for k, v in brutos.items()
+        if k in interessantes and v and str(v).strip()
     }
 
 
+class MarkdownConverter:
+    """Gerador do Markdown de acompanhamento com Frontmatter YAML e ABNT."""
+
+    @staticmethod
+    def build_yaml_frontmatter(metadata: PublicationMetadata) -> str:
+        frontmatter_dict: Dict[str, Any] = {
+            "title": metadata.title or metadata.titulo,
+        }
+        sub = metadata.subtitle or metadata.subtitulo
+        if sub:
+            frontmatter_dict["subtitle"] = sub
+
+        frontmatter_dict["authors"] = metadata.authors or metadata.autores or []
+        frontmatter_dict["publisher"] = metadata.publisher or metadata.editora_ou_periodico or ""
+
+        city = metadata.city or metadata.local
+        if city:
+            frontmatter_dict["city"] = city
+
+        if metadata.edition:
+            frontmatter_dict["edition"] = metadata.edition
+
+        frontmatter_dict["identifiers"] = {
+            "isbn": metadata.identificadores.isbn or "",
+            "doi": metadata.identificadores.doi or "",
+            "issn": metadata.identificadores.issn or "",
+        }
+        frontmatter_dict["classification"] = metadata.classification
+
+        yr = metadata.year or metadata.ano
+        if yr:
+            frontmatter_dict["year"] = yr
+
+        ar = metadata.area or metadata.area_principal
+        if ar and ar != "Outros":
+            frontmatter_dict["area"] = ar
+
+        if metadata.journal:
+            frontmatter_dict["journal"] = metadata.journal
+        if metadata.source_apis:
+            frontmatter_dict["enriched_by"] = metadata.source_apis
+
+        # Gera tags para Obsidian / Logseq
+        tags = list(metadata.tags)
+        if metadata.classification:
+            tag_cls = f"tipo/{metadata.classification}"
+            if tag_cls not in tags:
+                tags.append(tag_cls)
+        if yr:
+            tag_yr = f"ano/{yr}"
+            if tag_yr not in tags:
+                tags.append(tag_yr)
+        if ar and ar != "Outros":
+            area_slug = re.sub(r"[^\w]+", "-", ar.lower()).strip("-")
+            if area_slug:
+                tag_area = f"area/{area_slug}"
+                if tag_area not in tags:
+                    tags.append(tag_area)
+        if metadata.needs_review:
+            if "status/revisao" not in tags:
+                tags.append("status/revisao")
+            frontmatter_dict["needs_review"] = True
+            if metadata.review_reasons:
+                frontmatter_dict["review_reasons"] = metadata.review_reasons
+
+        if tags:
+            frontmatter_dict["tags"] = tags
+
+        yaml_content = yaml.safe_dump(
+            frontmatter_dict,
+            sort_keys=False,
+            allow_unicode=True,
+            default_flow_style=False,
+        ).strip()
+
+        return f"---\n{yaml_content}\n---\n\n"
+
+    @classmethod
+    def assemble_markdown(
+        cls,
+        metadata: PublicationMetadata,
+        abnt_reference: str,
+        pdf_path: Optional[str] = None,
+        **kwargs: Any,
+    ) -> str:
+        """Monta o arquivo Markdown de acompanhamento contendo Frontmatter e Referência ABNT."""
+        frontmatter = cls.build_yaml_frontmatter(metadata)
+        title_str = metadata.title or metadata.titulo or "Documento"
+        subtitle_str = metadata.subtitle or metadata.subtitulo
+        subtitle_part = f": {subtitle_str}" if subtitle_str else ""
+
+        markdown_doc = (
+            f"{frontmatter}"
+            f"# {title_str}{subtitle_part}\n\n"
+            f"## Referência Bibliográfica\n\n"
+            f"{abnt_reference}\n"
+        )
+        return markdown_doc
+
+
+def gerar_markdown(
+    metadados: Metadados,
+    referencia_abnt: str = "",
+    *,
+    arquivo_origem: Optional[Path] = None,
+    total_paginas: Optional[int] = None,
+    **kwargs: Any,
+) -> str:
+    """Função de conveniência para gerar o Markdown de acompanhamento."""
+    ref = referencia_abnt or metadados.referencia_abnt
+    return MarkdownConverter.assemble_markdown(
+        metadata=metadados,
+        abnt_reference=ref,
+        pdf_path=str(arquivo_origem) if arquivo_origem else None,
+    )
+
+
 def listar_pdfs(origem: Path, *, recursivo: bool = True) -> list[Path]:
-    """Lista os PDFs da origem, ordenados, ignorando arquivos ocultos."""
+    """Lista os PDFs da pasta de origem, ordenados alfabeticamente."""
     if not origem.exists():
-        raise ErroDeConversao(f"diretório de origem não encontrado: {origem}")
+        raise ErroDeConversao(f"Diretório de origem não encontrado: {origem}")
     if not origem.is_dir():
-        raise ErroDeConversao(f"a origem não é um diretório: {origem}")
+        raise ErroDeConversao(f"A origem não é um diretório: {origem}")
 
     padrao = "**/*" if recursivo else "*"
     encontrados = [

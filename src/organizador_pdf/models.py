@@ -1,11 +1,17 @@
-"""Modelos Pydantic dos metadados bibliográficos extraídos pelo LLM."""
+"""Modelos Pydantic dos metadados bibliográficos e resultados do pipeline.
+
+Harmoniza a tipagem estrita do pacote organizador_pdf com o motor determinístico
+Jev/CIP, suportando tanto os atributos em português quanto em inglês para
+máxima compatibilidade.
+"""
 
 from __future__ import annotations
 
+import re
 from enum import Enum
-from typing import Optional
-
-from pydantic import BaseModel, Field
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional, Union
+from pydantic import BaseModel, Field, model_validator
 
 
 class TipoPublicacao(str, Enum):
@@ -14,10 +20,33 @@ class TipoPublicacao(str, Enum):
     LIVRO = "Livro"
     ARTIGO = "Artigo"
     DISSERTACAO_TESE = "Dissertação/Tese"
+    TESE = "Tese"
     APOSTILA = "Apostila"
     REVISTA = "Revista"
     CAPITULO_LIVRO = "Capítulo de Livro"
     OUTROS = "Outros"
+
+    @classmethod
+    def normalizar(cls, valor: Union[str, TipoPublicacao]) -> TipoPublicacao:
+        """Converte strings e variações para a enum oficial."""
+        if isinstance(valor, TipoPublicacao):
+            return valor
+        if not valor:
+            return cls.OUTROS
+        v = str(valor).strip().lower()
+        if "artigo" in v:
+            return cls.ARTIGO
+        if "tese" in v or "dissert" in v or "monografia" in v:
+            return cls.DISSERTACAO_TESE
+        if "livro" in v and "capítulo" not in v and "capitulo" not in v:
+            return cls.LIVRO
+        if "capítulo" in v or "capitulo" in v:
+            return cls.CAPITULO_LIVRO
+        if "apostila" in v or "curso" in v or "didático" in v or "didatico" in v:
+            return cls.APOSTILA
+        if "revista" in v or "periodico" in v or "periódico" in v:
+            return cls.REVISTA
+        return cls.OUTROS
 
 
 #: Forma plural usada como nome de pasta para cada tipo.
@@ -25,11 +54,24 @@ PLURAL_POR_TIPO: dict[TipoPublicacao, str] = {
     TipoPublicacao.LIVRO: "Livros",
     TipoPublicacao.ARTIGO: "Artigos",
     TipoPublicacao.DISSERTACAO_TESE: "Dissertações e Teses",
+    TipoPublicacao.TESE: "Dissertações e Teses",
     TipoPublicacao.APOSTILA: "Apostilas",
     TipoPublicacao.REVISTA: "Revistas",
     TipoPublicacao.CAPITULO_LIVRO: "Capítulos de Livro",
     TipoPublicacao.OUTROS: "Outros",
 }
+
+PublicationType = Literal[
+    "artigo",
+    "livro",
+    "tese",
+    "revista",
+    "apostila",
+    "outros",
+    "artigo_cientifico",
+    "capitulo_livro",
+    "dissertacao_tese",
+]
 
 
 class Identificadores(BaseModel):
@@ -49,80 +91,227 @@ class Identificadores(BaseModel):
         return not any((self.isbn, self.issn, self.doi))
 
 
+# Alias de compatibilidade
+Identifiers = Identificadores
+
+
+class ExtractedCandidates(BaseModel):
+    """Candidatos brutos extraídos das primeiras/últimas páginas do PDF."""
+
+    raw_title: Optional[str] = None
+    raw_subtitle: Optional[str] = None
+    raw_authors: List[str] = Field(default_factory=list)
+    raw_publisher: Optional[str] = None
+    raw_edition: Optional[str] = None
+    raw_year: Optional[int] = None
+    raw_city: Optional[str] = None
+    raw_area: Optional[str] = None
+    doi: Optional[str] = None
+    isbn: Optional[str] = None
+    issn: Optional[str] = None
+    sample_text: str = ""
+
+
+class JevValidationResult(BaseModel):
+    """Resultado da classificação Jev / heurística estrutural e pontuação de probabilidades."""
+
+    classification: PublicationType = "outros"
+    classification_confidence: float = 0.0
+    probabilities: Dict[str, float] = Field(
+        default_factory=lambda: {
+            "title": 0.0,
+            "authors": 0.0,
+            "publisher": 0.0,
+            "isbn": 0.0,
+            "doi": 0.0,
+            "issn": 0.0,
+        }
+    )
+    candidates: ExtractedCandidates = Field(default_factory=ExtractedCandidates)
+    raw_jev_data: Dict[str, Any] = Field(default_factory=dict)
+
+
 class Metadados(BaseModel):
-    """Metadados bibliográficos de uma publicação."""
+    """Metadados bibliográficos de uma publicação.
+
+    Oferece suporte bilíngue transparente (propriedades em português e inglês):
+    - titulo / title
+    - subtitulo / subtitle
+    - autores / authors
+    - editora_ou_periodico / publisher
+    - ano / year
+    - local / city
+    - tipo_publicacao / classification
+    - identificadores / identifiers
+    - referencia_abnt / abnt_reference
+    """
 
     tipo_publicacao: TipoPublicacao = Field(
-        description=(
-            "Tipo da publicação. Escolha exatamente um dos valores permitidos. "
-            "Use 'Outros' apenas quando nenhum dos demais se aplicar."
-        )
+        default=TipoPublicacao.OUTROS,
+        description="Tipo da publicação.",
     )
     area_principal: str = Field(
-        description=(
-            "Área macro do conhecimento, em português, no singular e capitalizada. "
-            "Ex.: Psicologia, Filosofia, Tecnologia, Direito, Saúde, Educação."
-        )
+        default="Outros",
+        description="Área macro do conhecimento (ex.: Psicologia, Filosofia, Tecnologia).",
     )
     subarea: str = Field(
-        description=(
-            "Especialidade temática dentro da área principal, em português. "
-            "Ex.: Psicologia Organizacional, Logoterapia, Machine Learning. "
-            "Se não for possível especificar, repita a área principal."
-        )
+        default="Geral",
+        description="Especialidade temática dentro da área principal.",
     )
-    titulo: str = Field(description="Título principal do trabalho, sem o subtítulo.")
-    subtitulo: Optional[str] = Field(
-        default=None,
-        description="Subtítulo do trabalho, se houver. Caso contrário, null.",
-    )
-    autores: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Todos os autores, na ordem em que aparecem na obra, no formato "
-            "bibliográfico 'SOBRENOME, Nome' (ex.: 'Frankl, Viktor E.'), o mesmo "
-            "usado dentro de referencia_abnt. Lista vazia se a obra for anônima "
-            "ou institucional."
-        ),
-    )
-    autor_principal: Optional[str] = Field(
-        default=None,
-        description=(
-            "Autor principal (primeiro autor ou organizador). Deve ser um dos itens "
-            "de 'autores' quando a lista não estiver vazia."
-        ),
-    )
-    editora_ou_periodico: Optional[str] = Field(
-        default=None,
-        description=(
-            "Nome da editora, universidade ou revista acadêmica responsável pela "
-            "publicação. Null se não for identificável."
-        ),
-    )
-    ano: Optional[int] = Field(
-        default=None,
-        description="Ano de publicação com 4 dígitos. Null se não for identificável.",
-    )
-    local: Optional[str] = Field(
-        default=None,
-        description="Cidade/local de publicação. Null se não for identificável.",
-    )
-    identificadores: Identificadores = Field(
-        default_factory=Identificadores,
-        description="ISBN, ISSN e/ou DOI encontrados no documento.",
-    )
-    referencia_abnt: str = Field(
-        description=(
-            "Referência bibliográfica completa formatada segundo a ABNT NBR 6023, "
-            "em uma única linha. Use 's.l.' para local desconhecido, 's.n.' para "
-            "editora desconhecida e 's.d.' para data desconhecida."
-        )
-    )
+    titulo: str = Field(default="Sem Título", description="Título principal do trabalho.")
+    subtitulo: Optional[str] = Field(default=None, description="Subtítulo do trabalho, se houver.")
+    autores: list[str] = Field(default_factory=list, description="Lista de autores formatados.")
+    autor_principal: Optional[str] = Field(default=None, description="Autor principal.")
+    editora_ou_periodico: Optional[str] = Field(default=None, description="Editora ou periódico.")
+    ano: Optional[int] = Field(default=None, description="Ano de publicação com 4 dígitos.")
+    local: Optional[str] = Field(default=None, description="Cidade ou local de publicação.")
+    identificadores: Identificadores = Field(default_factory=Identificadores)
+    referencia_abnt: str = Field(default="", description="Referência ABNT NBR 6023 completa.")
+
+    # Campos auxiliares para enriquecimento e Obsidian
+    edition: Optional[str] = None
+    journal: Optional[str] = None
+    volume: Optional[str] = None
+    number: Optional[str] = None
+    pages: Optional[str] = None
+    url: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+    needs_review: bool = False
+    review_reasons: list[str] = Field(default_factory=list)
+    source_apis: list[str] = Field(default_factory=list)
+    confidence: float = 1.0
+
+    @model_validator(mode="before")
+    @classmethod
+    def harmonizar_entradas(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        d = dict(data)
+        # Título
+        if "title" in d and "titulo" not in d:
+            d["titulo"] = d["title"]
+        elif "titulo" in d and "title" not in d:
+            d["title"] = d["titulo"]
+        # Subtítulo
+        if "subtitle" in d and "subtitulo" not in d:
+            d["subtitulo"] = d["subtitle"]
+        # Autores
+        if "authors" in d and "autores" not in d:
+            d["autores"] = d["authors"]
+        # Autor principal
+        if not d.get("autor_principal") and d.get("autores"):
+            d["autor_principal"] = d["autores"][0]
+        # Editora
+        if "publisher" in d and "editora_ou_periodico" not in d:
+            d["editora_ou_periodico"] = d["publisher"]
+        # Ano
+        if "year" in d and "ano" not in d:
+            d["ano"] = d["year"]
+        # Local
+        if "city" in d and "local" not in d:
+            d["local"] = d["city"]
+        # Área
+        area_val = d.get("area") or d.get("area_principal") or "Outros"
+        d["area_principal"] = area_val if area_val else "Outros"
+        subarea_val = d.get("subarea") or area_val or "Geral"
+        d["subarea"] = subarea_val if subarea_val else "Geral"
+        # Classificação / Tipo
+        raw_tipo = d.get("tipo_publicacao") or d.get("classification")
+        if raw_tipo:
+            d["tipo_publicacao"] = TipoPublicacao.normalizar(raw_tipo)
+        # Identificadores
+        if "identifiers" in d and "identificadores" not in d:
+            d["identificadores"] = d["identifiers"]
+        # ABNT
+        if "abnt_reference" in d and "referencia_abnt" not in d:
+            d["referencia_abnt"] = d["abnt_reference"]
+        return d
+
+    # Aliases via propriedades para compatibilidade com código em inglês
+    @property
+    def title(self) -> str:
+        return self.titulo
+
+    @title.setter
+    def title(self, value: str) -> None:
+        self.titulo = value
+
+    @property
+    def subtitle(self) -> Optional[str]:
+        return self.subtitulo
+
+    @subtitle.setter
+    def subtitle(self, value: Optional[str]) -> None:
+        self.subtitulo = value
+
+    @property
+    def authors(self) -> list[str]:
+        return self.autores
+
+    @authors.setter
+    def authors(self, value: list[str]) -> None:
+        self.autores = value
+
+    @property
+    def publisher(self) -> Optional[str]:
+        return self.editora_ou_periodico
+
+    @publisher.setter
+    def publisher(self, value: Optional[str]) -> None:
+        self.editora_ou_periodico = value
+
+    @property
+    def year(self) -> Optional[int]:
+        return self.ano
+
+    @year.setter
+    def year(self, value: Optional[int]) -> None:
+        self.ano = value
+
+    @property
+    def city(self) -> Optional[str]:
+        return self.local
+
+    @city.setter
+    def city(self, value: Optional[str]) -> None:
+        self.local = value
+
+    @property
+    def area(self) -> Optional[str]:
+        return self.area_principal
+
+    @area.setter
+    def area(self, value: Optional[str]) -> None:
+        if value:
+            self.area_principal = value
+
+    @property
+    def classification(self) -> str:
+        # Devolve em minúsculo compatível com PublicationType
+        mapping = {
+            TipoPublicacao.LIVRO: "livro",
+            TipoPublicacao.ARTIGO: "artigo",
+            TipoPublicacao.DISSERTACAO_TESE: "tese",
+            TipoPublicacao.TESE: "tese",
+            TipoPublicacao.APOSTILA: "apostila",
+            TipoPublicacao.REVISTA: "revista",
+            TipoPublicacao.CAPITULO_LIVRO: "capitulo_livro",
+            TipoPublicacao.OUTROS: "outros",
+        }
+        return mapping.get(self.tipo_publicacao, "outros")
+
+    @classification.setter
+    def classification(self, value: Union[str, TipoPublicacao]) -> None:
+        self.tipo_publicacao = TipoPublicacao.normalizar(value)
+
+    @property
+    def identifiers(self) -> Identificadores:
+        return self.identificadores
 
     @property
     def plural_do_tipo(self) -> str:
         """Nome de pasta correspondente ao tipo (forma plural)."""
-        return PLURAL_POR_TIPO[self.tipo_publicacao]
+        return PLURAL_POR_TIPO.get(self.tipo_publicacao, "Outros")
 
     @property
     def autor_para_nome(self) -> Optional[str]:
@@ -130,3 +319,49 @@ class Metadados(BaseModel):
         if self.autor_principal:
             return self.autor_principal
         return self.autores[0] if self.autores else None
+
+
+# Alias de compatibilidade
+PublicationMetadata = Metadados
+
+
+class Situacao(str, Enum):
+    """Situação do processamento de um arquivo."""
+
+    SUCESSO = "sucesso"
+    FALHA = "falha"
+    SIMULADO = "simulado"
+
+
+class ResultadoDoArquivo(BaseModel):
+    """Resultado do processamento de um PDF no lote."""
+
+    origem: Path
+    situacao: Situacao
+    metadados: Optional[Metadados] = None
+    pdf_destino: Optional[Path] = None
+    markdown_destino: Optional[Path] = None
+    aviso: Optional[str] = None
+    erro: Optional[str] = None
+    etapa: Optional[str] = None
+    provedor_usado: str = "deterministico_local"
+    usou_fallback: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return self.situacao in (Situacao.SUCESSO, Situacao.SIMULADO)
+
+
+class PipelineResult(BaseModel):
+    """Resultado do pipeline compatível com os testes e scripts locais."""
+
+    original_pdf: str
+    target_pdf: str
+    output_markdown: str
+    classification: PublicationType
+    metadata: PublicationMetadata
+    abnt_reference: str
+    success: bool
+    is_dry_run: bool = False
+    needs_review: bool = False
+    error_message: Optional[str] = None

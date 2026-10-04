@@ -10,19 +10,19 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from .abnt_formatter import ABNTFormatter
+from .classifier_jev import JevClassifier
 from .config import Config
 from .converter import DocumentoConvertido, ErroDeConversao, converter_pdf
 from .extractor import ErroDeExtracao, ErroFatalDeAPI
-from .models import Metadados
+from .metadata_api import MetadataEnricher
+from .models import Metadados, ResultadoDoArquivo, Situacao
 from .organizer import ErroDeOrganizacao, gerar_markdown, organizar
-from .provedores import criar_extrator, criar_extrator_fallback
 from .verificacao import verificar_identificadores
 
 logger = logging.getLogger(__name__)
 
-#: Palavras comuns demais para servir de sinal de identidade do documento —
-#: conectores, tipos de documento e palavras de título acadêmico genéricas
-#: o bastante para aparecer em praticamente qualquer trabalho.
+#: Palavras comuns demais para servir de sinal de identidade do documento.
 _PALAVRAS_IRRELEVANTES = {
     "de", "da", "do", "das", "dos", "em", "no", "na", "nos", "nas",
     "para", "com", "sem", "por", "que", "uma", "um", "sobre", "entre",
@@ -38,40 +38,7 @@ _PALAVRAS_IRRELEVANTES = {
     "conceito", "evolucao", "constituicao",
 }
 
-#: Abaixo disso, o overlap de palavras não é evidência confiável o
-#: suficiente — uma única palavra em comum pode ser coincidência.
 _MIN_PALAVRAS_EM_COMUM = 2
-
-
-class Situacao(str, Enum):
-    SUCESSO = "sucesso"
-    SIMULADO = "simulado"
-    FALHA = "falha"
-
-
-@dataclass
-class ResultadoDoArquivo:
-    """O que aconteceu com um PDF do lote."""
-
-    origem: Path
-    situacao: Situacao
-    metadados: Optional[Metadados] = None
-    pdf_destino: Optional[Path] = None
-    markdown_destino: Optional[Path] = None
-    erro: Optional[str] = None
-    etapa: Optional[str] = None
-    aviso: Optional[str] = None
-    #: Nome do provedor que efetivamente extraiu os metadados usados (ex.:
-    #: "ollama", "anthropic") — não necessariamente `config.provedor`, pode
-    #: ser o de fallback. `None` para arquivos que falharam antes de extrair.
-    provedor_usado: Optional[str] = None
-    #: True quando o resultado final veio do provedor de fallback, não do
-    #: principal — só informativo, não é motivo de aviso por si só.
-    usou_fallback: bool = False
-
-    @property
-    def ok(self) -> bool:
-        return self.situacao is not Situacao.FALHA
 
 
 @dataclass
@@ -82,6 +49,22 @@ class OpcoesDoPipeline:
     dry_run: bool = False
     mover: bool = False
     subpasta_markdown: Optional[str] = None
+    quarantine: bool = True
+
+
+class ExtratorDeterministico:
+    """Extrator padrão que roda localmente usando Jev/CIP e APIs públicas."""
+
+    def __init__(self) -> None:
+        self.classifier = JevClassifier()
+        self.enricher = MetadataEnricher()
+
+    def extrair(self, documento: DocumentoConvertido) -> Metadados:
+        jev_res = self.classifier.classify_and_validate(str(documento.caminho))
+        meta = self.enricher.enrich(jev_res)
+        abnt_ref = ABNTFormatter.format(meta)
+        meta.referencia_abnt = abnt_ref
+        return meta
 
 
 class Pipeline:
@@ -89,36 +72,31 @@ class Pipeline:
 
     def __init__(
         self,
-        config: Config,
-        opcoes: OpcoesDoPipeline,
+        config: Optional[Config] = None,
+        opcoes: Optional[OpcoesDoPipeline] = None,
         extrator: Optional[Any] = None,
         extrator_fallback: Optional[Any] = None,
     ) -> None:
-        self.config = config
-        self.opcoes = opcoes
-        self.extrator = extrator or criar_extrator(config)
-        self.extrator_fallback = extrator_fallback or criar_extrator_fallback(config)
+        self.config = config or Config()
+        self.opcoes = opcoes or OpcoesDoPipeline(destino=Path("destino"))
+        self.extrator = extrator or ExtratorDeterministico()
+        self.extrator_fallback = extrator_fallback
 
     def processar_arquivo(self, caminho: Path) -> ResultadoDoArquivo:
-        """Processa um PDF, devolvendo o erro no resultado em vez de propagá-lo.
-
-        A única exceção que escapa é `ErroFatalDeAPI` (credencial, permissão,
-        modelo inexistente): ela afeta todo o lote, então repetir a tentativa
-        arquivo a arquivo só desperdiçaria tempo.
-        """
+        """Processa um PDF, devolvendo o erro no resultado em vez de propagá-lo."""
         etapa = "conversão"
         try:
             documento = converter_pdf(
                 caminho,
-                paginas_para_analise=self.config.max_paginas,
-                max_caracteres_analise=self.config.max_caracteres,
+                paginas_inicio=getattr(self.config, "max_paginas", 10),
+                max_caracteres_analise=getattr(self.config, "max_caracteres", 30000),
             )
 
             etapa = "extração de metadados"
             metadados, aviso, usou_fallback = self._extrair(documento, caminho.name)
             provedor_usado = self._nome_do_provedor_usado(usou_fallback)
 
-            if self.config.verificar_online:
+            if getattr(self.config, "verificar_online", True):
                 metadados, aviso_online = verificar_identificadores(metadados)
                 if aviso_online:
                     aviso = f"{aviso} Além disso, {aviso_online}" if aviso else aviso_online
@@ -132,6 +110,7 @@ class Pipeline:
             )
 
             etapa = "organização"
+            revisao_manual = bool(aviso or metadados.needs_review) if self.opcoes.quarantine else False
             resultado = organizar(
                 metadados,
                 pdf_origem=caminho,
@@ -140,7 +119,7 @@ class Pipeline:
                 subpasta_markdown=self.opcoes.subpasta_markdown,
                 mover=self.opcoes.mover,
                 dry_run=self.opcoes.dry_run,
-                revisao_manual=bool(aviso),
+                revisao_manual=revisao_manual,
             )
 
             return ResultadoDoArquivo(
@@ -158,7 +137,7 @@ class Pipeline:
             raise
         except (ErroDeConversao, ErroDeExtracao, ErroDeOrganizacao) as exc:
             return self._falha(caminho, etapa, str(exc))
-        except Exception as exc:  # noqa: BLE001 - um PDF não pode derrubar o lote
+        except Exception as exc:
             logger.debug("Erro inesperado em %s", caminho, exc_info=True)
             return self._falha(caminho, etapa, f"{type(exc).__name__}: {exc}")
 
@@ -168,7 +147,7 @@ class Pipeline:
         *,
         ao_concluir: Optional[Callable[[ResultadoDoArquivo], None]] = None,
     ) -> list[ResultadoDoArquivo]:
-        """Processa vários PDFs em sequência, sem interromper em caso de falha."""
+        """Processa vários PDFs em sequência."""
         resultados: list[ResultadoDoArquivo] = []
         for caminho in caminhos:
             resultado = self.processar_arquivo(caminho)
@@ -180,59 +159,38 @@ class Pipeline:
     def _extrair(
         self, documento: DocumentoConvertido, nome_arquivo: str
     ) -> tuple[Metadados, Optional[str], bool]:
-        """Extrai os metadados, acionando o fallback pago quando configurado
-        e quando o resultado local falha ou sai com aviso de divergência.
-
-        Sem `extrator_fallback`, o comportamento é idêntico a antes: sucesso
-        (com ou sem aviso) devolve o resultado local, falha propaga
-        `ErroDeExtracao` para o chamador tratar como falha do arquivo. O
-        terceiro item devolvido indica se o resultado final veio do
-        fallback — só informativo, registrado no relatório e no Markdown.
-        """
+        """Extrai os metadados do documento."""
         try:
             metadados = self.extrator.extrair(documento)
         except ErroDeExtracao as exc:
             if self.extrator_fallback is None:
                 raise
-            logger.info(
-                "[%s] extração local falhou (%s); tentando provedor de fallback.",
-                nome_arquivo, exc,
-            )
+            logger.info("[%s] extração falhou (%s); tentando fallback.", nome_arquivo, exc)
             try:
                 metadados = self.extrator_fallback.extrair(documento)
             except ErroDeExtracao as exc_fallback:
                 raise ErroDeExtracao(f"local: {exc}; fallback: {exc_fallback}") from exc_fallback
-            logger.info("[%s] extração concluída via provedor de fallback.", nome_arquivo)
             return metadados, _titulo_diverge_do_arquivo(nome_arquivo, metadados), True
 
         aviso = _titulo_diverge_do_arquivo(nome_arquivo, metadados)
         if aviso is None or self.extrator_fallback is None:
             return metadados, aviso, False
 
-        logger.info("[%s] %s — tentando provedor de fallback.", nome_arquivo, aviso)
+        logger.info("[%s] %s — tentando fallback.", nome_arquivo, aviso)
         try:
             metadados_fallback = self.extrator_fallback.extrair(documento)
         except ErroDeExtracao as exc:
-            logger.warning(
-                "[%s] fallback também falhou (%s); mantendo resultado local (com aviso).",
-                nome_arquivo, exc,
-            )
+            logger.warning("[%s] fallback também falhou (%s); mantendo resultado local.", nome_arquivo, exc)
             return metadados, aviso, False
 
-        logger.info("[%s] extração concluída via provedor de fallback.", nome_arquivo)
-        return (
-            metadados_fallback,
-            _titulo_diverge_do_arquivo(nome_arquivo, metadados_fallback),
-            True,
-        )
+        return metadados_fallback, _titulo_diverge_do_arquivo(nome_arquivo, metadados_fallback), True
 
     def _nome_do_provedor_usado(self, usou_fallback: bool) -> str:
         if not usou_fallback:
-            return self.config.provedor.value
-        # Em uso real, extrator_fallback vem sempre de config.provedor_fallback
-        # (ver criar_extrator_fallback) — o "fallback" genérico só aparece em
-        # testes que injetam um extrator de fallback sem configurar o campo.
-        return self.config.provedor_fallback.value if self.config.provedor_fallback else "fallback"
+            prov = getattr(self.config, "provedor", None)
+            return getattr(prov, "value", str(prov)) if prov else "deterministico_local"
+        prov_fb = getattr(self.config, "provedor_fallback", None)
+        return getattr(prov_fb, "value", str(prov_fb)) if prov_fb else "fallback"
 
     def _montar_markdown(
         self,
@@ -267,21 +225,10 @@ def _tokenizar(texto: str) -> set[str]:
 
 
 def _titulo_diverge_do_arquivo(nome_arquivo: str, metadados: Metadados) -> Optional[str]:
-    """Sinal heurístico (não uma prova) de que o modelo catalogou outra obra.
-
-    Compara palavras significativas do nome do arquivo original com o texto
-    combinado dos metadados extraídos (título, subtítulo, autor, editora). Se
-    o nome do arquivo carrega conteúdo real e quase nenhuma palavra bate, é um
-    indício de que a extração pegou dados de uma obra citada/discutida no
-    corpo do texto em vez da própria obra — foi assim que alucinações reais
-    foram identificadas durante o desenvolvimento desta ferramenta. Não
-    bloqueia o processamento, só sinaliza para revisão manual — nomes de
-    arquivo genéricos, em outro idioma ou muito diferentes do título por
-    razões legítimas podem gerar avisos que não são de fato um problema.
-    """
+    """Heurística para alertar se o título/autor diverge do nome do arquivo."""
     tokens_arquivo = _tokenizar(Path(nome_arquivo).stem)
     if len(tokens_arquivo) < _MIN_PALAVRAS_EM_COMUM:
-        return None  # nome genérico ou curto demais para servir de sinal
+        return None
 
     texto_metadados = " ".join(
         filter(

@@ -7,6 +7,40 @@ projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ## [Não Lançado]
 
+## [0.4.0] - 2026-10-03
+
+### Adicionado
+
+- **Motor determinístico local e inteligente (CIP / Ficha Catalográfica + Heurísticas Jev)**:
+  Substituição completa da dependência de LLMs pesados/pagos por extração rápida,
+  local e livre de custos via parsing de Ficha Catalográfica (padrões AACR2 e ISBD)
+  e heurísticas bibliográficas especializadas (`classifier_jev.py`).
+- **Validação e Enriquecimento Multi-API Pública**:
+  Integração automática e gratuita com Brasil API (Câmara Brasileira do Livro / ISBN),
+  Google Books, Crossref (DOI), OpenAlex e OpenLibrary (`metadata_api.py`), com
+  validação de similaridade entre metadados extraídos e metadados retornados.
+- **Formatação Rigorosa ABNT NBR 6023:2018**:
+  Módulo dedicado (`abnt_formatter.py`) com manipulação adequada de autores em caixa-alta,
+  sobrenomes compostos em língua portuguesa e espanhola, e preservação de agnomes
+  familiares (Filho, Júnior, Neto, Sobrinho).
+- **Regra de Conversão de Markdown Companheiro**:
+  Amostragem inteligente das 10 primeiras e 10 últimas páginas para metadados,
+  sem conversão redundante ou custosa do corpo integral do PDF para Markdown. O
+  arquivo `.md` gerado contém YAML frontmatter rico, referência ABNT e metadados
+  de catalogação.
+- **Nomenclatura Visual Padronizada**:
+  Renomeação limpa e consistente no formato `SOBRENOME, Nome - Título (Ano)`.
+- **Filtro de Disclaimers Universitários**:
+  Identificação e descarte automático de termos institucionais de repositórios digitais
+  (ex.: "Este exemplar foi revisado...", "Todos os direitos reservados à...", etc.)
+  para impedir alucinação na identificação de autoria e título da obra.
+
+### Removido
+
+- Dependência de LLMs externos e serviços locais de inferência (`ollama`, `anthropic`).
+- Módulos obsoletos de provedores LLM (`provedores.py`).
+- Dependência pesada de conversão completa de layout (`pymupdf4llm`).
+
 ## [0.3.0] - 2026-08-19
 
 ### Adicionado

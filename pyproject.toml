@@ -4,22 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "organizador-pdf"
-version = "0.3.0"
-description = "CLI multiplataforma que converte PDFs em Markdown, extrai metadados bibliográficos com um LLM e organiza os arquivos em uma árvore hierárquica padronizada. Local e gratuito por padrão (Ollama); provedores pagos são opcionais."
+version = "0.4.0"
+description = "CLI multiplataforma que organiza e cataloga PDFs com ABNT NBR 6023, Ficha Catalográfica (CIP), enriquecimento em APIs públicas e Markdown companion. 100% local, determinístico e gratuito."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Dario Pinheiro" }]
-keywords = ["pdf", "markdown", "obsidian", "abnt", "catalogacao", "llm", "ollama"]
+keywords = ["pdf", "markdown", "obsidian", "abnt", "catalogacao", "cip"]
 
 dependencies = [
-    "anthropic>=0.100",
     "httpx>=0.25",
+    "requests>=2.28",
     "pydantic>=2.7",
-    # >=1.28: primeira versão com pymupdf4llm.ocr.OCRMode, usado em
-    # converter.py só para desligar explicitamente o OCR automático da
-    # biblioteca (use_ocr=OCRMode.NEVER) — este app não faz OCR.
-    "pymupdf4llm>=1.28",
     "pymupdf>=1.24",
     "python-dotenv>=1.0",
     "PyYAML>=6.0",
@@ -39,4 +35,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]

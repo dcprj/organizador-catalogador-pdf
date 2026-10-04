@@ -1,7 +1,19 @@
-"""Sanitização de nomes, criação de diretórios e gravação dos arquivos."""
+"""Sanitização de nomes, criação de diretórios e gravação dos arquivos organizados.
+
+Suporta:
+- Nomenclatura padronizada visual: SOBRENOME, Nome - Título (Ano)
+- Nomenclatura formal: <TIPO> - <TITULO> - <SUBTITULO> - <AUTOR> - <ANO> - <EDITORA>
+- Estrutura hierárquica: <destino>/<área>/<subárea>/<tipo>/ ou <destino>/revisao_manual/...
+- Simulação dry-run
+- Copiar ou mover
+- Proteção contra caminhos longos (MAX_PATH) e nomes reservados
+- Classe PipelineOrganizer para compatibilidade completa
+"""
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 import shutil
 import threading
@@ -9,46 +21,38 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Optional
-
+from typing import List, Optional
 import yaml
 
-from .models import Metadados
+from .abnt_formatter import ABNTFormatter
+from .classifier_jev import JevClassifier
+from .converter import (
+    MarkdownConverter,
+    converter_pdf,
+    generate_standardized_filename,
+    listar_pdfs,
+)
+from .estado import EstadoManager
+from .metadata_api import MetadataEnricher
+from .models import Metadados, PipelineResult, PublicationMetadata, TipoPublicacao
 
-#: Caracteres proibidos em nomes de arquivo (união das regras de Windows/macOS/Linux).
+logger = logging.getLogger(__name__)
+
 CARACTERES_INVALIDOS = r'[\\/:*?"<>|]'
 
-#: Nomes reservados pelo Windows, independentemente da extensão.
 NOMES_RESERVADOS_WINDOWS = {
     "CON", "PRN", "AUX", "NUL",
     *(f"COM{i}" for i in range(1, 10)),
     *(f"LPT{i}" for i in range(1, 10)),
 }
 
-#: Limite conservador por segmento de caminho (a maioria dos sistemas para em 255).
 MAX_CARACTERES_SEGMENTO = 120
-
-#: Limite do nome de arquivo completo, deixando folga para sufixos e extensão.
 MAX_CARACTERES_NOME_ARQUIVO = 180
-
-#: Alvo conservador para o comprimento do CAMINHO COMPLETO (diretório +
-#: nome + extensão). O Windows sem suporte a caminho longo habilitado
-#: (não é o padrão em toda instalação) limita chamadas de API clássicas a
-#: 260 caracteres — a folga aqui cobre letra de unidade, separadores e
-#: variação entre `\\` e `/`. MAX_CARACTERES_NOME_ARQUIVO sozinho não
-#: resolve isso: ele limita só o nome, sem saber o quão fundo é o
-#: `--destino` escolhido (livre, pode já consumir boa parte do limite).
 MAX_CARACTERES_CAMINHO = 240
-
-#: Abaixo disso, um nome de arquivo truncado deixaria de ser identificável
-#: — preferível falhar com uma mensagem clara a gravar algo inútil.
 MIN_CARACTERES_NOME_TRUNCADO = 20
-
 SEM_VALOR = "Sem informação"
+PASTA_REVISAO_MANUAL = "revisao_manual"
 
-#: Serializa a checagem de colisão + gravação em `organizar()` — importa só
-#: quando o processamento roda em paralelo (`--paralelo`); em modo
-#: sequencial, adquirir um lock destravado é uma operação essencialmente grátis.
 _LOCK_ESCRITA = threading.Lock()
 
 
@@ -62,8 +66,8 @@ class ResultadoDaOrganizacao:
 
     diretorio: Path
     pdf_destino: Path
-    markdown_destino: Path
-    simulado: bool
+    markdown_destino: Optional[Path] = None
+    simulado: bool = False
 
 
 def sanitizar(
@@ -72,30 +76,15 @@ def sanitizar(
     max_caracteres: int = MAX_CARACTERES_SEGMENTO,
     finalizar: bool = True,
 ) -> str:
-    """Converte um texto livre em um segmento de caminho seguro.
-
-    Remove caracteres inválidos e de controle, normaliza espaços e trata os
-    nomes reservados do Windows. Acentos são preservados (todos os sistemas de
-    arquivos alvo aceitam UTF-8), apenas normalizados para a forma NFC.
-
-    `finalizar=False` pula a remoção de ponto/espaço final: use para um
-    segmento que ainda será concatenado a outros (como em
-    `montar_nome_arquivo`), para não cortar abreviações no meio do nome
-    (ex.: "Frankl, Viktor E." viraria "Frankl, Viktor E" mesmo quando não é o
-    último pedaço do arquivo). Quem concatena aplica a regra do Windows uma
-    única vez, no final da string completa.
-    """
+    """Converte um texto livre em um segmento de caminho seguro."""
     if not texto:
         return ""
 
     limpo = unicodedata.normalize("NFC", str(texto))
     limpo = re.sub(CARACTERES_INVALIDOS, " ", limpo)
-    # Controles viram espaço (e não são apagados) para não colar palavras
-    # separadas por quebra de linha ou tabulação.
     limpo = "".join(" " if unicodedata.category(c)[0] == "C" else c for c in limpo)
     limpo = re.sub(r"\s+", " ", limpo).strip()
     if finalizar:
-        # Windows rejeita nomes terminados em ponto ou espaço.
         limpo = limpo.rstrip(" .")
 
     if len(limpo) > max_caracteres:
@@ -107,11 +96,12 @@ def sanitizar(
     return limpo
 
 
-def montar_nome_arquivo(metadados: Metadados) -> str:
-    """Monta `<TIPO> - <TITULO> - <SUBTITULO> - <AUTOR> - <ANO> - <EDITORA>`.
+sanitizar_segmento = sanitizar
+sanitizar_nome_arquivo = sanitizar
 
-    Segmentos sem informação são omitidos, evitando separadores órfãos.
-    """
+
+def montar_nome_arquivo(metadados: Metadados) -> str:
+    """Monta `<TIPO> - <TITULO> - <SUBTITULO> - <AUTOR> - <ANO> - <EDITORA>`."""
     segmentos = [
         metadados.tipo_publicacao.value,
         metadados.titulo,
@@ -120,10 +110,6 @@ def montar_nome_arquivo(metadados: Metadados) -> str:
         str(metadados.ano) if metadados.ano else None,
         metadados.editora_ou_periodico,
     ]
-    # finalizar=False: a regra de "sem ponto/espaço final" do Windows só se
-    # aplica ao fim do nome de arquivo completo, não a cada segmento isolado
-    # — senão abreviações como "Frankl, Viktor E." perderiam o ponto mesmo
-    # quando seguidas por mais segmentos (ano, editora).
     partes = [sanitizar(segmento, finalizar=False) for segmento in segmentos]
     nome = " - ".join(parte for parte in partes if parte)
     nome = nome.rstrip(" .")
@@ -135,14 +121,6 @@ def montar_nome_arquivo(metadados: Metadados) -> str:
     return nome
 
 
-#: Subpasta onde entram os arquivos que saíram da extração com algum aviso
-#: (divergência de nome de arquivo, identificador não confirmado pela
-#: verificação online, ou fallback pago que também ficou incerto) — em vez
-#: de ficarem espalhados na árvore normal só marcados por um "!" na tabela do
-#: terminal, ficam fisicamente separados para facilitar a revisão manual.
-PASTA_REVISAO_MANUAL = "revisao_manual"
-
-
 def montar_diretorio(
     destino: Path,
     metadados: Metadados,
@@ -150,14 +128,7 @@ def montar_diretorio(
     subpasta_markdown: Optional[str] = None,
     revisao_manual: bool = False,
 ) -> tuple[Path, Path]:
-    """Devolve (diretório do PDF, diretório do Markdown).
-
-    A estrutura é `<DESTINO>/<AREA>/<SUBAREA>/<PLURAL_DO_TIPO>/`, ou
-    `<DESTINO>/revisao_manual/<AREA>/<SUBAREA>/<PLURAL_DO_TIPO>/` quando
-    `revisao_manual=True` — mesma categorização, só isolada num ponto único
-    para não se perder entre os arquivos sem aviso. Quando `subpasta_markdown`
-    é informado, o `.md` vai para uma subpasta espelho.
-    """
+    """Devolve (diretório do PDF, diretório do Markdown)."""
     raiz = destino / PASTA_REVISAO_MANUAL if revisao_manual else destino
     area = sanitizar(metadados.area_principal) or SEM_VALOR
     subarea = sanitizar(metadados.subarea) or area
@@ -171,14 +142,8 @@ def montar_diretorio(
 
 
 def _truncar_para_caminho_seguro(nome: str, diretorio: Path, extensao: str) -> str:
-    """Encurta `nome` se `diretorio/nome{extensao}` ultrapassar `MAX_CARACTERES_CAMINHO`.
-
-    O orçamento fixo de `montar_nome_arquivo` (`MAX_CARACTERES_NOME_ARQUIVO`)
-    não sabe o quão fundo é `--destino` — essa checagem calcula o caminho de
-    verdade e corta o nome dinamicamente para caber, em vez de gerar um
-    caminho que o Windows recusaria a criar.
-    """
-    espaco_fixo = len(str(diretorio)) + 1 + len(extensao)  # +1 do separador
+    """Encurta `nome` se `diretorio/nome{extensao}` ultrapassar `MAX_CARACTERES_CAMINHO`."""
+    espaco_fixo = len(str(diretorio)) + 1 + len(extensao)
     orcamento = MAX_CARACTERES_CAMINHO - espaco_fixo
     if orcamento >= len(nome):
         return nome
@@ -203,37 +168,63 @@ def caminho_disponivel(caminho: Path) -> Path:
         contador += 1
 
 
+garantir_caminho_unico = caminho_disponivel
+
+
+def _slug(texto: str) -> str:
+    """Converte um texto para formato de tag sem acento (ex.: Psicologia -> psicologia)."""
+    nfkd = unicodedata.normalize("NFKD", texto)
+    sem_acento = "".join(c for c in nfkd if not unicodedata.combining(c))
+    slug = re.sub(r"[^\w\s-]", "", sem_acento.lower())
+    return re.sub(r"[\s_-]+", "-", slug).strip("-")
+
+
 def gerar_markdown(
     metadados: Metadados,
-    conteudo: str,
+    conteudo: str = "",
     *,
     arquivo_origem: Optional[Path] = None,
     total_paginas: Optional[int] = None,
     provedor_extracao: Optional[str] = None,
     extraido_via_fallback: bool = False,
+    **kwargs: Any,
 ) -> str:
-    """Monta o `.md` com YAML frontmatter compatível com o Obsidian."""
+    """Monta o `.md` com YAML frontmatter e ABNT NBR 6023."""
+    slug_area = _slug(metadados.area_principal) or "outros"
+    slug_subarea = _slug(metadados.subarea) or slug_area
+    slug_tipo = _slug(metadados.tipo_publicacao.value) or "outros"
+
+    tags = [
+        f"area/{slug_area}",
+        f"subarea/{slug_subarea}",
+        f"tipo/{slug_tipo}",
+    ]
+    for t in metadados.tags:
+        if t not in tags:
+            tags.append(t)
+
     frontmatter: dict[str, object] = {
         "tipo_publicacao": metadados.tipo_publicacao.value,
         "area_principal": metadados.area_principal,
         "subarea": metadados.subarea,
         "titulo": metadados.titulo,
+        "title": metadados.titulo,
         "subtitulo": metadados.subtitulo,
         "autores": metadados.autores,
+        "authors": metadados.autores,
         "autor_principal": metadados.autor_para_nome,
         "editora_ou_periodico": metadados.editora_ou_periodico,
+        "publisher": metadados.editora_ou_periodico,
         "ano": metadados.ano,
+        "year": metadados.ano,
         "local": metadados.local,
+        "city": metadados.local,
         "isbn": metadados.identificadores.isbn,
         "issn": metadados.identificadores.issn,
         "doi": metadados.identificadores.doi,
+        "classification": metadados.classification,
         "referencia_abnt": metadados.referencia_abnt,
-        # Tags no formato hierárquico do Obsidian.
-        "tags": [
-            f"area/{_slug(metadados.area_principal)}",
-            f"subarea/{_slug(metadados.subarea)}",
-            f"tipo/{_slug(metadados.tipo_publicacao.value)}",
-        ],
+        "tags": tags,
         "arquivo_origem": arquivo_origem.name if arquivo_origem else None,
         "total_paginas": total_paginas,
         "catalogado_em": date.today().isoformat(),
@@ -247,15 +238,16 @@ def gerar_markdown(
 
     referencia = metadados.referencia_abnt.strip() or SEM_VALOR
 
-    return (
-        f"---\n{yaml_texto}\n---\n\n"
-        f"# {metadados.titulo}\n\n"
-        "## Referência Bibliográfica (ABNT)\n\n"
-        f"> {referencia}\n\n"
-        "---\n\n"
-        "## Conteúdo\n\n"
-        f"{conteudo.strip()}\n"
-    )
+    partes_md = [
+        f"---\n{yaml_texto}\n---\n\n",
+        f"# {metadados.titulo}\n\n",
+        "## Referência Bibliográfica (ABNT)\n\n",
+        f"> {referencia}\n",
+    ]
+    if conteudo and conteudo.strip():
+        partes_md.append(f"\n---\n\n## Conteúdo\n\n{conteudo.strip()}\n")
+
+    return "".join(partes_md)
 
 
 def organizar(
@@ -263,26 +255,25 @@ def organizar(
     *,
     pdf_origem: Path,
     destino: Path,
-    markdown: str,
+    markdown: Optional[str] = None,
     subpasta_markdown: Optional[str] = None,
     mover: bool = False,
     dry_run: bool = False,
     revisao_manual: bool = False,
 ) -> ResultadoDaOrganizacao:
-    """Grava o PDF renomeado e o Markdown no destino (ou apenas planeja)."""
+    """Organiza o PDF renomeado e o Markdown no destino (ou apenas simula)."""
     diretorio_pdf, diretorio_md = montar_diretorio(
         destino,
         metadados,
         subpasta_markdown=subpasta_markdown,
         revisao_manual=revisao_manual,
     )
-    nome = montar_nome_arquivo(metadados)
-    # `diretorio_md` é sempre igual ou mais fundo que `diretorio_pdf` (pode
-    # ter a subpasta espelho a mais) e ".pdf" é a extensão mais longa das
-    # duas — usar essa combinação garante que os dois caminhos finais cabem.
+
+    # Usa nome padronizado legível
+    nome = generate_standardized_filename(metadados, fallback_name=pdf_origem.name)
     nome = _truncar_para_caminho_seguro(nome, diretorio_md, ".pdf")
     destino_pdf = diretorio_pdf / f"{nome}.pdf"
-    destino_md = diretorio_md / f"{nome}.md"
+    destino_md = diretorio_md / f"{nome}.md" if markdown is not None else None
 
     if dry_run:
         return ResultadoDaOrganizacao(
@@ -294,29 +285,24 @@ def organizar(
 
     try:
         diretorio_pdf.mkdir(parents=True, exist_ok=True)
-        diretorio_md.mkdir(parents=True, exist_ok=True)
+        if diretorio_md:
+            diretorio_md.mkdir(parents=True, exist_ok=True)
 
-        # `caminho_disponivel` é "conferir se existe, depois gravar" — com
-        # processamento concorrente (--paralelo), duas threads que geram o
-        # mesmo nome (metadados quase idênticos) poderiam ver o caminho como
-        # livre ao mesmo tempo e uma sobrescrever a outra. O lock serializa
-        # só essa checagem+gravação — é uma fração pequena do tempo por
-        # arquivo (a chamada ao LLM, não paralelizada por este lock, é o que
-        # de fato domina o tempo total).
         with _LOCK_ESCRITA:
             destino_pdf = caminho_disponivel(destino_pdf)
-            # Mantém o par PDF/Markdown com o mesmo nome quando houve
-            # desambiguação.
-            destino_md = diretorio_md / f"{destino_pdf.stem}.md"
+            if destino_md:
+                destino_md = diretorio_md / f"{destino_pdf.stem}.md"
 
             if mover:
-                shutil.move(str(pdf_origem), destino_pdf)
+                shutil.move(str(pdf_origem), str(destino_pdf))
             else:
-                shutil.copy2(pdf_origem, destino_pdf)
+                shutil.copy2(str(pdf_origem), str(destino_pdf))
 
-            destino_md.write_text(markdown, encoding="utf-8")
-    except OSError as exc:
-        raise ErroDeOrganizacao(f"falha ao gravar em {diretorio_pdf}: {exc}") from exc
+            if markdown is not None and destino_md is not None:
+                destino_md.write_text(markdown, encoding="utf-8")
+
+    except Exception as exc:
+        raise ErroDeOrganizacao(f"Falha ao organizar {pdf_origem.name} em {destino_pdf}: {exc}") from exc
 
     return ResultadoDaOrganizacao(
         diretorio=diretorio_pdf,
@@ -326,7 +312,154 @@ def organizar(
     )
 
 
-def _slug(texto: str) -> str:
-    """Converte um rótulo em uma tag do Obsidian (sem espaços nem acentos)."""
-    sem_acento = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
-    return re.sub(r"[^a-z0-9]+", "-", sem_acento.lower()).strip("-") or "indefinido"
+class PipelineOrganizer:
+    """Orquestrador completo de pipeline para PDFs."""
+
+    def __init__(
+        self,
+        classifier: Optional[JevClassifier] = None,
+        enricher: Optional[MetadataEnricher] = None,
+    ):
+        self.classifier = classifier or JevClassifier()
+        self.enricher = enricher or MetadataEnricher()
+
+    def process_pdf(
+        self,
+        pdf_path: str,
+        output_base_dir: str,
+        move_original: bool = True,
+        dry_run: bool = False,
+        quarantine: bool = True,
+    ) -> PipelineResult:
+        """Processa um único PDF através do pipeline determinístico."""
+        orig_p = Path(pdf_path).resolve()
+        out_base = Path(output_base_dir).resolve()
+
+        if not orig_p.exists():
+            return PipelineResult(
+                original_pdf=str(orig_p),
+                target_pdf="",
+                output_markdown="",
+                classification="outros",
+                metadata=PublicationMetadata(title=orig_p.stem),
+                abnt_reference="",
+                success=False,
+                error_message=f"Arquivo não encontrado: {orig_p}",
+            )
+
+        try:
+            # 1. Classificação Jev e extração de candidatos
+            jev_res = self.classifier.classify_and_validate(str(orig_p))
+
+            # 2. Enriquecimento via APIs públicas
+            meta = self.enricher.enrich(jev_res)
+
+            # 3. Formatação ABNT NBR 6023
+            abnt_ref = ABNTFormatter.format(meta)
+            meta.referencia_abnt = abnt_ref
+
+            # 4. Geração do Markdown Companion
+            md_content = MarkdownConverter.assemble_markdown(
+                metadata=meta,
+                abnt_reference=abnt_ref,
+                pdf_path=str(orig_p),
+            )
+
+            # 5. Organização das pastas
+            precisa_revisao = bool(quarantine and meta.needs_review)
+            classif_plural = meta.classification.lower()
+            pasta_tipo = out_base
+            if precisa_revisao:
+                pasta_tipo = pasta_tipo / PASTA_REVISAO_MANUAL
+            pasta_tipo = pasta_tipo / classif_plural
+
+            stem = generate_standardized_filename(meta, fallback_name=orig_p.name)
+            target_pdf = pasta_tipo / f"{stem}.pdf"
+            target_md = pasta_tipo / f"{stem}.md"
+
+            if not dry_run:
+                pasta_tipo.mkdir(parents=True, exist_ok=True)
+                target_pdf = caminho_disponivel(target_pdf)
+                target_md = target_pdf.with_suffix(".md")
+
+                if move_original:
+                    shutil.move(str(orig_p), str(target_pdf))
+                else:
+                    shutil.copy2(str(orig_p), str(target_pdf))
+
+                target_md.write_text(md_content, encoding="utf-8")
+
+            return PipelineResult(
+                original_pdf=str(orig_p),
+                target_pdf=str(target_pdf),
+                output_markdown=str(target_md),
+                classification=meta.classification,
+                metadata=meta,
+                abnt_reference=abnt_ref,
+                success=True,
+                is_dry_run=dry_run,
+                needs_review=meta.needs_review,
+            )
+        except Exception as e:
+            logger.error("Erro ao processar %s: %s", orig_p.name, e, exc_info=True)
+            return PipelineResult(
+                original_pdf=str(orig_p),
+                target_pdf="",
+                output_markdown="",
+                classification="outros",
+                metadata=PublicationMetadata(title=orig_p.stem),
+                abnt_reference="",
+                success=False,
+                is_dry_run=dry_run,
+                error_message=str(e),
+            )
+
+    def process_directory(
+        self,
+        input_dir: str,
+        output_dir: str,
+        move_original: bool = True,
+        dry_run: bool = False,
+        resume: bool = False,
+        quarantine: bool = True,
+        recursive: bool = True,
+    ) -> List[PipelineResult]:
+        """Processa um lote de PDFs em um diretório com suporte a retomada e busca recursiva."""
+        in_path = Path(input_dir).resolve()
+        out_path = Path(output_dir).resolve()
+
+        if not in_path.exists():
+            logger.error("Diretório de entrada não existe: %s", in_path)
+            return []
+
+        # Gerenciador de estado
+        state_mgr = EstadoManager(base_dir=out_path)
+        pattern = "**/*.pdf" if recursive else "*.pdf"
+        all_pdfs = [p for p in in_path.glob(pattern) if p.is_file() and not p.name.startswith(".")]
+        all_pdfs = sorted(all_pdfs)
+
+        results: List[PipelineResult] = []
+        for pdf_path in all_pdfs:
+            abs_str = str(pdf_path.resolve())
+            if resume and state_mgr.is_completed(abs_str):
+                logger.info("Pulando arquivo já processado (--resume): %s", pdf_path.name)
+                continue
+
+            res = self.process_pdf(
+                pdf_path=str(pdf_path),
+                output_base_dir=str(out_path),
+                move_original=move_original,
+                dry_run=dry_run,
+                quarantine=quarantine,
+            )
+            results.append(res)
+
+            if not dry_run and res.success:
+                state_mgr.save_checkpoint(
+                    original_pdf=res.original_pdf,
+                    target_pdf=res.target_pdf,
+                    classification=res.classification,
+                    success=True,
+                )
+
+        return results

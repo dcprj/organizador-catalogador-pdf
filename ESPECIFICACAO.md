@@ -5,525 +5,162 @@
 > Escrito para sobreviver à perda do repositório — junto com o prompt da
 > seção 6, é o suficiente para reconstruir o projeto do zero.
 
-**Versão coberta por este documento:** v0.2.0 (2026-08-18).
+**Versão coberta por este documento:** v0.4.0 (2026-10-03).
 
 ---
 
 ## 1. Visão geral
 
-CLI multiplataforma (`organizador-pdf`) que processa um lote de PDFs e, para
-cada um:
+CLI multiplataforma (`organizador-pdf`) que processa um lote de PDFs e, para cada um:
 
-1. converte o conteúdo para Markdown estruturado;
-2. extrai metadados bibliográficos via LLM (local por padrão, provedores
-   pagos opcionais);
-3. gera um `.md` com frontmatter YAML compatível com Obsidian e referência
-   ABNT;
-4. copia (ou move) o PDF renomeado e grava o `.md` numa árvore de diretórios
-   padronizada por área/subárea/tipo.
+1. Realiza amostragem leve de texto nativo (primeiras 10 e últimas 10 páginas) sem OCR nem conversão pesada de corpo inteiro;
+2. Extrai metadados bibliográficos de forma determinística via Ficha Catalográfica (CIP nos padrões AACR2 e ISBD) e heurísticas bibliográficas especializadas;
+3. Valida e enriquece os metadados através de consultas gratuitas a APIs públicas (Brasil API / CBL, Google Books, Crossref, OpenAlex e OpenLibrary);
+4. Formata a referência bibliográfica em estrita conformidade com a norma ABNT NBR 6023:2018;
+5. Gera um arquivo Markdown companheiro (`.md`) com frontmatter YAML e referência ABNT para Obsidian/Logseq/Notion;
+6. Copia (ou move) o PDF renomeado no padrão visual `SOBRENOME, Nome - Título (Ano)` e organiza os arquivos em uma árvore de diretórios categorizada por tipo documental (com isolamento em `revisao_manual/` para casos com divergência ou baixa confiança).
 
-Filosofia central: **100% local e gratuito por padrão** (Ollama), com
-qualquer coisa paga ou que saia da máquina do usuário sendo **opt-in
-explícito**. Erros em um arquivo nunca derrubam o lote inteiro. Diante de
-incerteza, o app sinaliza em vez de inventar — nunca fabrica uma citação
-bibliográfica plausível para preencher lacunas.
+Filosofia central: **100% determinístico, local, gratuito e instantâneo**. Sem dependências de modelos de linguagem pesados (LLMs locais como Ollama ou APIs pagas como OpenAI/Anthropic), eliminando custos por token, latência de inferência e risco de alucinação sintética.
 
 ---
 
 ## 2. Regras de negócio
 
-Estas são as decisões de produto que não são óbvias a partir do código —
-o "porquê" por trás do comportamento.
+### 2.1. Fidelidade bibliográfica e determinismo
 
-### 2.1. Anti-alucinação é a prioridade nº 1
+A catalogação bibliográfica exige precisão factual. Para garantir que nenhum autor, título ou identificador seja inventado:
 
-O risco central do produto é o LLM inventar uma referência bibliográfica
-plausível, porém falsa (autor errado, ISBN de outra obra, editora
-inexistente) — isso é pior que não extrair nada, porque o usuário confia
-nesses dados para citar as obras. Toda a arquitetura gira em torno de
-mitigar isso com camadas **determinísticas** (não dependem do LLM se
-autocorrigir):
+- **Ficha Catalográfica (CIP) como verdade primária**: quando presente no bloco inicial da obra (padrões AACR2 ou ISBD), as informações catalográficas registradas por bibliotecários têm precedência máxima sobre heurísticas genéricas.
+- **Filtro de disclaimers e repositórios**: termos institucionais comuns de repositórios universitários ("Este exemplar foi revisado...", "Todos os direitos reservados à...") são explicitamente ignorados na identificação de autoria e título da obra.
+- **Validação de identificadores**: ISBN, ISSN e DOI encontrados são validados estruturalmente e confrontados contra bases bibliográficas públicas para confirmar que correspondem exatamente à obra analisada.
+- **Similaridade em enriquecimento**: se uma API externa retornar dados para um ISBN ou DOI, os campos ausentes só são enriquecidos se houver compatibilidade comprovada (similaridade de títulos e autores) entre os dados extraídos do documento e os dados retornados pela API.
+- **Roteamento para revisão manual**: qualquer documento com baixa confiança heurística, ausência de elementos fundamentais ou divergência de dados é enviado para `<destino>/revisao_manual/<tipo>/` para validação humana.
 
-- **Prompt do sistema** instrui explicitamente: identidade da obra (título/
-  autor/editora) só pode vir de onde o próprio documento se identifica
-  (capa, folha de rosto, cabeçalho, ficha catalográfica) — nunca de uma obra
-  citada/discutida no corpo do texto. Preferir campos incertos/`null` a uma
-  citação inventada.
-- **Descarte de identificadores não confirmados**: um ISBN/ISSN/DOI só
-  sobrevive se aparecer literalmente no texto-fonte enviado ao modelo
-  (tolerando variação de espaçamento/traço). Se não aparecer, é removido do
-  campo estruturado **e** de qualquer menção pontual dentro da
-  `referencia_abnt` (regex com fronteira de palavra — sem isso, um código
-  fabricado que por coincidência é substring de outro código legítimo
-  corromperia o legítimo).
-- **Aviso de divergência nome-de-arquivo vs. metadados**: heurística
-  (não prova) que compara palavras significativas do nome do arquivo
-  original com título/subtítulo/autor/editora extraídos. Pouca ou nenhuma
-  palavra em comum é sinal de que o modelo catalogou outra obra citada no
-  texto. Não bloqueia o processamento — só sinaliza para revisão manual.
-  Nomes de arquivo genéricos ou curtos (< 2 palavras significativas) não
-  geram aviso (não há sinal confiável para comparar).
-- **Verificação online opcional** (`ORGPDF_VERIFICAR_ONLINE`, ligada por
-  padrão): confere o DOI/ISBN extraído contra Crossref/Open Library
-  (gratuitas, sem chave). Não corrige nada — só sinaliza divergência.
-  Cobertura incompleta (obra não indexada) e falha de rede nunca são
-  tratadas como evidência de erro, só como "não deu para confirmar".
-- **Fallback para provedor pago é opcional e não é mais confiável por ser
-  pago** — as mesmas duas proteções deterministas (descarte de
-  identificador, normalização de maiúsculas) rodam para qualquer provedor.
+### 2.2. Leveza, privacidade e custo zero
 
-Qualquer arquivo que saia com aviso de **qualquer** uma dessas proteções
-(mesmo depois de tentar o fallback) é gravado numa subpasta separada
-(`revisao_manual/`) em vez da árvore normal — mesma categorização por área/
-subárea/tipo, só fisicamente isolada para facilitar a checagem humana.
+- O processamento de cada documento é instantâneo (frações de segundo).
+- Nenhuma dependência pesada de inferência de IA ou de GPU é necessária.
+- As chamadas de rede são estritamente limitadas a consultas HTTP públicas (Brasil API, Google Books, Crossref, OpenAlex, OpenLibrary), transmitindo unicamente o identificador já localizado ou termos de busca do título, sem enviar o documento ou dados sensíveis.
+- O pipeline opera com resiliência total a falhas de rede: se uma API estiver inacessível ou sem internet, a extração local continua normalmente.
 
-### 2.2. Custo e privacidade são o padrão, não a exceção
+### 2.3. Resiliência por arquivo e persistência de estado (`--resume`)
 
-- O modelo só recebe as **primeiras N páginas** do PDF (padrão 6,
-  configurável), não o documento inteiro — é onde ficam capa, folha de
-  rosto e ficha catalográfica. Um teto de caracteres adicional
-  (padrão 15.000) corta esse trecho antes de enviar.
-- O provedor padrão é o Ollama local: sem chave de API, sem custo por
-  token, nada sai da máquina do usuário. Qualquer provedor pago (Anthropic,
-  OpenAI, DeepSeek, Gemini, Grok) exige escolha explícita
-  (`--provedor`/`ORGPDF_PROVEDOR`) e uma chave de API — nunca é o padrão.
-- O fallback pago (`--provedor-fallback`) só é acionado quando o resultado
-  do provedor principal falha ou sai com aviso — não em toda extração. Sem
-  configurá-lo, nenhuma chamada extra é feita.
-- A única chamada de rede fora do LLM escolhido é a verificação online
-  opcional (Crossref/Open Library) — e ela manda só o identificador (ISBN/
-  DOI), nunca o conteúdo do PDF. Pode ser desligada para manter tudo 100%
-  offline.
-- Chaves de API nunca são persistidas em disco pelo app (nem no arquivo de
-  estado do `--resume`) — só existem como variável de ambiente/`.env` ou
-  argumento de linha de comando (com aviso de que a flag fica visível no
-  histórico do shell).
+- Falhas em um arquivo individual (arquivo corrompido, protegido por senha ou sem camada de texto nativa) nunca interrompem o processamento do restante do lote.
+- O progresso é persistido incrementalmente em `~/.organizador-pdf/estado.json`. Em caso de interrupção forçada (Ctrl+C ou queda do sistema), a flag `--resume` retoma a execução exatamente dos arquivos pendentes, sem reprocessar arquivos já concluídos.
+- Conclusão completa do lote limpa automaticamente o arquivo de estado salvo.
 
-### 2.3. Resiliência por arquivo, não por lote
+### 2.4. Nomenclatura e organização em disco
 
-- Falha em um PDF (corrompido, sem texto, resposta do LLM fora do esquema)
-  não interrompe o lote — é registrada como falha daquele arquivo e o
-  processamento segue para o próximo.
-- Só uma categoria de erro interrompe o lote inteiro: `ErroFatalDeAPI`
-  (credencial inválida, modelo inexistente, servidor fora do ar, limite de
-  requisições, saldo insuficiente) — insistir arquivo a arquivo só
-  desperdiçaria tempo quando a causa afeta todos.
-- Um lote interrompido (Ctrl+C ou erro fatal) pode ser retomado com
-  `--resume`, sem repetir nenhum parâmetro da execução original. Um arquivo
-  conta como "concluído" (não será retentado) tanto em caso de sucesso
-  quanto de falha definitiva — só o que ficou pra trás pela interrupção em
-  si é reprocessado. Retentar falhas definitivas automaticamente é uma
-  decisão consciente de não fazer: evita reprocessar sem necessidade
-  arquivos com problema persistente (ex.: PDF corrompido).
+- **Padrão de nomenclatura**: `SOBRENOME, Nome - Título (Ano).pdf` (e `.md`).
+- **Respeito aos limites do sistema operacional (MAX_PATH)**: o tamanho do caminho completo é monitorado dinamicamente para garantir compatibilidade segura com o teto de 260 caracteres do Windows. Se necessário, o título é truncado de forma elegante mantendo extensão e identificadores essenciais.
+- **Prevenção de colisões**: arquivos existentes no destino recebem sufixos numéricos sequenciais ` (2)`, ` (3)` sem sobrescrever dados prévios.
+- **Markdown companheiro**: o arquivo `.md` é gerado como metadado complementar estruturado, evitando a duplicação desnecessária do corpo integral de centenas de páginas de texto do PDF.
 
-### 2.4. Nomenclatura e organização são determinísticas, não decididas pelo LLM
+### 2.5. Sem OCR embutido
 
-- O LLM só devolve os *dados*; a nomenclatura de arquivo e a estrutura de
-  pastas são montadas por código puro a partir desses dados — reprodutível,
-  sem variação de execução para execução.
-- Padrão de nome: `<TIPO> - <TÍTULO> - <SUBTÍTULO> - <AUTOR> - <ANO> -
-  <EDITORA>`, omitindo segmentos ausentes sem deixar separador órfão.
-- Estrutura de pastas: `<DESTINO>/<ÁREA>/<SUBÁREA>/<TIPO NO PLURAL>/` (ou
-  `<DESTINO>/revisao_manual/<ÁREA>/<SUBÁREA>/<TIPO NO PLURAL>/` quando há
-  aviso) — mesma árvore, isolada só quando necessário.
-- Colisão de nome no destino nunca sobrescreve: incrementa sufixo
-  ` (2)`, ` (3)`... mantendo PDF e Markdown pareados com o mesmo nome.
-
-### 2.5. Este app não faz OCR
-
-Decisão explícita (revertida de uma tentativa anterior de OCR automático
-via Tesseract): PDFs digitalizados/escaneados sem texto extraível **falham
-com mensagem explícita**, orientando o uso de um serviço de OCR externo
-(ex.: `ocrmypdf`) antes de reprocessar. Motivo: manter o binário leve e sem
-dependência de um motor de OCR pesado ou de instalação externa (Tesseract)
-como pré-requisito silencioso. `use_ocr=OCRMode.NEVER` é passado
-explicitamente na chamada ao `pymupdf4llm` — sem isso, a biblioteca roda
-OCR sozinha por padrão quando detecta Tesseract instalado na máquina,
-o que tornaria o comportamento dependente do ambiente de quem roda.
+Documentos puramente escaneados ou digitalizados como imagem pura falham com aviso informativo claro, instruindo o usuário a aplicar pré-processamento via ferramentas especializadas de OCR (ex.: `ocrmypdf`).
 
 ---
 
 ## 3. Requisitos funcionais (RF)
 
-### RF1 — Entrada de parâmetros (CLI)
+### RF1 — Interface de Linha de Comando (CLI)
+Ponto de entrada único via Typer com comandos intuitivos e flags:
+- `--origem` / `-i`: diretório com os arquivos PDF a processar (obrigatório, salvo em `--resume`).
+- `--destino` / `-o`: diretório de saída para a árvore organizada (obrigatório, salvo em `--resume`).
+- `--dry-run`: simulação completa com exibição de tabelas sem escrita em disco.
+- `--resume`: retomada de lotes pendentes.
+- `--mover`: move os arquivos originais em vez de copiar.
+- `--subpasta-md`: direciona os arquivos `.md` companheiros para uma pasta separada espelhada.
+- `--paralelo` / `-j`: processamento concorrente multi-threaded.
+- `--quarantine`: roteia arquivos duvidosos para `revisao_manual/`.
+- `--limite` / `-n`: teto de arquivos a processar na sessão.
+- `--log`: especificação do arquivo de registro de erros.
+- `--verbose` / `-v`: modo verboso para depuração.
 
-Comando único `organizador-pdf` (ou `processar`, via `python -m
-organizador_pdf`), com:
+### RF2 — Amostragem de Texto Nativo
+- Módulo `converter.py` extrai até 10 primeiras páginas e 10 últimas páginas do PDF via PyMuPDF.
+- Detecta páginas com menos de 30 caracteres válidos como indicativo de página gráfica/escaneada.
 
-| Flag | Curta | Obrigatório | Padrão | Descrição |
-|---|---|---|---|---|
-| `--origem` | `-i` | sim* | — | Diretório com os PDFs a processar |
-| `--destino` | `-o` | sim* | — | Diretório raiz da árvore organizada |
-| `--dry-run` | — | não | desligado | Mostra o plano sem gravar nada |
-| `--resume` | — | não | desligado | Retoma o último lote interrompido (ver RF8) |
-| `--recursive`/`--no-recursive` | `-r`/`-R` | não | ligado | Busca em subpastas |
-| `--mover` | — | não | desligado | Move em vez de copiar o PDF original |
-| `--subpasta-md` | — | não | — | Grava os `.md` numa subpasta espelho |
-| `--modelo` | `-m` | não | `qwen2.5:3b-instruct` | Modelo do provedor escolhido |
-| `--ollama-url` | — | não | `http://localhost:11434` | Endereço do servidor Ollama |
-| `--provedor` | `-p` | não | `ollama` | `ollama`\|`anthropic`\|`openai`\|`deepseek`\|`gemini`\|`grok` |
-| `--apikey` | `-k` | condicional | — | Obrigatório se `--provedor` ≠ `ollama` |
-| `--provedor-fallback` | — | não | — | Provedor pago acionado só em falha/aviso |
-| `--modelo-fallback` | — | condicional | — | Obrigatório se `--provedor-fallback` usado |
-| `--apikey-fallback` | — | condicional | — | Obrigatório se `--provedor-fallback` usado |
-| `--max-paginas` | — | não | `6` | Páginas iniciais enviadas ao modelo |
-| `--max-caracteres` | — | não | `15000` | Teto de caracteres do trecho enviado |
-| `--limite` | `-n` | não | — | Processa no máximo N arquivos |
-| `--log` | — | não | `erros.log` | Arquivo de registro de erros |
-| `--env` | — | não | `./.env` | Caminho de um `.env` alternativo |
-| `--verbose` | `-v` | não | desligado | Log detalhado |
-| `--version` | — | não | — | Mostra a versão e sai |
+### RF3 — Extração e Classificação Determinística
+- Módulo `classifier_jev.py`:
+  - Parser de Ficha Catalográfica (CIP) para extração de título, subtítulo, autor, editora, local, ano, ISBN e CDD/CDU.
+  - Heurísticas de classificação estrutural para categorizar em `Livro`, `Artigo Científico`, `Dissertação/Tese`, `Revista/Periódico`, `Apostila` ou `Outros`.
+  - Extração de metadados de colofão e páginas finais.
 
-\* `--origem`/`--destino` não são obrigatórios quando `--resume` é usado
-(são recuperados do estado salvo).
+### RF4 — Consulta e Enriquecimento Multi-API
+- Módulo `metadata_api.py`:
+  - Consulta automática à Brasil API / CBL para validação de ISBNs brasileiros.
+  - Consulta a Google Books e OpenLibrary para livros internacionais.
+  - Consulta a Crossref e OpenAlex para artigos científicos via DOI ou título.
+  - Cálculo de índice de similaridade para mesclagem segura de campos faltantes.
 
-Toda flag opcional segue a mesma precedência de resolução: **CLI > variável
-de ambiente específica (quando existir) > variável de ambiente genérica
-(quando existir) > padrão embutido**.
+### RF5 — Formatação ABNT NBR 6023:2018
+- Módulo `abnt_formatter.py`:
+  - Formatação completa de referência em linha única.
+  - Sobrenomes de autores em letras maiúsculas.
+  - Tratamento gramatical de sobrenomes compostos (ex.: "Espirito Santo", "Villas Boas") e agnomes de parentesco ("Filho", "Júnior", "Neto", "Sobrinho").
+  - Formatação tipográfica de títulos e subtítulos com itálico ou negrito conforme tipo de publicação.
 
-### RF2 — Conversão de PDF para Markdown
+### RF6 — Markdown Companheiro e Frontmatter
+- Geração de `.md` companheiro com frontmatter YAML contendo:
+  - `title`, `author`, `authors`, `year`, `publication_type`, `area`, `subarea`, `isbn`, `issn`, `doi`, `abnt_reference`, `cataloged_at`.
+- Corpo do documento contendo título em H1 e referência bibliográfica formatada em bloco de citação para visualização imediata no Obsidian/Logseq.
 
-- Biblioteca: `pymupdf4llm` (estruturado: títulos, tabelas, ordem de
-  leitura), com extração de texto simples via `pymupdf` como plano B se a
-  primeira falhar.
-- OCR da biblioteca explicitamente desligado (`OCRMode.NEVER`) — ver regra
-  de negócio 2.5. PDF sem texto extraível falha com mensagem clara.
-- Metadados embutidos no PDF (title/author/subject/keywords/creator/
-  producer) são coletados e repassados como pista adicional ao LLM.
-- Gera dois textos: o Markdown completo (vai para o `.md` final) e um
-  recorte das primeiras N páginas, truncado no teto de caracteres (o único
-  trecho de fato enviado ao LLM).
-
-### RF3 — Extração de metadados via LLM
-
-Campos extraídos, validados por um schema Pydantic (`Metadados`):
-
-- `tipo_publicacao`: enum estrito — Livro, Artigo, Dissertação/Tese,
-  Apostila, Revista, Capítulo de Livro, Outros.
-- `area_principal`: área macro do conhecimento, português, singular,
-  capitalizada.
-- `subarea`: especialidade temática; repete a área se não identificável.
-- `titulo` / `subtitulo`: campos separados.
-- `autores`: lista, formato "Sobrenome, Nome"; `autor_principal` deve ser
-  um dos itens da lista.
-- `editora_ou_periodico`, `ano`, `local`: opcionais, `null` se não
-  identificáveis.
-- `identificadores`: objeto `{isbn, issn, doi}`, todos opcionais.
-- `referencia_abnt`: referência completa segundo NBR 6023, uma linha,
-  sobrenome em maiúsculas, usando `s.l.`/`s.n.`/`s.d.` para lacunas.
-
-Saída estruturada nativa do provedor (JSON Schema restringindo a geração,
-não parsing de texto livre) sempre que o provedor suportar; DeepSeek é
-exceção conhecida (usa `json_object` + instrução textual, por não aceitar
-`json_schema` estrito).
-
-Duas pós-processagens deterministas rodam sobre a saída do LLM, para
-**qualquer** provedor: normalização de maiúsculas do sobrenome na
-referência ABNT, e descarte de identificadores não confirmados no texto-
-fonte (ver 2.1).
-
-### RF4 — Provedores de LLM
-
-- **Ollama** (padrão): API `/api/chat`, saída restringida via `format`
-  (JSON Schema).
-- **Anthropic**: SDK oficial, `messages.parse` com `output_format=Metadados`.
-- **OpenAI, DeepSeek, Gemini, Grok**: um único adaptador compatível com a
-  API de chat completions da OpenAI (`/chat/completions`), com URL base por
-  provedor. Gemini via camada de compatibilidade OpenAI da própria Google.
-- Erros são classificados em dois níveis: `ErroDeExtracao` (falha pontual
-  daquele arquivo — resposta malformada, timeout, erro 5xx) e
-  `ErroFatalDeAPI` (afeta o lote inteiro — credencial inválida, 401/403,
-  modelo/404, limite de requisições/429, sem crédito).
-
-### RF5 — Fallback para provedor pago
-
-- Acionado (se `--provedor-fallback` configurado) quando: (a) a extração
-  principal falha com `ErroDeExtracao`, ou (b) a extração principal
-  sucede mas gera aviso de divergência nome-arquivo/metadados.
-- Se o fallback também falhar quando acionado por (a): falha do arquivo,
-  reportando os dois erros. Se falhar quando acionado por (b): mantém o
-  resultado local (com o aviso original).
-- Uso do fallback é registrado (não é, por si, motivo de aviso):
-  marcador `$` na tabela do terminal; campos `provedor_extracao`/
-  `extraido_via_fallback` no frontmatter do `.md`; contagem "extraído(s)
-  localmente vs. via provedor pago" no resumo final do lote.
-
-### RF6 — Geração do Markdown
-
-- Frontmatter YAML no topo: todos os campos de `Metadados`, mais tags no
-  formato hierárquico do Obsidian (`area/x`, `subarea/y`, `tipo/z`),
-  `arquivo_origem`, `total_paginas`, `catalogado_em` (data ISO),
-  `provedor_extracao`, `extraido_via_fallback`.
-- Corpo: título (`#`), seção "Referência Bibliográfica (ABNT)" com a
-  referência em bloco de citação, separador, seção "Conteúdo" com o
-  Markdown completo do documento.
-
-### RF7 — Organização e nomenclatura
-
-- Sanitização de nome remove caracteres inválidos multiplataforma
-  (`\ / : * ? " < > |`), colapsa espaços/controles, remove ponto/espaço
-  final (regra do Windows), prefixa nomes reservados do Windows (CON, PRN,
-  AUX, NUL, COM1-9, LPT1-9), trunca por segmento (120 car.) e no total
-  (180 car.), preservando acentos (NFC).
-- Nome do arquivo: `<TIPO> - <TÍTULO> - <SUBTÍTULO> - <AUTOR> - <ANO> -
-  <EDITORA>`, sem segmentos ausentes.
-- Diretório: `<DESTINO>/<ÁREA>/<SUBÁREA>/<TIPO PLURAL>/`, ou com prefixo
-  `revisao_manual/` quando há aviso. `.md` pode ir para subpasta espelho
-  (`--subpasta-md`).
-- Colisão de nome: sufixo ` (2)`, ` (3)`... mantendo PDF/Markdown parelhos.
-- `--dry-run`: calcula e mostra tudo sem gravar (nem criar diretório).
-- `--mover` vs. copiar (padrão): copiar preserva o PDF original na origem.
-
-### RF8 — Retomada de lote interrompido (`--resume`)
-
-- Cada execução (fora de `--dry-run`) grava, incrementalmente, um arquivo
-  de estado global (`~/.organizador-pdf/estado.json`) com os parâmetros da
-  chamada (exceto chaves de API) e o caminho absoluto de cada PDF já
-  concluído (sucesso ou falha definitiva).
-- `--resume`: carrega esse estado, reaplica todos os parâmetros da
-  execução original (ignorando quaisquer outras flags passadas junto,
-  exceto `--log`/`--env`/`--verbose`/`--limite`, que são meta-parâmetros
-  aplicados normalmente), filtra da lista de PDFs os já concluídos, e
-  segue o lote.
-- Sem estado salvo, `--resume` falha com mensagem clara (nada para
-  retomar).
-- Ao concluir um lote inteiro sem interrupção, o estado é apagado — o
-  próximo `--resume` (sem lote pendente) avisa e não faz nada.
-
-### RF9 — Verificação online opcional
-
-- Para cada identificador já confirmado no texto-fonte (ISBN/DOI), consulta
-  Crossref (DOI) ou Open Library (ISBN) e compara título/autor devolvidos
-  com o extraído (por sobreposição de palavras significativas, tolerante a
-  ausência de dado).
-- Diverge → aviso (mesmo tratamento de qualquer outro aviso: vai para
-  `revisao_manual/`). Não indexado, sem rede, ou API fora do ar → ignorado
-  silenciosamente, sem afetar o restante do processamento.
-- Desligável via `ORGPDF_VERIFICAR_ONLINE=false`.
-
-### RF10 — Relatório do lote
-
-Ao final (ou quando interrompido), a CLI mostra: árvore dos arquivos
-organizados/planejados; tabela de metadados extraídos (com marcadores `!`
-para aviso e `$` para fallback usado); tabela de avisos para revisão;
-tabela de falhas com etapa e mensagem; painel de resumo com contagem de
-gravados/simulados/falhas, contagem local-vs-pago, e caminho do arquivo de
-log.
+### RF7 — Organização de Diretórios e Prevenção de Falhas
+- Criação automática da taxonomia de pastas `<destino>/<Tipo>/`.
+- Encaminhamento automático de anomalias para `<destino>/revisao_manual/<Tipo>/`.
+- Validação e saneamento de nomes de arquivo contra caracteres proibidos no Windows, macOS e Linux.
 
 ---
 
 ## 4. Requisitos não funcionais (RNF)
 
-- **RNF1 — Linguagem/tipagem:** Python 3.10+, tipagem estática
-  (`typing`/`from __future__ import annotations`), modelos de dados via
-  `pydantic` (validação de LLM) e `dataclasses` (configuração/estado
-  internos).
-- **RNF2 — Multiplataforma:** macOS, Linux, Windows. `pathlib.Path` em
-  toda manipulação de caminho; sanitização de nome cobre as regras mais
-  restritivas dos três sistemas de arquivos.
-- **RNF3 — Interface:** CLI via `typer`, com ajuda automática (`--help`),
-  saída colorida/tabelas via `rich`.
-- **RNF4 — Resiliência:** falha em um PDF nunca interrompe o lote (exceto
-  `ErroFatalDeAPI`); todo erro tratado tem mensagem acionável, não só
-  stack trace. Log em arquivo (`--log`, padrão `erros.log`) além do
-  console.
-- **RNF5 — Custo-eficiência:** só as primeiras N páginas (configurável) e
-  um teto de caracteres vão ao LLM — nunca o documento inteiro.
-- **RNF6 — Privacidade/offline por padrão:** zero chamadas de rede além do
-  provedor de LLM escolhido e (opcional) verificação Crossref/Open
-  Library — ambas desligáveis para operação 100% offline com Ollama.
-- **RNF7 — Segurança de credenciais:** chaves de API nunca são logadas,
-  nunca persistidas em disco pelo app; flags de chave alertam sobre
-  exposição em histórico de shell; log HTTP de debug silenciado
-  (`httpx`/`httpcore`) mesmo em `--verbose`, para nunca vazar
-  `Authorization` header.
-- **RNF8 — Testabilidade:** suíte `pytest` sem chamadas de rede reais
-  (providers e verificação online mockados via `httpx.Client` injetável);
-  183 testes na v0.2.0.
-- **RNF9 — Distribuição:** pacote Python instalável (`pip install -e .`)
-  e binário standalone via PyInstaller (macOS arm64, Linux, Windows),
-  publicado automaticamente no GitHub Actions a cada tag `v*`. Arquivos de
-  dados carregados em runtime pelo `pymupdf`/`pymupdf4llm` (modelos ONNX do
-  motor de layout) são coletados explicitamente no `.spec`
-  (`collect_data_files`) — a análise estática do PyInstaller não os
-  rastreia sozinha.
-- **RNF10 — Idioma:** toda saída de usuário (CLI, mensagens de erro,
-  documentação) em português do Brasil; código-fonte (identificadores,
-  comentários) também em português.
-- **RNF11 — Convenção de branches:** desenvolvimento em `develop`; merge
-  para `main` + tag `vX.Y.Z` (SemVer) + `CHANGELOG.md` atualizado a cada
-  release validado.
+- **RNF1 — Linguagem e Tipagem**: Python 3.10+, anotações de tipo completas (`typing`) e modelos estruturados via Pydantic e Dataclasses.
+- **RNF2 — Desempenho**: processamento médio inferior a 200ms por documento em modo sequencial e inferior a 50ms por documento em modo paralelo (4 threads).
+- **RNF3 — Confiabilidade e Autonomia**: zero chamadas a serviços de IA proprietários; funcionamento completo mesmo sem acesso à internet (com fallback automático da camada de API).
+- **RNF4 — Interface e UX**: visualização rica via `rich` com tabelas de metadados, árvores de diretórios, barras de progresso interativas e avisos coloridos de status.
+- **RNF5 — Cobertura de Testes**: suíte abrangente com 100% dos testes unitários, de regressão e de integração ponta a ponta passando (177 testes automatizados via `pytest`).
 
 ---
 
-## 5. Estrutura do código-fonte
+## 5. Estrutura do Código-Fonte
 
 ```
 src/organizador_pdf/
-  cli.py          # ponto de entrada (typer): parsing, --resume, relatório
-  config.py       # Config (dataclass) + resolução CLI>env>padrão
-  converter.py    # PDF -> Markdown (pymupdf4llm/pymupdf), sem OCR
-  models.py       # Metadados, TipoPublicacao (Pydantic)
-  extractor.py    # ExtratorOllama + prompt de sistema + pós-processamento
-                   # anti-alucinação (usado por todo provedor)
-  provedores.py   # ExtratorAnthropic, ExtratorOpenAICompativel, fábricas
-  pipeline.py     # orquestra converter->extrair->markdown->organizar,
-                   # fallback, aviso de divergência nome/metadados
-  organizer.py    # sanitização, nomenclatura, YAML frontmatter, gravação
-  verificacao.py  # verificação online DOI/ISBN (Crossref/Open Library)
-  estado.py       # persistência do progresso para --resume
-  logging_utils.py
+  ├── __init__.py           # Versão e exportação de componentes principais
+  ├── abnt_formatter.py     # Normas ABNT NBR 6023:2018 e tratamento de nomes
+  ├── classifier_jev.py     # Parser CIP / Ficha Catalográfica e Heurísticas
+  ├── cli.py                # Interface Typer com Rich e gerenciamento de lote
+  ├── config.py             # Configuração e variáveis de ambiente
+  ├── converter.py          # Amostragem de texto e geração de markdown companheiro
+  ├── estado.py             # Gerenciamento de checkpoint para --resume
+  ├── extractor.py          # Definições de exceções e compatibilidade
+  ├── logging_utils.py      # Sistema de logs com registro em arquivo e console
+  ├── metadata_api.py       # Clientes HTTP multi-API (Brasil API, Crossref, etc.)
+  ├── models.py             # Modelos de dados e validação Pydantic unificada
+  ├── organizer.py          # Organização de diretórios, MAX_PATH e gravação
+  └── pipeline.py           # Orquestração do fluxo determinístico
 
-packaging/organizador-pdf.spec   # build PyInstaller
-.github/workflows/release.yml    # CI: testa, builda 3 binários, publica
-tests/                           # pytest, um arquivo por módulo
+scripts/
+  └── interactive_validator.py # Ferramenta interativa de diagnóstico de extração
+tests/                         # Suíte completa com 14 arquivos de testes pytest
 ```
-
-Fluxo de dependência: `cli.py` → `pipeline.py` → (`converter.py`,
-`provedores.py`/`extractor.py`, `verificacao.py`, `organizer.py`).
-`config.py` e `estado.py` são transversais.
 
 ---
 
 ## 6. Prompt de recriação
 
-> Copie o bloco abaixo para recriar o projeto do zero com um LLM
-> assistente de código, caso o repositório seja perdido. Ele descreve o
-> estado da v0.2.0 — mais enxuto que as seções 2–4 acima (que continuam
-> sendo a referência completa para tirar dúvidas durante a reconstrução).
+> Copie o bloco abaixo para recriar o projeto do zero com um assistente de código, caso o repositório seja perdido.
 
 ```
-Você é um desenvolvedor especialista em Python. Construa uma ferramenta CLI
-multiplataforma (macOS/Linux/Windows) chamada "organizador-pdf" que processa
-um lote de PDFs e, para cada um: converte para Markdown estruturado, extrai
-metadados bibliográficos via LLM, gera um .md com frontmatter YAML e
-referência ABNT, e organiza PDF+Markdown numa árvore de diretórios por
-área/subárea/tipo. Interface e todo texto de usuário em português do
-Brasil. Filosofia: 100% local e gratuito por padrão (LLM via Ollama), tudo
-que é pago ou sai da máquina é opt-in explícito. Resiliente por arquivo
-(falha em um PDF não derruba o lote). Prioridade nº1: nunca fabricar uma
-citação bibliográfica plausível, porém falsa — na dúvida, sinalizar em vez
-de inventar.
-
-REQUISITOS NÃO FUNCIONAIS
-- Python 3.10+, tipagem estática, Pydantic para validação de dados do LLM.
-- pathlib.Path em toda manipulação de caminho.
-- CLI via typer, saída via rich (tabelas, árvore, cores).
-- Log em console + arquivo (erros.log por padrão).
-- Só as primeiras N páginas (padrão 6) e um teto de caracteres (padrão
-  15000) vão ao LLM — nunca o documento inteiro.
-- Zero chamadas de rede além do LLM escolhido e uma verificação
-  bibliográfica opcional (Crossref/Open Library, sem chave) — ambas
-  desligáveis.
-- Chaves de API nunca logadas nem persistidas em disco pelo app.
-- Testes (pytest) sem chamadas de rede reais.
-- Empacotável como binário standalone (PyInstaller) para as 3 plataformas.
-
-PARÂMETROS DA CLI (precedência: flag > env var específica > env var
-genérica > padrão)
---origem/-i e --destino/-o (obrigatórios, exceto com --resume)
---dry-run (mostra plano sem gravar)
---resume (retoma lote interrompido — ver seção RESUME)
---recursive/--no-recursive (-r/-R, padrão ligado)
---mover (padrão: copiar)
---subpasta-md (subpasta espelho pro .md)
---modelo/-m, --ollama-url
---provedor/-p (ollama padrão; anthropic/openai/deepseek/gemini/grok pagos,
-  exigem --apikey/-k)
---provedor-fallback/--modelo-fallback/--apikey-fallback (pago, acionado só
-  em falha ou aviso do principal; desligado por padrão)
---max-paginas (padrão 6), --max-caracteres (padrão 15000)
---limite/-n, --log, --env, --verbose/-v, --version
-
-PIPELINE POR ARQUIVO
-1. Converter PDF->Markdown (biblioteca tipo pymupdf4llm; texto simples via
-   pymupdf como plano B). Sem OCR — PDF sem texto extraível falha com
-   mensagem clara orientando usar um serviço de OCR externo antes de
-   reprocessar. Recolhe metadados embutidos do PDF (title/author/etc.) como
-   pista extra.
-2. Extrair metadados: envia o trecho inicial (capa/ficha catalográfica) a
-   um LLM com saída estruturada (JSON Schema restringindo a geração, não
-   parsing de texto livre), validada por um schema Pydantic com estes
-   campos:
-   - tipo_publicacao: enum (Livro, Artigo, Dissertação/Tese, Apostila,
-     Revista, Capítulo de Livro, Outros)
-   - area_principal, subarea (português, capitalizado)
-   - titulo, subtitulo (separados)
-   - autores (lista, "Sobrenome, Nome"), autor_principal
-   - editora_ou_periodico, ano, local (opcionais)
-   - identificadores: {isbn, issn, doi} (opcionais)
-   - referencia_abnt (NBR 6023 completa, uma linha, sobrenome maiúsculo,
-     s.l./s.n./s.d. para lacunas)
-   Prompt de sistema deve instruir explicitamente: identidade da obra só
-   vem de onde o documento se autoidentifica (capa/folha de rosto/
-   cabeçalho/ficha catalográfica), nunca de obra citada no corpo do texto;
-   na dúvida, campos incertos/null em vez de inventar; nomes de autor
-   sempre "Sobrenome, Nome" (tradutor/revisor/prefaciador não são autores).
-3. Pós-processar (roda para QUALQUER provedor, determinístico, não
-   depende do LLM se autocorrigir):
-   a. Forçar sobrenome em maiúsculas dentro de referencia_abnt (comparando
-      com os nomes já validados em autores).
-   b. Descartar isbn/issn/doi que não aparecem literalmente no texto-fonte
-      enviado (tolerando variação de espaço/traço, exigindo fronteira de
-      palavra para não corromper um código legítimo que contenha outro
-      como substring) — e remover a menção correspondente dentro do texto
-      livre de referencia_abnt também.
-4. Gerar aviso de divergência: comparar palavras significativas (>=4
-   letras, sem stopwords) do nome do arquivo original com
-   titulo+subtitulo+autor+editora extraídos. Nome com conteúdo real (>=2
-   palavras significativas) e pouca/nenhuma palavra em comum -> aviso
-   (heurística, não bloqueia).
-5. Se --provedor-fallback configurado: acionar quando a extração principal
-   falhar OU gerar o aviso do passo 4. Resultado final é o do fallback se
-   ele suceder; se falhar, mantém o local. Registrar (não é aviso por si
-   só) qual provedor de fato produziu o resultado — no relatório do
-   terminal e no frontmatter do .md.
-6. Verificação online opcional (Crossref para DOI, Open Library para
-   ISBN): comparar título/autor devolvidos com o extraído por sobreposição
-   de palavras; divergência vira aviso; não indexado ou erro de rede é
-   ignorado em silêncio.
-7. Gerar o .md: frontmatter YAML com todos os campos + tags hierárquicas
-   estilo Obsidian (area/x, subarea/y, tipo/z) + arquivo_origem +
-   total_paginas + data de catalogação + provedor usado; corpo com título,
-   seção de referência ABNT em blockquote, e o Markdown completo do PDF.
-8. Organizar: nome de arquivo "<TIPO> - <TITULO> - <SUBTITULO> - <AUTOR> -
-   <ANO> - <EDITORA>" (sanitizado: remove caracteres inválidos de
-   Windows/macOS/Linux, nomes reservados do Windows, colisão de nome vira
-   sufixo " (2)"). Diretório destino: <DESTINO>/<AREA>/<SUBAREA>/<TIPO NO
-   PLURAL>/, ou <DESTINO>/revisao_manual/<...> quando há QUALQUER aviso
-   (das etapas 4, 5 ou 6) — mesma árvore, só isolada.
-
-RETOMADA DE LOTE (--resume)
-Salvar incrementalmente (a cada arquivo concluído, sucesso ou falha
-definitiva) um arquivo de estado global fora do repo (ex.:
-~/.organizador-pdf/estado.json) com os parâmetros da execução (exceto
-chaves de API) e os caminhos já concluídos. --resume carrega esse estado,
-reaplica os parâmetros automaticamente (sem exigir repetir --origem/
---destino/etc.), pula os já concluídos, e retoma só o que ficou pra trás
-pela interrupção. Falha definitiva conta como concluída (não é retentada
-automaticamente). Ao concluir o lote inteiro sem interrupção, apagar o
-estado.
-
-ESTRUTURA DE CÓDIGO SUGERIDA (src/organizador_pdf/)
-cli.py (typer, parsing + relatório rich), config.py (dataclass Config +
-resolução de precedência), converter.py, models.py (Pydantic), extractor.py
-(Ollama + prompt de sistema + pós-processamento anti-alucinação),
-provedores.py (Anthropic + adaptador OpenAI-compatível para OpenAI/
-DeepSeek/Gemini/Grok + fábrica), pipeline.py (orquestração + fallback +
-aviso), organizer.py (sanitização + nomenclatura + gravação),
-verificacao.py, estado.py.
-
-Comece pelo scaffolding, os modelos Pydantic e testes com PDFs locais
-gerados em memória (ex.: via pymupdf), mockando toda chamada de LLM/rede
-nos testes automatizados.
+Você é um desenvolvedor especialista em Python. Construa uma ferramenta CLI multiplataforma (macOS/Linux/Windows) chamada "organizador-pdf" que processa um lote de PDFs e, para cada um:
+1. Extrai o texto das 10 primeiras e 10 últimas páginas usando PyMuPDF (sem OCR, sem conversão integral do corpo de texto).
+2. Extrai metadados bibliográficos de forma determinística via parser de Ficha Catalográfica (CIP nos padrões AACR2 e ISBD) e heurísticas especializadas (classificador para Livro, Artigo, Tese/Dissertação, Revista, Apostila).
+3. Consulta e enriquece metadados via APIs públicas gratuitas (Brasil API/CBL, Google Books, Crossref, OpenAlex, OpenLibrary), conferindo similaridade antes de mesclar.
+4. Formata a referência bibliográfica em estrita conformidade com a ABNT NBR 6023:2018 (autores em caixa-alta, sobrenomes compostos, agnomes familiares como Filho, Júnior, Neto, Sobrinho).
+5. Gera um arquivo Markdown companheiro (.md) com YAML frontmatter rico e referência ABNT para Obsidian.
+6. Renomeia os arquivos no padrão "SOBRENOME, Nome - Título (Ano)" com salvaguarda MAX_PATH do Windows e os organiza em subdiretórios categorizados por tipo (com envio a revisao_manual/ para casos de baixa confiança).
+7. Suporta flags: --origem, --destino, --dry-run, --resume, --paralelo, --mover, --subpasta-md, --quarantine, --verbose.
+8. Implemente suíte de testes unitários com pytest com cobertura completa sem dependência de rede externa.
 ```
-
----
-
-## 7. Como manter este documento
-
-Atualize as seções 2–4 sempre que uma regra de negócio, requisito ou
-parâmetro mudar de verdade (não a cada detalhe de implementação) — e
-mantenha o prompt da seção 6 coerente com elas. `CHANGELOG.md` é a fonte
-de verdade cronológica; este documento é a fonte de verdade do estado
-atual.

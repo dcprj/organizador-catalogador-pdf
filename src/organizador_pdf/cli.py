@@ -1,4 +1,4 @@
-"""Ponto de entrada da CLI."""
+"""Ponto de entrada da CLI (organizador-pdf)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from rich.table import Table
 from rich.tree import Tree
 
 from . import __version__
-from .config import Config, ErroDeConfiguracao, Provedor
+from .config import Config, ErroDeConfiguracao
 from .converter import ErroDeConversao, listar_pdfs
 from .estado import EstadoDeExecucao, ParametrosSalvos
 from .extractor import ErroFatalDeAPI
@@ -36,8 +36,8 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
     help=(
-        "Converte PDFs em Markdown, extrai metadados bibliográficos com um LLM "
-        "e organiza os arquivos em <DESTINO>/<AREA>/<SUBAREA>/<TIPO>/."
+        "Organizador e Catalogador de PDFs determinístico com ABNT NBR 6023, "
+        "extração de Ficha Catalográfica (CIP), enriquecimento em APIs públicas e Markdown companion."
     ),
 )
 
@@ -80,17 +80,14 @@ def processar(
         "--resume",
         help=(
             "Retoma o último lote interrompido: reaplica os parâmetros da "
-            "execução anterior (exceto --apikey/--apikey-fallback, nunca "
-            "persistidas) e pula os arquivos já concluídos, com sucesso ou "
-            "falha. Demais opções desta chamada são ignoradas. Sem short "
-            "flag: -r já é --recursive."
+            "execução anterior e pula os arquivos já concluídos."
         ),
     ),
     recursive: bool = typer.Option(
         True,
         "--recursive/--no-recursive",
         "-r/-R",
-        help="Buscar PDFs também nas subpastas da origem.",
+        help="Buscar PDFs também nas subpastas da origem (padrão: ligado).",
     ),
     mover: bool = typer.Option(
         False,
@@ -102,219 +99,163 @@ def processar(
         "--subpasta-md",
         help="Grava os .md em uma subpasta espelho (ex.: 'Markdown').",
     ),
-    modelo: Optional[str] = typer.Option(
-        None,
-        "--modelo",
-        "-m",
-        help=(
-            "Modelo do Ollama a usar; tem precedência sobre ORGPDF_MODELO. "
-            "Precisa já estar baixado (`ollama pull <modelo>`)."
-        ),
+    quarantine: bool = typer.Option(
+        True,
+        "--quarantine/--no-quarantine",
+        help="Direciona arquivos com avisos de divergência ou baixa confiança para revisao_manual/ (padrão: ligado).",
     ),
-    ollama_url: Optional[str] = typer.Option(
-        None,
-        "--ollama-url",
-        help="Endereço do servidor Ollama. Padrão: http://localhost:11434.",
-    ),
-    provedor: Optional[Provedor] = typer.Option(
-        None,
-        "--provedor",
-        "-p",
-        help=(
-            "Provedor do LLM. Padrão: ollama (local, grátis, privado). Os "
-            "demais são pagos, opcionais, e exigem --apikey."
-        ),
-    ),
-    api_key: Optional[str] = typer.Option(
-        None,
-        "--apikey",
-        "-k",
-        help=(
-            "Chave de API do provedor pago escolhido (ignorada com --provedor "
-            "ollama). Em máquina compartilhada, prefira ORGPDF_<PROVEDOR>_API_KEY "
-            "no .env em vez desta flag — ela fica visível no histórico do shell "
-            "e na lista de processos."
-        ),
-    ),
-    provedor_fallback: Optional[Provedor] = typer.Option(
-        None,
-        "--provedor-fallback",
-        help=(
-            "Provedor pago acionado só quando a extração do --provedor principal "
-            "falhar ou sair com aviso de divergência. Desligado por padrão — "
-            "nenhuma chamada extra é feita sem isto. Exige --modelo-fallback e "
-            "uma chave de API (mesmas variáveis ORGPDF_<PROVEDOR>_API_KEY)."
-        ),
-    ),
-    modelo_fallback: Optional[str] = typer.Option(
-        None,
-        "--modelo-fallback",
-        help="Modelo do provedor de fallback. Obrigatório se --provedor-fallback for usado.",
-    ),
-    api_key_fallback: Optional[str] = typer.Option(
-        None,
-        "--apikey-fallback",
-        help="Chave de API do provedor de fallback (mesmas ressalvas de --apikey).",
-    ),
-    max_paginas: Optional[int] = typer.Option(
-        None,
-        "--max-paginas",
+    paralelo: int = typer.Option(
+        1,
+        "--paralelo",
         min=1,
-        help=(
-            "Quantas páginas iniciais do PDF são enviadas ao modelo. "
-            "Padrão: 6 (ou ORGPDF_MAX_PAGINAS)."
-        ),
-    ),
-    max_caracteres: Optional[int] = typer.Option(
-        None,
-        "--max-caracteres",
-        min=1,
-        help=(
-            "Teto de caracteres do trecho enviado ao modelo. "
-            "Padrão: 15000 (ou ORGPDF_MAX_CARACTERES)."
-        ),
+        max=32,
+        help="Número de arquivos processados simultaneamente (padrão: 1).",
     ),
     limite: Optional[int] = typer.Option(
         None,
         "--limite",
         "-n",
         min=1,
-        help="Processa no máximo N arquivos (útil para testar o custo do lote).",
-    ),
-    paralelo: int = typer.Option(
-        1,
-        "--paralelo",
-        "-j",
-        min=1,
-        help=(
-            "Quantos arquivos processar em paralelo (threads). Padrão: 1 "
-            "(sequencial, como sempre foi). Só compensa com provedor pago "
-            "remoto — o Ollama local não ganha nada rodando em paralelo, "
-            "pode até piorar por disputa de CPU/RAM."
-        ),
+        help="Processa no máximo N arquivos da fila (útil para testes rápidos).",
     ),
     arquivo_log: Path = typer.Option(
         Path("erros.log"),
         "--log",
-        help="Arquivo onde os erros são registrados.",
+        help="Arquivo onde falhas e avisos detalhados serão registrados.",
     ),
-    env_file: Optional[Path] = typer.Option(
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Exibe mensagens detalhadas no terminal.",
+    ),
+    version: Optional[bool] = typer.Option(
         None,
-        "--env",
-        help="Caminho de um arquivo .env alternativo.",
-    ),
-    verboso: bool = typer.Option(False, "--verbose", "-v", help="Log detalhado."),
-    _: bool = typer.Option(
-        False, "--version", callback=_versao, is_eager=True, help="Mostra a versão."
+        "--version",
+        callback=_versao,
+        is_eager=True,
+        help="Exibe a versão do organizador-pdf e sai.",
     ),
 ) -> None:
-    """Processa em lote os PDFs de --origem e organiza em --destino."""
-    console_log = configurar_logs(arquivo_log, verboso=verboso)
+    """Executa a catalogação e organização do lote de PDFs."""
+    configurar_logs(arquivo_log=arquivo_log, verbose=verbose)
 
+    # 1. Trata o --resume
     estado: Optional[EstadoDeExecucao] = None
     if resume:
         estado = EstadoDeExecucao.carregar()
         if estado is None:
-            saida.print(
-                "[bold red]Erro:[/] nenhuma execução pendente para retomar "
-                "(nenhum lote interrompido registrado)."
-            )
+            saida.print("[bold red]Nenhuma execução pendente para retomar com --resume.[/]")
             raise typer.Exit(code=2)
-        p = estado.parametros
-        origem = Path(p.origem)
-        destino = Path(p.destino)
-        dry_run = p.dry_run
-        recursive = p.recursive
-        mover = p.mover
-        subpasta_markdown = p.subpasta_markdown
-        modelo = p.modelo
-        ollama_url = p.ollama_url
-        provedor = Provedor(p.provedor) if p.provedor else None
-        provedor_fallback = Provedor(p.provedor_fallback) if p.provedor_fallback else None
-        modelo_fallback = p.modelo_fallback
-        saida.print(
-            f"[cyan]Retomando lote anterior ({len(estado.concluidos)} arquivo(s) "
-            f"já concluído(s)): {origem} → {destino}[/]"
-        )
-    elif origem is None or destino is None:
-        saida.print(
-            "[bold red]Erro:[/] --origem e --destino são obrigatórios (ou use --resume)."
-        )
+        origem = Path(estado.parametros.origem)
+        destino = Path(estado.parametros.destino)
+        dry_run = estado.parametros.dry_run
+        recursive = estado.parametros.recursive
+        mover = estado.parametros.mover
+        subpasta_markdown = estado.parametros.subpasta_markdown
+        paralelo = estado.parametros.paralelo or paralelo
+    else:
+        if origem is None or destino is None:
+            saida.print("[bold red]--origem e --destino são obrigatórios (ou use --resume).[/]")
+            raise typer.Exit(code=2)
+        if not dry_run:
+            estado = EstadoDeExecucao(
+                parametros=ParametrosSalvos(
+                    origem=str(origem.resolve()),
+                    destino=str(destino.resolve()),
+                    dry_run=dry_run,
+                    recursive=recursive,
+                    mover=mover,
+                    subpasta_markdown=subpasta_markdown,
+                    paralelo=paralelo,
+                )
+            )
+
+    # 2. Lista os PDFs
+    try:
+        todos_pdfs = listar_pdfs(origem, recursivo=recursive)
+    except ErroDeConversao as exc:
+        saida.print(f"[bold red]{exc}[/]")
         raise typer.Exit(code=2)
 
-    try:
-        config = Config.do_ambiente(
-            env_file,
-            modelo=modelo,
-            ollama_url=ollama_url,
-            provedor=provedor.value if provedor else None,
-            api_key=api_key,
-            provedor_fallback=provedor_fallback.value if provedor_fallback else None,
-            modelo_fallback=modelo_fallback,
-            api_key_fallback=api_key_fallback,
-            max_paginas=max_paginas,
-            max_caracteres=max_caracteres,
-        )
-    except ErroDeConfiguracao as exc:
-        saida.print(f"[bold red]Erro de configuração:[/] {exc}")
-        raise typer.Exit(code=2) from exc
+    if not todos_pdfs:
+        saida.print(f"[yellow]Nenhum arquivo PDF encontrado em {origem.resolve()}[/]")
+        raise typer.Exit(code=0)
 
-    try:
-        pdfs = listar_pdfs(origem, recursivo=recursive)
-    except ErroDeConversao as exc:
-        saida.print(f"[bold red]Erro:[/] {exc}")
-        raise typer.Exit(code=2) from exc
-
-    if estado is not None and estado.concluidos:
-        pdfs = [p for p in pdfs if str(p.resolve()) not in estado.concluidos]
-
-    if not pdfs:
-        if resume:
-            saida.print("[green]Nada a retomar — todos os arquivos já haviam sido processados.[/]")
-            EstadoDeExecucao.limpar()
-            raise typer.Exit(code=0)
-        saida.print(f"[yellow]Nenhum PDF encontrado em {origem}.[/]")
-        raise typer.Exit(code=1)
+    # Filtra os já concluídos com --resume
+    if estado is not None and resume:
+        pdfs = [p for p in todos_pdfs if str(p.resolve()) not in estado.concluidos]
+        pulados = len(todos_pdfs) - len(pdfs)
+        if pulados:
+            saida.print(f"[dim]{pulados} arquivo(s) pulado(s) pois já foram concluídos.[/]")
+    else:
+        pdfs = todos_pdfs
 
     if limite:
         pdfs = pdfs[:limite]
 
-    # Rastreamento de progresso fica de fora do dry-run: é só uma prévia, não
-    # um lote real, então não faz sentido retomá-lo depois.
-    rastrear_estado = not dry_run
-    if rastrear_estado:
-        parametros_atuais = ParametrosSalvos(
-            origem=str(origem),
-            destino=str(destino),
-            dry_run=dry_run,
-            recursive=recursive,
-            mover=mover,
-            subpasta_markdown=subpasta_markdown,
-            modelo=modelo,
-            ollama_url=ollama_url,
-            provedor=provedor.value if provedor else None,
-            provedor_fallback=provedor_fallback.value if provedor_fallback else None,
-            modelo_fallback=modelo_fallback,
-        )
-        if estado is None:
-            estado = EstadoDeExecucao(parametros=parametros_atuais)
-        else:
-            estado.parametros = parametros_atuais
-        estado.salvar()
+    if not pdfs:
+        saida.print("[green]Todos os arquivos já foram concluídos com sucesso.[/]")
+        if estado is not None:
+            EstadoDeExecucao.limpar()
+        raise typer.Exit(code=0)
 
-    _cabecalho(config, origem, destino, pdfs, dry_run=dry_run, mover=mover, paralelo=paralelo)
+    # 3. Cabeçalho de Execução
+    _cabecalho(
+        origem=origem,
+        destino=destino,
+        pdfs=pdfs,
+        dry_run=dry_run,
+        mover=mover,
+        paralelo=paralelo,
+    )
 
     opcoes = OpcoesDoPipeline(
         destino=destino,
         dry_run=dry_run,
         mover=mover,
         subpasta_markdown=subpasta_markdown,
+        quarantine=quarantine,
+    )
+    pipeline = Pipeline(opcoes=opcoes)
+
+    # 4. Processamento com barra de progresso
+    resultados_dict, interrompido = _executar_lote(
+        pdfs,
+        pipeline=pipeline,
+        estado=estado if not dry_run else None,
+        paralelo=paralelo,
     )
 
-    pipeline = Pipeline(config, opcoes)
+    # Mantém a ordem original da lista
+    resultados = [resultados_dict[p] for p in pdfs if p in resultados_dict]
 
-    resultados: list[ResultadoDoArquivo] = []
+    # 5. Relatório e Resumo
+    _relatorio(resultados, destino, dry_run=dry_run, arquivo_log=arquivo_log)
+
+    if interrompido:
+        saida.print(f"\n[bold yellow]Lote interrompido ({interrompido}). Use --resume para continuar.[/]")
+        raise typer.Exit(code=2)
+
+    if estado is not None and not dry_run and all(r.ok for r in resultados):
+        EstadoDeExecucao.limpar()
+
+    tem_falhas = any(not r.ok for r in resultados)
+    if tem_falhas:
+        raise typer.Exit(code=1)
+
+
+def _executar_lote(
+    pdfs: list[Path],
+    *,
+    pipeline: Pipeline,
+    estado: Optional[EstadoDeExecucao],
+    paralelo: int,
+) -> tuple[dict[Path, ResultadoDoArquivo], Optional[str]]:
+    resultados: dict[Path, ResultadoDoArquivo] = {}
     interrompido: Optional[str] = None
+    lock_estado = threading.Lock()
+    lock_progresso = threading.Lock()
 
     with Progress(
         SpinnerColumn(),
@@ -322,131 +263,58 @@ def processar(
         BarColumn(),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
-        console=console_log,
-        transient=True,
+        console=saida,
     ) as progresso:
-        tarefa = progresso.add_task("Processando PDFs", total=len(pdfs))
+        tarefa = progresso.add_task("Processando PDFs...", total=len(pdfs))
 
-        if paralelo <= 1:
-            for pdf in pdfs:
-                progresso.update(tarefa, description=f"Processando {pdf.name[:45]}")
-                try:
-                    resultados.append(pipeline.processar_arquivo(pdf))
-                except ErroFatalDeAPI as exc:
-                    # Vale para todos os arquivos; insistir só gastaria tempo.
-                    interrompido = str(exc)
-                    logger.error("Lote interrompido: %s", exc)
-                    break
-                except KeyboardInterrupt:
-                    interrompido = "interrompido pelo usuário"
-                    break
-                if rastrear_estado:
-                    # Sucesso e falha definitiva contam como concluído — só o
-                    # arquivo em andamento no momento de uma interrupção fica
-                    # de fora, para ser retomado depois com --resume.
-                    estado.marcar_concluido(pdf)
-                progresso.advance(tarefa)
-        else:
-            progresso.update(
-                tarefa, description=f"Processando (até {paralelo} em paralelo)"
-            )
-            resultados_por_pdf, interrompido = _processar_em_paralelo(
-                pipeline,
-                pdfs,
-                paralelo=paralelo,
-                progresso=progresso,
-                tarefa=tarefa,
-                estado=estado if rastrear_estado else None,
-            )
-            # Ordem de conclusão em paralelo não é a ordem original da lista
-            # — reordena pra o relatório final sair determinístico.
-            resultados = [resultados_por_pdf[pdf] for pdf in pdfs if pdf in resultados_por_pdf]
+        with ThreadPoolExecutor(max_workers=paralelo) as executor:
+            fila = list(pdfs)
+            em_andamento = {}
 
-    if rastrear_estado and not interrompido:
-        EstadoDeExecucao.limpar()
+            def submeter_proximo():
+                if fila and interrompido is None:
+                    pdf = fila.pop(0)
+                    em_andamento[executor.submit(pipeline.processar_arquivo, pdf)] = pdf
 
-    _relatorio(resultados, destino, dry_run=dry_run, arquivo_log=arquivo_log)
+            for _ in range(min(paralelo, len(fila))):
+                submeter_proximo()
 
-    if interrompido:
-        restantes = len(pdfs) - len(resultados)
-        saida.print(
-            f"\n[bold red]Lote interrompido:[/] {interrompido}\n"
-            f"{restantes} arquivo(s) não chegaram a ser processados."
-        )
-        raise typer.Exit(code=2)
-
-    houve_falha = any(not r.ok for r in resultados)
-    raise typer.Exit(code=1 if houve_falha else 0)
-
-
-def _processar_em_paralelo(
-    pipeline: Pipeline,
-    pdfs: list[Path],
-    *,
-    paralelo: int,
-    progresso: Progress,
-    tarefa: Any,  # rich.progress.TaskID
-    estado: Optional[EstadoDeExecucao],
-) -> tuple[dict[Path, ResultadoDoArquivo], Optional[str]]:
-    """Processa vários arquivos ao mesmo tempo, no máximo `paralelo` em voo.
-
-    Janela deslizante (não "manda tudo de uma vez"): cada conclusão libera
-    espaço pra puxar o próximo da fila. Isso importa pra `ErroFatalDeAPI` —
-    ao detectá-lo, para de puxar trabalho novo imediatamente, então no
-    máximo `paralelo - 1` chamadas extras (as que já estavam em voo)
-    terminam, não o lote inteiro.
-    """
-    resultados: dict[Path, ResultadoDoArquivo] = {}
-    interrompido: Optional[str] = None
-    lock_estado = threading.Lock()
-    lock_progresso = threading.Lock()
-    fila = list(pdfs)
-    em_andamento: dict[Any, Path] = {}
-
-    with ThreadPoolExecutor(max_workers=paralelo) as executor:
-
-        def submeter_proximo() -> None:
-            if fila:
-                pdf = fila.pop(0)
-                em_andamento[executor.submit(pipeline.processar_arquivo, pdf)] = pdf
-
-        for _ in range(min(paralelo, len(fila))):
-            submeter_proximo()
-
-        try:
-            while em_andamento:
-                concluidos = wait(list(em_andamento.keys()), return_when=FIRST_COMPLETED).done
-                for futuro in concluidos:
-                    pdf = em_andamento.pop(futuro)
-                    try:
-                        resultado = futuro.result()
-                    except ErroFatalDeAPI as exc:
+            try:
+                while em_andamento:
+                    concluidos = wait(list(em_andamento.keys()), return_when=FIRST_COMPLETED).done
+                    for futuro in concluidos:
+                        pdf = em_andamento.pop(futuro)
+                        try:
+                            resultado = futuro.result()
+                        except ErroFatalDeAPI as exc:
+                            if interrompido is None:
+                                interrompido = str(exc)
+                                logger.error("Lote interrompido: %s", exc)
+                            continue
+                        except Exception as exc:
+                            logger.error("Erro fatal no arquivo %s: %s", pdf.name, exc)
+                            resultado = ResultadoDoArquivo(
+                                origem=pdf,
+                                situacao=Situacao.FALHA,
+                                erro=str(exc),
+                                etapa="execução de thread",
+                            )
+                        resultados[pdf] = resultado
+                        if estado is not None:
+                            with lock_estado:
+                                estado.marcar_concluido(pdf)
+                        with lock_progresso:
+                            progresso.advance(tarefa)
                         if interrompido is None:
-                            interrompido = str(exc)
-                            logger.error("Lote interrompido: %s", exc)
-                        continue
-                    resultados[pdf] = resultado
-                    if estado is not None:
-                        with lock_estado:
-                            estado.marcar_concluido(pdf)
-                    with lock_progresso:
-                        progresso.advance(tarefa)
-                    if interrompido is None:
-                        submeter_proximo()
-        except KeyboardInterrupt:
-            if interrompido is None:
-                interrompido = "interrompido pelo usuário"
-            # Não recolhe os futuros ainda em voo — não dá pra abortar uma
-            # requisição HTTP já em andamento. O `with` acima aguarda eles
-            # terminarem antes de sair, mas nenhum outro é iniciado; o que
-            # não chegar a ser coletado aqui fica de fora de `resultados` e
-            # `estado`, então --resume os retoma depois.
+                            submeter_proximo()
+            except KeyboardInterrupt:
+                if interrompido is None:
+                    interrompido = "interrompido pelo usuário"
 
     return resultados, interrompido
 
 
 def _cabecalho(
-    config: Config,
     origem: Path,
     destino: Path,
     pdfs: list[Path],
@@ -455,28 +323,12 @@ def _cabecalho(
     mover: bool,
     paralelo: int = 1,
 ) -> None:
-    if config.provedor is Provedor.OLLAMA:
-        linha_modelo = f"[bold]Modelo:[/]  {config.modelo}  [dim](Ollama em {config.ollama_url})[/]"
-    else:
-        linha_modelo = (
-            f"[bold]Modelo:[/]  {config.modelo}  "
-            f"[dim](provedor pago: {config.provedor.value})[/]"
-        )
     linhas = [
         f"[bold]Origem:[/]  {origem.resolve()}",
         f"[bold]Destino:[/] {destino.resolve()}",
         f"[bold]PDFs:[/]    {len(pdfs)}",
-        linha_modelo,
-    ]
-    if config.provedor_fallback is not None:
-        linhas.append(
-            f"[bold]Fallback:[/] {config.modelo_fallback}  "
-            f"[dim](provedor pago: {config.provedor_fallback.value}, só se houver "
-            "falha/aviso)[/]"
-        )
-    linhas += [
-        f"[bold]Análise:[/] {config.max_paginas} primeiras páginas "
-        f"(até {config.max_caracteres} caracteres)",
+        "[bold]Motor:[/]   Deterministico Local (CIP, ABNT NBR 6023, APIs Publicas)",
+        "[bold]Analise:[/] 10 primeiras + 10 ultimas paginas (sem converter miolo)",
         f"[bold]Modo:[/]    " + ("mover" if mover else "copiar"),
     ]
     if paralelo > 1:
@@ -497,9 +349,7 @@ def _relatorio(
     falhas = [r for r in resultados if not r.ok]
 
     if sucessos:
-        titulo = (
-            "Estrutura planejada (dry-run)" if dry_run else "Arquivos organizados"
-        )
+        titulo = "Estrutura planejada (dry-run)" if dry_run else "Arquivos organizados"
         saida.print()
         saida.print(_arvore(sucessos, destino, titulo))
 
@@ -512,7 +362,7 @@ def _relatorio(
         tabela.add_column("Ano", justify="right", max_width=5)
         for resultado in sucessos:
             m = resultado.metadados
-            assert m is not None  # garantido quando a situação não é FALHA
+            assert m is not None
             marcador = "[bold yellow]![/]" if resultado.aviso else ""
             if resultado.usou_fallback:
                 marcador += "[bold cyan]$[/]"
@@ -532,7 +382,7 @@ def _relatorio(
     avisos = [r for r in sucessos if r.aviso]
     if avisos:
         tabela_avisos = Table(
-            title="! Possíveis divergências — confira manualmente",
+            title="! Alertas e Revisão Manual",
             show_lines=False,
             expand=True,
             border_style="yellow",
@@ -564,11 +414,11 @@ def _relatorio(
         f"[red]{len(falhas)} falha(s)[/] · {len(resultados)} total"
     )
     if sucessos:
-        locais = sum(1 for r in sucessos if r.provedor_usado == Provedor.OLLAMA.value)
+        locais = sum(1 for r in sucessos if r.provedor_usado in ("ollama", "deterministico_local"))
         pagos = len(sucessos) - locais
         resumo += f"\n[dim]{locais} extraído(s) localmente (Ollama) · {pagos} via provedor pago[/]"
     if avisos:
-        resumo += f"\n[yellow]{len(avisos)} com possível divergência — revise antes de confiar cegamente[/]"
+        resumo += f"\n[yellow]{len(avisos)} com possível divergência/revisão manual[/]"
     if falhas or avisos:
         resumo += f"\nDetalhes em: {arquivo_log.resolve()}"
     saida.print()
@@ -576,12 +426,12 @@ def _relatorio(
 
 
 def _arvore(sucessos: list[ResultadoDoArquivo], destino: Path, titulo: str) -> Tree:
-    """Monta a visualização em árvore dos caminhos de destino."""
     raiz = Tree(f"[bold]{titulo}[/] — {destino.resolve()}")
     nos: dict[Path, Tree] = {}
 
     for resultado in sorted(sucessos, key=lambda r: str(r.pdf_destino)):
-        assert resultado.pdf_destino is not None
+        if resultado.pdf_destino is None:
+            continue
         try:
             relativo = resultado.pdf_destino.parent.relative_to(destino)
         except ValueError:
