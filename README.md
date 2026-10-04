@@ -125,7 +125,7 @@ Recursos do Validador:
    - Aplica filtros de disclaimers de repositórios universitários para evitar alucinação de autores institucionais.
    - Identifica elementos estruturais de teses, dissertações, artigos científicos com DOI/ISSN, revistas e apostilas.
 3. **Validação e Enriquecimento (`metadata_api.py`)**:
-   Se identificadores (ISBN, DOI) ou títulos forem encontrados, consulta bases bibliográficas públicas (Brasil API, Google Books, Crossref, OpenAlex, OpenLibrary) para validar ou preencher campos ausentes (ano, editora, local).
+   Se identificadores (ISBN, DOI) ou títulos forem encontrados, consulta bases bibliográficas públicas (Brasil API, Google Books, Crossref, OpenAlex, OpenLibrary) para validar ou preencher campos ausentes (ano, editora, local). Este enriquecimento bibliográfico pode ser desativado definindo `ORGPDF_VERIFICAR_ONLINE=false` no arquivo `.env` (o que não afeta a classificação do Jev).
 4. **Formatação ABNT (`abnt_formatter.py`)**:
    Gera a referência padronizada conforme as normas da ABNT NBR 6023:2018.
 5. **Organização e Gravação Segura (`organizer.py`)**:

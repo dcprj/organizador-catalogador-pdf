@@ -407,3 +407,40 @@ def test_resume_preserva_execucao_cli(tmp_path: Path, sample_pdf_generator):
     assert res.exit_code == 0
 
 
+def test_pipeline_organizer_limits_and_verificar_online(tmp_path: Path, sample_pdf_generator):
+    """Verify that PipelineOrganizer passes max_paginas, max_caracteres, and online setting."""
+    from src.organizador_pdf.organizer import PipelineOrganizer
+
+    pages = ["A" * 500, "B" * 500, "C" * 500]
+    pdf_path = sample_pdf_generator("limites.pdf", "Doc Limites", pages)
+
+    out_dir = tmp_path / "out_limites"
+    out_dir.mkdir()
+
+    organizer = PipelineOrganizer(
+        max_paginas=2,
+        max_caracteres=200,
+        enriquecimento_online=False,
+    )
+    assert organizer.max_paginas == 2
+    assert organizer.max_caracteres == 200
+    assert organizer.enricher.online is False
+
+    result = organizer.process_pdf(str(pdf_path), str(out_dir), dry_run=True)
+    assert result.success is True
+
+
+def test_deprecation_warnings_on_old_kwargs():
+    """Verify that passing deprecated kwargs raises DeprecationWarning."""
+    import pytest
+    from src.organizador_pdf.classifier_jev import JevClassifier
+    from src.organizador_pdf.organizer import PipelineOrganizer
+
+    with pytest.deprecated_call():
+        JevClassifier(permitir_rede=False)
+
+    with pytest.deprecated_call():
+        PipelineOrganizer(sem_enriquecimento_online=True)
+
+
+

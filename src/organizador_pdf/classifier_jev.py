@@ -657,11 +657,28 @@ class JevClassifier:
     """Classifier and validator leveraging TypeSafe AI's Jev model with calibrated fallback."""
 
     def __init__(self, api_key: Optional[str] = None, **kwargs):
+        if kwargs:
+            import warnings
+            for arg in kwargs:
+                warnings.warn(
+                    f"O parâmetro '{arg}' em JevClassifier foi descontinuado e não tem mais efeito.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
         self.api_key = api_key or os.getenv("TYPESAFE_API_KEY")
 
-    def classify_and_validate(self, pdf_path: str) -> JevValidationResult:
+    def classify_and_validate(
+        self,
+        pdf_path: str,
+        max_paginas: int = 10,
+        max_caracteres: int = 30000,
+    ) -> JevValidationResult:
         """Analyze PDF structure, sample text, and candidate metadata."""
-        combined_text, pages_text = extract_native_sample_text(pdf_path, head_pages=10, tail_pages=10)
+        combined_text, pages_text = extract_native_sample_text(
+            pdf_path, head_pages=max_paginas, tail_pages=max_paginas
+        )
+        if max_caracteres and len(combined_text) > max_caracteres:
+            combined_text = combined_text[:max_caracteres]
         total_pages = 0
         try:
             with pymupdf.open(pdf_path) as doc:

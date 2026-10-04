@@ -162,6 +162,9 @@ def main() -> int:
             output_dir=str(output_dir),
             interactive=True,
             move_original=mover_original,
+            verificar_online=config.verificar_online,
+            max_paginas=config.max_paginas,
+            max_caracteres=config.max_caracteres,
         )
 
     print("\n" + "=" * 75)
@@ -174,7 +177,7 @@ def main() -> int:
     print(f"🔄 Retomada       : {'Ativa (--resume)' if args.resume else 'Padrão'}")
     print(f"🛡️  Quarentena     : {'Desativada (--no-quarantine)' if args.no_quarantine else 'Ativa (revisao_manual/)'}")
     print(f"🧠 Classificador  : Jev System One (TypeSafe / Heurísticas Locais)")
-    print(f"🌐 Enriquecimento : Ativo (Crossref, Google Books, Brasil API, OpenAlex)")
+    print(f"🌐 Enriquecimento : {'Ativo (Crossref, Google Books, Brasil API, OpenAlex)' if config.verificar_online else 'Desativado (ORGPDF_VERIFICAR_ONLINE=false)'}")
     if args.dry_run:
         print(f"⚠️  MODO          : SIMULAÇÃO / DRY-RUN (Nenhum arquivo será gravado ou movido)")
     print("=" * 75 + "\n")
@@ -182,6 +185,7 @@ def main() -> int:
     organizer = PipelineOrganizer(
         max_paginas=config.max_paginas,
         max_caracteres=config.max_caracteres,
+        enriquecimento_online=config.verificar_online,
     )
     results = organizer.process_directory(
         input_dir=str(input_dir),

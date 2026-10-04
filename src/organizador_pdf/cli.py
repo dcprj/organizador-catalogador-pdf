@@ -161,6 +161,9 @@ def processar(
             output_dir=str(destino.resolve()),
             interactive=True,
             move_original=mover,
+            verificar_online=config.verificar_online,
+            max_paginas=config.max_paginas,
+            max_caracteres=config.max_caracteres,
         )
         raise typer.Exit(code=cod)
 

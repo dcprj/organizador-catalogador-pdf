@@ -323,7 +323,16 @@ class PipelineOrganizer:
         online: Optional[bool] = None,
         max_paginas: int = 10,
         max_caracteres: int = 30000,
+        **kwargs,
     ):
+        if kwargs:
+            import warnings
+            for arg in kwargs:
+                warnings.warn(
+                    f"O parâmetro '{arg}' em PipelineOrganizer foi descontinuado e não tem mais efeito.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
         self.max_paginas = max_paginas
         self.max_caracteres = max_caracteres
         rede = enriquecimento_online if online is None else online
@@ -355,8 +364,12 @@ class PipelineOrganizer:
             )
 
         try:
-            # 1. Classificação Jev e extração de candidatos
-            jev_res = self.classifier.classify_and_validate(str(orig_p))
+            # 1. Classificação Jev e extração de candidatos respeitando os limites
+            jev_res = self.classifier.classify_and_validate(
+                str(orig_p),
+                max_paginas=self.max_paginas,
+                max_caracteres=self.max_caracteres,
+            )
 
             # 2. Enriquecimento via APIs públicas
             meta = self.enricher.enrich(jev_res)

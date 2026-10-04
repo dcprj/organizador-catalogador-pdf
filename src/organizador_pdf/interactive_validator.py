@@ -231,9 +231,28 @@ def validate_and_process_pdf(
     interactive: bool = True,
     move_original: bool = False,
     api_key: Optional[str] = None,
+    verificar_online: Optional[bool] = None,
+    max_paginas: Optional[int] = None,
+    max_caracteres: Optional[int] = None,
     **kwargs,
 ) -> bool:
     """Process a single PDF through the complete interactive validation pipeline."""
+    if kwargs:
+        import warnings
+        for arg in kwargs:
+            warnings.warn(
+                f"O parâmetro '{arg}' em validate_and_process_pdf foi descontinuado e não tem mais efeito.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+    config = Config.do_ambiente()
+    if verificar_online is None:
+        verificar_online = config.verificar_online
+    if max_paginas is None:
+        max_paginas = config.max_paginas
+    if max_caracteres is None:
+        max_caracteres = config.max_caracteres
+
     pdf_file = Path(pdf_path).resolve()
     print(f"\n{BOLD}{'─' * 75}{RESET}")
     print(f"{BOLD}📄 ARQUIVO: {CYAN}{pdf_file.name}{RESET}")
@@ -252,8 +271,10 @@ def validate_and_process_pdf(
         print(f"  {GREEN}✓ Camada de texto nativo detectada.{RESET}")
 
     # Step 2: Native text extraction & candidates
-    print_step(2, "Extraindo metadados preliminares das 10 primeiras e 10 últimas páginas")
-    combined_text, pages_text = extract_native_sample_text(str(pdf_file), head_pages=10, tail_pages=10)
+    print_step(2, f"Extraindo metadados preliminares das {max_paginas} primeiras e últimas páginas")
+    combined_text, pages_text = extract_native_sample_text(str(pdf_file), head_pages=max_paginas, tail_pages=max_paginas)
+    if max_caracteres and len(combined_text) > max_caracteres:
+        combined_text = combined_text[:max_caracteres]
     candidates = extract_candidate_metadata(combined_text, pdf_path=str(pdf_file), total_pages=info["total_pages"])
 
     # Step 3: Display raw candidates
@@ -279,13 +300,19 @@ def validate_and_process_pdf(
     )
 
     # Step 5: External API Enrichment
-    print_step(5, "Enriquecendo metadados via APIs Públicas (Crossref, Google Books, OpenLibrary, OpenAlex)")
-    enricher = MetadataEnricher(online=True)
-    metadata = enricher.enrich(jev_result)
-    if metadata.source_apis:
-        print(f"  {GREEN}✓ APIs consultadas com sucesso:{RESET} {', '.join(metadata.source_apis)}")
+    if verificar_online:
+        print_step(5, "Enriquecendo metadados via APIs Públicas (Crossref, Google Books, OpenLibrary, OpenAlex)")
+        enricher = MetadataEnricher(online=True)
+        metadata = enricher.enrich(jev_result)
+        if metadata.source_apis:
+            print(f"  {GREEN}✓ APIs consultadas com sucesso:{RESET} {', '.join(metadata.source_apis)}")
+        else:
+            print(f"  {YELLOW}ℹ Nenhuma API externa retornou novos dados adicionais (mantidos os dados do documento).{RESET}")
     else:
-        print(f"  {YELLOW}ℹ Nenhuma API externa retornou novos dados adicionais (mantidos os dados do documento).{RESET}")
+        print_step(5, "Enriquecimento bibliográfico externo desativado (ORGPDF_VERIFICAR_ONLINE=false)")
+        enricher = MetadataEnricher(online=False)
+        metadata = enricher.enrich(jev_result)
+        print(f"  {YELLOW}ℹ Metadados mantidos estritamente a partir do texto do documento.{RESET}")
 
     # Format ABNT
     abnt_ref = ABNTFormatter.format(metadata)
@@ -348,9 +375,28 @@ def run_interactive_validator(
     output_dir: str = "/Users/dario/Desktop/destino",
     interactive: bool = True,
     move_original: bool = False,
+    verificar_online: Optional[bool] = None,
+    max_paginas: Optional[int] = None,
+    max_caracteres: Optional[int] = None,
     **kwargs,
 ):
     """Scan input folder and process all PDFs interactively."""
+    if kwargs:
+        import warnings
+        for arg in kwargs:
+            warnings.warn(
+                f"O parâmetro '{arg}' em run_interactive_validator foi descontinuado e não tem mais efeito.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+    config = Config.do_ambiente()
+    if verificar_online is None:
+        verificar_online = config.verificar_online
+    if max_paginas is None:
+        max_paginas = config.max_paginas
+    if max_caracteres is None:
+        max_caracteres = config.max_caracteres
+
     print_banner()
     in_path = Path(input_dir).resolve()
     out_path = Path(output_dir).resolve()
@@ -359,7 +405,8 @@ def run_interactive_validator(
     print(f"🎯 Pasta de Destino: {BOLD}{out_path}{RESET}")
     print(f"📦 Mover original  : {'Sim' if move_original else 'Não (Copiando)'}")
     print(f"🧠 Classificador   : Jev System One (TypeSafe / Heurísticas Locais)")
-    print(f"🌐 APIs Externas   : Ativas (Crossref, Google Books, Brasil API, OpenAlex)")
+    print(f"🌐 APIs Externas   : {'Ativas (Crossref, Google Books, Brasil API, OpenAlex)' if verificar_online else 'Desativadas (ORGPDF_VERIFICAR_ONLINE=false)'}")
+    print(f"📄 Amostragem      : até {max_paginas} páginas / {max_caracteres} caracteres")
     print(f"🤝 Modo Interativo : {'Habilitado (solicita confirmação)' if interactive else 'Desabilitado'}\n")
 
     if not in_path.exists() or not in_path.is_dir():
@@ -384,6 +431,9 @@ def run_interactive_validator(
             output_base_dir=str(out_path),
             interactive=interactive,
             move_original=move_original,
+            verificar_online=verificar_online,
+            max_paginas=max_paginas,
+            max_caracteres=max_caracteres,
         )
 
     print(f"\n{BOLD}{GREEN}{'=' * 75}{RESET}")
