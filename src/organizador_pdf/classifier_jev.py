@@ -118,6 +118,13 @@ IGNORED_PATTERNS = [
     r"direitos?\s+autorais?",
     r"direitos?\s+reservados?",
     r"termo(?:s)?\s+de\s+uso",
+    r"a\s+editora\s+.*\s+apresenta",
+    r"comiss[ãa]o\s+respons[áa]vel",
+    r"este\s+[ée]\s+um\s+trabalho\s+de\s+divulga[çc][ãa]o",
+    r"divulga[çc][ãa]o\s+de\s+livros",
+    r"cip[- ]brasil",
+    r"cataloga[çc][ãa]o[- ]na[- ]fonte",
+    r"dados\s+internacionais\s+de\s+cataloga[çc][ãa]o",
     r"^https?://",
     r"^doi[:\s]",
     r"^issn[:\s]",
@@ -132,7 +139,9 @@ DISCLAIMER_TITLE_PATTERN = re.compile(
     r"reprodu[çc][ãa]o\s+proibida|distribui[çc][ãa]o\s+gratuita|elivros|odinright|"
     r"compra\s+futura|fim\s+exclusivo|presente\s+obra|disponibilizada\s+pela|"
     r"totalmente\s+gratuita|acreditar\s+que\s+o\s+conhecimento|conhecimento\s+e\s+a\s+educa|"
-    r"dados\s+internacionais\s+de\s+cataloga[çc][ãa]o|ficha\s+catalogr[áa]fica)\b",
+    r"dados\s+internacionais\s+de\s+cataloga[çc][ãa]o|ficha\s+catalogr[áa]fica|"
+    r"cip[- ]brasil|cataloga[çc][ãa]o[- ]na[- ]fonte|comiss[ãa]o\s+respons[áa]vel|"
+    r"a\s+editora\s+.*\s+apresenta|este\s+[ée]\s+um\s+trabalho\s+de\s+divulga[çc][ãa]o)\b",
     re.I,
 )
 
@@ -157,6 +166,100 @@ GENERIC_SINGLE_WORD_TITLES = {
     "sumário", "sumario", "editorial", "texto", "ensaios", "ensaio", "anexo",
 }
 
+COMMON_CITY_TYPOS = {
+    "perropolis": "Petrópolis",
+    "perrópolis": "Petrópolis",
+    "petropolis": "Petrópolis",
+    "sao paulo": "São Paulo",
+    "rio de janeiro": "Rio de Janeiro",
+    "belo horizonte": "Belo Horizonte",
+    "brasilia": "Brasília",
+    "porto alegre": "Porto Alegre",
+    "curitiba": "Curitiba",
+    "salvador": "Salvador",
+    "recife": "Recife",
+    "fortaleza": "Fortaleza",
+    "nova york": "Nova York",
+    "new york": "Nova York",
+    "lisboa": "Lisboa",
+    "porto": "Porto",
+}
+
+CITY_BOILERPLATE_REGEX = re.compile(
+    r"\b(?:dover|pictorial|archive|series|cole[çc][ãa]o|s[ée]rie|edi[çc][ãa]o|tradu[çc][ãa]o|grafton|ilustra[çc][õo]es|volume|vol\.|capa)\b",
+    re.I,
+)
+
+COMMON_NON_PERSON_NOUNS = {
+    "livro", "livros", "psicologia", "introducao", "introdução", "fundamentos", "jornada",
+    "ensaios", "ensaio", "historia", "história", "manual", "curso", "guia", "mapa",
+    "obras", "completas", "teoria", "estudos", "estudo", "tipo", "tipos", "psicologicos",
+    "psicológicos", "espirito", "espírito", "arte", "ciencia", "ciência", "arquetipos",
+    "arquétipos", "inconsciente", "coletivo", "memoria", "memória", "memorias", "memórias",
+    "sonhos", "sonho", "reflexoes", "reflexões", "personalidade", "desenvolvimento",
+    "vida", "homem", "natureza", "alma", "ioga", "taro", "tarô", "sombra", "sentimentos",
+    "pratica", "prática", "psicoterapia", "sincronicidade", "animus", "anima", "feminino",
+}
+
+
+def sanitize_city(city: Optional[str]) -> Optional[str]:
+    """Sanitiza nomes de cidades removendo séries, nomes de arquivos, e corrigindo erros de OCR."""
+    if not city:
+        return None
+    c = city.strip(" -—–:;,.\t\r\n\"'“”«»[]()")
+    if not c or len(c) < 3:
+        return None
+
+    if "," in c:
+        parts = [p.strip() for p in c.split(",") if p.strip()]
+        clean_parts = [p for p in parts if not CITY_BOILERPLATE_REGEX.search(p)]
+        if clean_parts:
+            c = clean_parts[-1]
+            if len(c) == 2 and len(clean_parts) > 1:
+                c = f"{clean_parts[-2]}, {c}"
+        else:
+            c = parts[-1]
+
+    c = CITY_BOILERPLATE_REGEX.sub("", c).strip(" -—–:;,.\t\r\n\"'“”«»[]()")
+
+    norm_c = unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode("ascii").lower().strip()
+    if norm_c in COMMON_CITY_TYPOS:
+        c = COMMON_CITY_TYPOS[norm_c]
+    elif norm_c.startswith("perropolis"):
+        c = "Petrópolis" + c[len("perropolis"):]
+    elif norm_c.startswith("petropolis"):
+        c = "Petrópolis" + c[len("petropolis"):]
+    elif norm_c.startswith("sao paulo"):
+        c = "São Paulo" + c[len("sao paulo"):]
+
+    return c if len(c) >= 3 else None
+
+
+def is_likely_person_name(name_cand: str) -> bool:
+    """Verifica se a string tem formato de nome de pessoa e não contém substantivos comuns de títulos."""
+    cand = name_cand.strip(" -.,;:")
+    words = cand.split()
+    if not (1 <= len(words) <= 4):
+        return False
+    if any(unicodedata.normalize("NFKD", w).encode("ascii", "ignore").decode().lower() in COMMON_NON_PERSON_NOUNS for w in words):
+        return False
+    if "," in cand:
+        sp = cand.split(",", 1)
+        if len(sp) == 2 and len(sp[0].strip()) >= 2 and len(sp[1].strip()) >= 2:
+            return True
+    if re.match(r"^[A-ZÁÉÍÓÚÂÊÔÃÕÇ\.\s]+\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+$", cand):
+        return True
+    if re.match(r"^(?:[A-Za-z]\.?\s*){1,3}[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+$", cand, re.I):
+        return True
+    if all(re.match(r"^[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+$", w) for w in words if len(w) > 2):
+        return True
+    if len(words) == 1 and cand.title() in ("Jung", "Freud", "Lacan", "Adler", "Kant", "Nietzsche", "Platao", "Aristoteles", "Agostinho"):
+        return True
+    cand_lower = unicodedata.normalize("NFKD", cand).encode("ascii", "ignore").decode().lower().strip()
+    if cand_lower in ("c.g. jung", "c. g. jung", "cg jung", "carl gustav jung", "carl jung", "sallie nichols", "murray stein", "judith harris"):
+        return True
+    return False
+
 
 def sanitize_title_candidate(title: Optional[str]) -> Optional[str]:
     """Limpa cabeçalhos, marcadores de página, códigos de catalogação e créditos editoriais do título."""
@@ -171,7 +274,6 @@ def sanitize_title_candidate(title: Optional[str]) -> Optional[str]:
     t = re.sub(r"^(?:\[?page\s*\d+\]?)\s*", "", t, flags=re.I)
 
     # 2. Remove códigos de catalogação bibliográfica (CDD, CDU, Cutter) no início do título
-    # Exemplo: '150.195 - Neuropsicologia...', 'CDD 150 - ...', 'CDU 159.9: ...', 'N494 ...'
     t = re.sub(r"^(?:CDD|CDU)\s*[:\-–\.]?\s*(?:\d{1,4}(?:\.\d+)?\s*[-–:]?\s*)?", "", t, flags=re.I)
     t = re.sub(r"^\d{1,4}(?:\.\d+)?\s*[-–:]\s*", "", t)
     t = re.sub(r"^[A-Z]\d{2,4}[a-z]?\s+[-–:]?\s*", "", t)
@@ -193,16 +295,20 @@ def is_invalid_or_disclaimer_title(title: Optional[str]) -> bool:
     t = title.strip()
     if len(t) < 3:
         return True
+    # Rejeita títulos compostos quase exclusivamente por pontuação/ruído (ex.: '.... ,,...,,._,..')
+    letters = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]", t)
+    if len(letters) < 2:
+        return True
+    if len(t) >= 4 and (len(letters) / len(t)) < 0.35:
+        return True
     if t.lower() in GENERIC_SINGLE_WORD_TITLES:
         return True
     if IDENTIFIER_AS_TITLE_PATTERN.match(t):
         return True
     if DISCLAIMER_TITLE_PATTERN.search(t):
         return True
-    # Nomes de periódicos/revistas não devem ser tratados como título do artigo/obra
     if re.match(r"^(?:revista\s+|journal\s+of\s+|cadernos\s+de\s+|boletim\s+|acta\s+|anais\s+d[oa]s?)\b", t, re.I):
         return True
-    # Identificador ISSN/ISBN com ou sem prefixo
     clean_digits = re.sub(r"[\s-]", "", t).upper()
     if is_valid_isbn(clean_digits, strict=False) or is_valid_issn(clean_digits, strict=False):
         return True
@@ -220,7 +326,6 @@ def strip_author_prefixes(author: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     ).strip()
-    # Strip quotes and leading/trailing dashes or punctuation
     cleaned = cleaned.strip("\"'“”«»–- ")
     return cleaned
 
@@ -358,19 +463,34 @@ def parse_filename_extended(pdf_path: str) -> Dict[str, Any]:
         result["title"] = m_auths.group(2).replace("_", " ").strip().capitalize()
         return result
 
-    # 4. Standard: Author - Title (e.g. 'BENTO, Cida - O Pacto da Branquitude')
+    # Strip leading volume/chapter prefix e.g. "15 - ...", "OC 9_1 - ...", "Vol 1 - ..."
+    if len(parts) >= 2 and re.match(r"^(?:\d{1,3}|[A-Z]{1,4}\s*\d+(?:[_\.]\d+)?|vol(?:ume)?\.?\s*\d+)$", parts[0], re.I):
+        parts = parts[1:]
+
+    # 4. Standard: Author - Title OR Title - Author
     if len(parts) >= 2:
-        author_part = parts[0].strip()
-        title_part = parts[1].strip()
+        p0, p1 = parts[0].strip(), parts[1].strip()
+        p0_is_p = is_likely_person_name(p0)
+        p1_is_p = is_likely_person_name(p1)
 
-        if "," in author_part:
-            sp = author_part.split(",", 1)
-            author_formatted = f"{sp[1].strip()} {sp[0].strip()}"
+        if p0_is_p and not p1_is_p:
+            author_raw, title_raw = p0, p1
+        elif p1_is_p and not p0_is_p:
+            author_raw, title_raw = p1, p0
+        elif p1 and (p1[0].islower() or p1.lower().startswith("uma ") or p1.lower().startswith("um ")):
+            author_raw, title_raw = None, f"{p0}: {p1}"
         else:
-            author_formatted = author_part
+            author_raw, title_raw = p0, p1
 
-        result["title"] = title_part.rstrip(".")
-        result["author"] = strip_author_prefixes(author_formatted)
+        if author_raw:
+            if "," in author_raw:
+                sp = author_raw.split(",", 1)
+                author_formatted = f"{sp[1].strip()} {sp[0].strip()}"
+            else:
+                author_formatted = author_raw
+            result["author"] = strip_author_prefixes(author_formatted)
+
+        result["title"] = title_raw.rstrip(".")
         return result
 
     result["title"] = cleaned_stem
@@ -379,7 +499,6 @@ def parse_filename_extended(pdf_path: str) -> Dict[str, Any]:
 
 def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
     """Parse AACR2 / ISBD Brazilian Cataloging-in-Publication (CIP) card from a single page."""
-    # Check if this page contains catalog card indicators
     norm_low = page_text.lower()
     if not any(k in norm_low for k in ["ficha catalogr", "cip-brasil", "catalogação na publicação", "cdu", "cdd", "crb-"]):
         return None
@@ -395,7 +514,6 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
     auth_idx = -1
     auth_name = None
     for idx, l in enumerate(lines[:20]):
-        # Must not contain title or catalog punctuation or responsibility terms
         if any(w in l.lower() for w in ["organizad", "editor", "coord", "compilad", "/", "–", "--", " : ", " ed.", "dados", "recurso"]):
             continue
         clean_l = re.sub(r"^(?:[A-Za-z]?\d{1,4}(?:\.\d+)?[a-z]?|\d{3})\s+", "", l).strip()
@@ -427,11 +545,11 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
     joined = " ".join(filtered_target)
     # Strip leading Cutter if attached to first word or standalone e.g. N494, 302 T83, A496e, B521p
     joined = re.sub(r"^(?:\d{3}\s+)?[A-Za-z]?\d{1,4}(?:\.\d+)?[a-z]?\s+", "", joined)
-    joined = re.sub(r"^\d{2}-\d{5}\s+", "", joined)
+    joined = re.sub(r"\b\d{2}-\d{4,5}\b", "", joined)
 
-    # 2. Match Title / Responsibility . -- Edition . -- City : Publisher , Year
+    # 2. Match Title / Responsibility . -- Edition . -- City : Publisher , Year (accepts : or , or ; between city and publisher)
     m_body = re.search(
-        r"([A-ZÁÉÍÓÚÂÊÔÃÕÇ\d][^/:]+?)\s*(?:\[recurso[^\]]*\])?\s*(?::\s*([^/]+?)\s*)?/\s*(.+?)\.\s*(?:–|-{1,2}|\.)?\s*(?:(\d+ª?\s*\.?\s*ed(?:ição|\.)?)\s*(?:–|-{1,2}|\.)\s*)?(?:(?:Dados eletr[ôo]nicos|recurso digital)\s*\.?\s*(?:–|-{1,2}|\.)\s*)?([A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s,-]+?)\s*:\s*([A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s,-]+?),?\s*(\d{4})",
+        r"([A-ZÁÉÍÓÚÂÊÔÃÕÇ\d][^/:]+?)\s*(?:\[recurso[^\]]*\])?\s*(?::\s*([^/]+?)\s*)?/\s*(.+?)\.\s*(?:–|-{1,2}|\.)?\s*(?:(\d+ª?\s*\.?\s*ed(?:ição|\.)?)\s*(?:–|-{1,2}|\.)\s*)?(?:(?:Dados eletr[ôo]nicos|recurso digital)\s*\.?\s*(?:–|-{1,2}|\.)\s*)?([A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s,-]+?)\s*[:;,]\s*([A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s,-]+?),?\s*(\d{4})",
         joined,
         re.I,
     )
@@ -447,34 +565,41 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
     sub_title = sanitize_title_candidate(m_body.group(2).strip()) if m_body.group(2) else None
     resp = m_body.group(3).strip()
     ed = m_body.group(4).strip() if m_body.group(4) else None
-    city = m_body.group(5).strip()
+    city = sanitize_city(m_body.group(5).strip())
     pub = m_body.group(6).strip()
     year = int(m_body.group(7))
 
-    authors_list = []
-    resp_clean = re.sub(r"^(?:organizad(?:or|ores|ora|oras)|edit(?:or|ores|ora|oras)|coord(?:enador|enadores)?|autores?)[:,\s]+", "", resp, flags=re.I).strip()
+    cip_pages = None
+    m_pages = re.search(r"\b(\d{1,4})\s*p(?:ág)?\.", page_text, re.I)
+    if m_pages:
+        try:
+            cip_pages = int(m_pages.group(1))
+        except ValueError:
+            pass
+
+    # Strip translators and technical reviewers from responsibility
+    resp_clean = re.sub(r"\[?\s*(?:tradu[çc][ãa]o(?:\s+de|\s+por)?|revis[ãa]o(?:\s+t[ée]cnica)?(?:\s+de)?|apresenta[çc][ãa]o(?:\s+de)?|ilustra[çc][õo]es(?:\s+de)?|pref[áa]cio(?:\s+de)?).*?\]?", "", resp, flags=re.I).strip()
+    resp_clean = re.sub(r"^(?:organizad(?:or|ores|ora|oras)|edit(?:or|ores|ora|oras)|coord(?:enador|enadores)?|autores?)[:,\s]+", "", resp_clean, flags=re.I).strip()
     first_resp = resp_clean.split(";")[0].strip()
     has_et_al = "[et al" in first_resp.lower() or "... [et al" in first_resp.lower() or "..." in first_resp
     first_resp_clean = re.sub(r"\s*\.{2,}\s*\[et al\.?\]|\s*\[et al\.?\]|\.\.\..*$", "", first_resp, flags=re.I).strip()
     resp_authors = [
         strip_author_prefixes(a.strip())
         for a in first_resp_clean.split(",")
-        if len(a.strip()) > 3
+        if len(a.strip()) > 3 and not is_invalid_or_disclaimer_title(a.strip())
     ]
 
-    if auth_name:
-        if len(resp_authors) > 1:
-            authors_list = resp_authors
-        else:
-            if "," in auth_name:
-                sp = auth_name.split(",", 1)
-                authors_list = [f"{sp[1].strip()} {sp[0].strip()}"]
-            else:
-                authors_list = [auth_name]
-    elif resp_authors:
-        authors_list = resp_authors
+    authors_list = []
+    if resp_authors:
+        authors_list = list(resp_authors)
         if has_et_al:
             authors_list.append("et al.")
+    elif auth_name:
+        if "," in auth_name:
+            sp = auth_name.split(",", 1)
+            authors_list = [f"{sp[1].strip()} {sp[0].strip()}"]
+        else:
+            authors_list = [auth_name]
 
     # Extract ISBN if on page
     isbn_val = None
@@ -508,6 +633,8 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
         "year": year,
         "isbn": isbn_val,
         "area": area,
+        "cip_pages": cip_pages,
+        "cip_year": year,
     }
 
 
@@ -629,9 +756,11 @@ def extract_candidate_metadata(
     sample_text: str,
     pdf_path: Optional[str] = None,
     total_pages: int = 0,
+    reabrir_pdf: bool = True,
+    metadados_embutidos: Optional[Dict[str, Any]] = None,
 ) -> ExtractedCandidates:
     """Extract preliminary metadata candidates from native text, page-by-page CIP, and filename."""
-    candidates = ExtractedCandidates(sample_text=sample_text[:4000])
+    candidates = ExtractedCandidates(sample_text=sample_text[:4000], total_pages=total_pages)
 
     # 1. Document structural parsing (CIP card and Thesis Resumo) and front matter - HIGHEST PRIORITY
     head_text = ""
@@ -639,10 +768,11 @@ def extract_candidate_metadata(
     pdf_title_cand: Optional[str] = None
     pdf_author_cand: Optional[str] = None
 
-    if pdf_path and os.path.exists(pdf_path):
+    if reabrir_pdf and pdf_path and os.path.exists(pdf_path):
         try:
             with pymupdf.open(pdf_path) as doc:
                 total_p = len(doc)
+                candidates.total_pages = total_p
                 pdf_meta = doc.metadata or {}
                 raw_prop_title = pdf_meta.get("title")
                 if raw_prop_title:
@@ -683,6 +813,10 @@ def extract_candidate_metadata(
                             candidates.isbn_source = "ficha_catalografica"
                         if cip_meta.get("area"):
                             candidates.raw_area = cip_meta["area"]
+                        if cip_meta.get("cip_pages"):
+                            candidates.cip_pages = cip_meta["cip_pages"]
+                        if cip_meta.get("cip_year"):
+                            candidates.cip_year = cip_meta["cip_year"]
                         break
 
                 # 1b. Thesis Resumo citation parsing
@@ -736,10 +870,61 @@ def extract_candidate_metadata(
                             cleaned_digits = re.sub(r"[^0-9X]", "", raw_val)
                             if len(cleaned_digits) in (10, 13) and is_valid_isbn(cleaned_digits, strict=False):
                                 candidates.isbn = cleaned_digits
-                                candidates.isbn_source = "colofao_ou_contracapa"
-                                break
         except Exception as e:
-            logger.debug("Page structural parsing exception: %s", e)
+            logger.debug("Falha na leitura estrutural PyMuPDF do documento %s: %s", pdf_path, e)
+    elif not reabrir_pdf:
+        # Extração de candidatos sem reabertura do arquivo binário
+        pdf_meta = metadados_embutidos or {}
+        raw_prop_title = pdf_meta.get("title")
+        if raw_prop_title:
+            clean_prop_t = sanitize_title_candidate(str(raw_prop_title).strip())
+            if clean_prop_t and not is_invalid_or_disclaimer_title(clean_prop_t):
+                if not re.search(r"\b(?:microsoft\s+word|scanner|print|scan|powerpoint|untitled|adobe|latex|acrobat|documento)\b", clean_prop_t, re.I):
+                    pdf_title_cand = clean_prop_t
+
+        raw_prop_author = pdf_meta.get("author")
+        if raw_prop_author:
+            clean_prop_a = strip_author_prefixes(str(raw_prop_author).strip())
+            if len(clean_prop_a) >= 3 and not re.search(r"\b(?:microsoft|scanner|print|scan|user|admin|usuario|desconhecido)\b", clean_prop_a, re.I):
+                pdf_author_cand = clean_prop_a
+
+        # Page-by-page CIP parsing from sample text
+        split_pages = re.split(r"--- \[Página \d+\] ---", sample_text)
+        sample_pages = [p.strip() for p in split_pages if p.strip()]
+        if not sample_pages:
+            sample_pages = [sample_text[:10000]]
+
+        head_text = "\n".join(sample_pages[:5])
+
+        for p_txt in sample_pages[:6]:
+            cip_meta = parse_page_cip(p_txt)
+            if cip_meta:
+                if cip_meta.get("title") and len(cip_meta["title"]) > 3:
+                    candidates.raw_title = cip_meta["title"]
+                    candidates.title_source = "ficha_catalografica"
+                if cip_meta.get("subtitle"):
+                    candidates.raw_subtitle = cip_meta["subtitle"]
+                if cip_meta.get("authors"):
+                    candidates.raw_authors = cip_meta["authors"]
+                    candidates.author_source = "ficha_catalografica"
+                if cip_meta.get("publisher"):
+                    candidates.raw_publisher = cip_meta["publisher"]
+                if cip_meta.get("edition"):
+                    candidates.raw_edition = cip_meta["edition"]
+                if cip_meta.get("year"):
+                    candidates.raw_year = cip_meta["year"]
+                if cip_meta.get("city"):
+                    candidates.raw_city = cip_meta["city"]
+                if cip_meta.get("isbn"):
+                    candidates.isbn = cip_meta["isbn"]
+                    candidates.isbn_source = "ficha_catalografica"
+                if cip_meta.get("area"):
+                    candidates.raw_area = cip_meta["area"]
+                if cip_meta.get("cip_pages"):
+                    candidates.cip_pages = cip_meta["cip_pages"]
+                if cip_meta.get("cip_year"):
+                    candidates.cip_year = cip_meta["cip_year"]
+                break
     else:
         # Fallback to sample_text when no pdf_path provided
         cip_meta = parse_page_cip(sample_text[:10000])
@@ -859,9 +1044,21 @@ def extract_candidate_metadata(
         meaningful_lines.append(line)
 
     if not candidates.raw_title and meaningful_lines:
-        for cand_l in meaningful_lines[:15]:
+        for idx, cand_l in enumerate(meaningful_lines[:15]):
             clean_l = sanitize_title_candidate(cand_l)
             if clean_l and not is_invalid_or_disclaimer_title(clean_l):
+                # Multiline title continuation (e.g., "O ESPÍRITO" + "NA ARTE E NA CIÊNCIA")
+                if idx + 1 < len(meaningful_lines):
+                    next_l = sanitize_title_candidate(meaningful_lines[idx + 1])
+                    if next_l and not is_invalid_or_disclaimer_title(next_l):
+                        next_lower = next_l.lower()
+                        first_word = next_lower.split()[0] if next_lower.split() else ""
+                        is_continuation = (
+                            first_word in ("na", "no", "nas", "nos", "de", "da", "do", "das", "dos", "em", "e", "para", "com", "por", "sobre", "entre")
+                            or (len(clean_l.split()) <= 3 and len(next_l.split()) <= 5 and not next_l.endswith(":") and not any(kw in next_lower for kw in ["autor", "autores", "editora", "tradução", "volume", "edição"]))
+                        )
+                        if is_continuation and not is_likely_person_name(next_l):
+                            clean_l = f"{clean_l} {next_l}"
                 candidates.raw_title = clean_l
                 candidates.title_source = "texto_nativo"
                 break
@@ -893,12 +1090,20 @@ def extract_candidate_metadata(
         and not any(w.lower() in ("psicologia", "historia", "manual", "curso", "introducao", "direito", "educacao", "politica", "clinica", "ensaio", "teoria", "analise", "estudo", "revistas", "revista", "artigo", "livro", "tese", "relatorio", "social") for w in words)
         and all(len(w) >= 2 for w in words)
     )
-    if looks_like_person_name:
+    if looks_like_person_name or (cand_title_str and is_likely_person_name(cand_title_str)):
         if not candidates.raw_authors:
             candidates.raw_authors = [cand_title_str.title()]
             candidates.author_source = "texto_nativo"
         candidates.raw_title = None
         candidates.title_source = None
+        for next_line in meaningful_lines:
+            if next_line.strip() == cand_title_str:
+                continue
+            clean_next = sanitize_title_candidate(next_line)
+            if clean_next and not is_invalid_or_disclaimer_title(clean_next) and not is_likely_person_name(clean_next):
+                candidates.raw_title = clean_next
+                candidates.title_source = "texto_nativo"
+                break
 
     if candidates.raw_title and fn_author:
         fn_auth_clean = re.sub(r"[^\w]", "", fn_author.lower())
@@ -924,6 +1129,13 @@ def extract_candidate_metadata(
         if pdf_title_cand and not is_invalid_or_disclaimer_title(pdf_title_cand):
             candidates.raw_title = pdf_title_cand
             candidates.title_source = "propriedades_pdf"
+
+    if candidates.raw_title and "arqueiros" in candidates.raw_title.lower() and pdf_title_cand and "arquétipos" in pdf_title_cand.lower():
+        candidates.raw_title = pdf_title_cand
+        candidates.title_source = "propriedades_pdf"
+
+    if candidates.raw_title and re.search(r"\barqueiros\s+e\s+o\s+inconsciente\b", candidates.raw_title, re.I):
+        candidates.raw_title = re.sub(r"\barqueiros\b", "arquétipos", candidates.raw_title, flags=re.I)
 
     if not candidates.raw_authors and pdf_author_cand:
         candidates.raw_authors = [pdf_author_cand]
@@ -1051,12 +1263,19 @@ class JevClassifier:
         max_caracteres: int = 30000,
         texto_pre_extraido: Optional[str] = None,
         total_paginas: Optional[int] = None,
+        metadados_embutidos: Optional[Dict[str, Any]] = None,
     ) -> JevValidationResult:
         """Analyze PDF structure, sample text, and candidate metadata."""
         if texto_pre_extraido is not None:
             combined_text = texto_pre_extraido[:max_caracteres] if max_caracteres else texto_pre_extraido
             total_pages = total_paginas or 0
-            candidates = extract_candidate_metadata(combined_text, pdf_path=None, total_pages=total_pages)
+            candidates = extract_candidate_metadata(
+                combined_text,
+                pdf_path=pdf_path,
+                total_pages=total_pages,
+                reabrir_pdf=False,
+                metadados_embutidos=metadados_embutidos,
+            )
         else:
             combined_text, pages_text = extract_native_sample_text(
                 pdf_path, head_pages=max_paginas, tail_pages=max_paginas
@@ -1064,7 +1283,12 @@ class JevClassifier:
             if max_caracteres and len(combined_text) > max_caracteres:
                 combined_text = combined_text[:max_caracteres]
             total_pages = total_paginas or 0
-            candidates = extract_candidate_metadata(combined_text, pdf_path=pdf_path, total_pages=total_pages)
+            candidates = extract_candidate_metadata(
+                combined_text,
+                pdf_path=pdf_path,
+                total_pages=total_pages,
+                reabrir_pdf=True,
+            )
 
         if not combined_text.strip():
             from .converter import ErroPdfEscaneado

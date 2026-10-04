@@ -11,7 +11,7 @@ import re
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, field_validator
 
 
 class TipoPublicacao(str, Enum):
@@ -97,6 +97,19 @@ class Identificadores(BaseModel):
         default=None, description="DOI do documento, se houver. Caso contrário, null."
     )
 
+    @field_validator("isbn", mode="before")
+    @classmethod
+    def normalizar_isbn(cls, v: Any) -> Optional[str]:
+        if not v:
+            return None
+        s = str(v).strip()
+        if "OCLC" in s.upper() or "EAN" in s.upper():
+            return None
+        clean = re.sub(r"[^0-9Xx]", "", s)
+        if len(clean) in (10, 13) and is_valid_isbn(clean, strict=False):
+            return s
+        return None
+
     def esta_vazio(self) -> bool:
         return not any((self.isbn, self.issn, self.doi))
 
@@ -106,6 +119,8 @@ def is_valid_isbn(isbn: Optional[str], strict: bool = True) -> bool:
     if not isbn:
         return False
     clean = re.sub(r"[\s-]", "", str(isbn)).upper()
+    if "OCLC" in clean or "EAN" in clean:
+        return False
     if len(clean) == 13 and clean.isdigit():
         if not (clean.startswith("978") or clean.startswith("979")):
             return False
@@ -181,6 +196,9 @@ class ExtractedCandidates(BaseModel):
     title_source: Optional[str] = None
     author_source: Optional[str] = None
     sample_text: str = ""
+    total_pages: int = 0
+    cip_pages: Optional[int] = None
+    cip_year: Optional[int] = None
 
 
 class JevValidationResult(BaseModel):
@@ -265,6 +283,9 @@ class Metadados(BaseModel):
     author_source: Optional[str] = None
     isbn_source: Optional[str] = None
     issn_source: Optional[str] = None
+    total_pages: Optional[int] = None
+    cip_pages: Optional[int] = None
+    cip_year: Optional[int] = None
 
     @model_validator(mode="before")
     @classmethod

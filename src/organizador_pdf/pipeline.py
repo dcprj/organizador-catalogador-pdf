@@ -81,6 +81,7 @@ class ExtratorDeterministico:
             max_caracteres=self.max_caracteres,
             texto_pre_extraido=documento.markdown_inicial,
             total_paginas=documento.total_paginas,
+            metadados_embutidos=documento.metadados_embutidos,
         )
         meta = self.enricher.enrich(jev_res)
         abnt_ref = ABNTFormatter.format(meta)
@@ -110,6 +111,7 @@ class Pipeline:
             classificador_modo=getattr(self.config, "classificador", "auto"),
         )
         self.extrator_fallback = extrator_fallback
+        self.isbns_vistos: dict[str, Path] = {}
 
     def processar_arquivo(self, caminho: Path) -> ResultadoDoArquivo:
         """Processa um PDF, devolvendo o erro no resultado em vez de propagá-lo."""
@@ -130,6 +132,21 @@ class Pipeline:
                 metadados, aviso_online = verificar_identificadores(metadados)
                 if aviso_online:
                     aviso = f"{aviso} Além disso, {aviso_online}" if aviso else aviso_online
+
+            isbn_atual = getattr(metadados.identificadores, "isbn", None)
+            if isbn_atual:
+                if isbn_atual in self.isbns_vistos:
+                    outro_arq = self.isbns_vistos[isbn_atual]
+                    msg_dup = (
+                        f"ISBN repetido no lote: '{isbn_atual}' compartilhado com '{outro_arq.name}'. "
+                        "Compare edições e arquivos antes de consolidar."
+                    )
+                    metadados.needs_review = True
+                    if msg_dup not in metadados.review_reasons:
+                        metadados.review_reasons.append(msg_dup)
+                    aviso = f"{aviso} | {msg_dup}" if aviso else msg_dup
+                else:
+                    self.isbns_vistos[isbn_atual] = caminho
 
             if aviso:
                 metadados.needs_review = True
@@ -203,6 +220,7 @@ class Pipeline:
         ao_concluir: Optional[Callable[[ResultadoDoArquivo], None]] = None,
     ) -> list[ResultadoDoArquivo]:
         """Processa vários PDFs em sequência."""
+        self.isbns_vistos.clear()
         resultados: list[ResultadoDoArquivo] = []
         for caminho in caminhos:
             resultado = self.processar_arquivo(caminho)

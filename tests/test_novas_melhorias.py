@@ -1765,6 +1765,191 @@ def test_referencia_abnt_sem_isbn_com_identificador_no_frontmatter():
     assert parsed_birman["isbn"] == "9788520011508"
 
 
+def test_infer_thematic_area_jungian_and_academic():
+    """Verifica a inferência temática refinada para obras junguianas e taxonomias acadêmicas."""
+    from organizador_pdf.metadata_api import infer_thematic_area
+
+    # Jungian author
+    area, subarea = infer_thematic_area(title="Psicologia do Inconsciente", authors=["Carl Gustav Jung"])
+    assert area == "Psicologia"
+    assert subarea == "Psicologia Analítica"
+
+    # Jungian author variant
+    area, subarea = infer_thematic_area(title="Aspectos do Feminino", authors=["C. G. Jung"], cand_area="Feminino")
+    assert area == "Psicologia"
+    assert subarea == "Psicologia Analítica"
+
+    # Jungian topic with external author
+    area, subarea = infer_thematic_area(title="Jung e o Tarô", subtitle="Uma jornada arquetípica", authors=["Sallie Nichols"])
+    assert area == "Psicologia"
+    assert subarea == "Psicologia Analítica"
+
+    # General psychology
+    area, subarea = infer_thematic_area(title="Manual de Neuropsicologia", authors=["Autor X"])
+    assert area == "Psicologia"
+    assert subarea == "Neuropsicologia"
+
+    # Philosophy
+    area, subarea = infer_thematic_area(title="A Cidade de Deus", authors=["Santo Agostinho"])
+    assert area == "Filosofia"
+    assert subarea == "Filosofia Geral"
+
+
+def test_missing_essential_fields_trigger_review():
+    """Verifica que livros/teses sem autor, ano ou local disparam revisão manual obrigatória."""
+    from organizador_pdf.metadata_api import MetadataEnricher
+    from organizador_pdf.models import PublicationMetadata, Identifiers, JevValidationResult
+
+    enricher = MetadataEnricher(online=False)
+
+    # Book missing authors
+    meta1 = PublicationMetadata(title="Livro Sem Autor", classification="livro", year=2020, city="São Paulo")
+    enricher._evaluate_needs_review(meta1, JevValidationResult(classification="livro"), sources_consulted=[])
+    assert meta1.needs_review is True
+    assert any("sem autoria" in r.lower() for r in meta1.review_reasons)
+
+    # Book missing year
+    meta2 = PublicationMetadata(title="Livro Sem Ano", classification="livro", authors=["Autor Y"], city="São Paulo")
+    enricher._evaluate_needs_review(meta2, JevValidationResult(classification="livro"), sources_consulted=[])
+    assert meta2.needs_review is True
+    assert any("sem ano" in r.lower() for r in meta2.review_reasons)
+
+    # Book missing city
+    meta3 = PublicationMetadata(title="Livro Sem Cidade", classification="livro", authors=["Autor Z"], year=2020)
+    enricher._evaluate_needs_review(meta3, JevValidationResult(classification="livro"), sources_consulted=[])
+    assert meta3.needs_review is True
+    assert any("sem local" in r.lower() for r in meta3.review_reasons)
+
+
+def test_book_page_count_and_partial_copy_review():
+    """Verifica detecção de extrato curto (< 25p) e cópia parcial (< 60% da CIP)."""
+    from organizador_pdf.metadata_api import MetadataEnricher
+    from organizador_pdf.models import PublicationMetadata, JevValidationResult, ExtractedCandidates
+
+    enricher = MetadataEnricher(online=False)
+
+    # Book with 17 pages (extract/fragment)
+    meta_short = PublicationMetadata(
+        title="Introdução à Psicologia Junguiana",
+        authors=["Calvin S. Hall"],
+        classification="livro",
+        year=2021,
+        city="São Paulo",
+        total_pages=17,
+    )
+    cand_short = ExtractedCandidates(total_pages=17)
+    enricher._evaluate_needs_review(meta_short, JevValidationResult(classification="livro", candidates=cand_short), sources_consulted=[])
+    assert meta_short.needs_review is True
+    assert any("baixa" in r.lower() or "extrato" in r.lower() for r in meta_short.review_reasons)
+
+    # Book with 73 pages vs CIP 148 pages (partial copy)
+    meta_part = PublicationMetadata(
+        title="A Prática da Psicoterapia",
+        authors=["C. G. Jung"],
+        classification="livro",
+        year=2013,
+        city="Petrópolis",
+        total_pages=73,
+        cip_pages=148,
+    )
+    cand_part = ExtractedCandidates(total_pages=73, cip_pages=148)
+    enricher._evaluate_needs_review(meta_part, JevValidationResult(classification="livro", candidates=cand_part), sources_consulted=[])
+    assert meta_part.needs_review is True
+    assert any("parcial" in r.lower() for r in meta_part.review_reasons)
+
+
+def test_cip_year_divergence_review():
+    """Verifica detecção de divergência entre ano da CIP e ano catalogado (reimpressão/reedição)."""
+    from organizador_pdf.metadata_api import MetadataEnricher
+    from organizador_pdf.models import PublicationMetadata, JevValidationResult, ExtractedCandidates
+
+    enricher = MetadataEnricher(online=False)
+    meta = PublicationMetadata(
+        title="Os fundamentos da Psicologia Analítica",
+        authors=["C. G. Jung"],
+        classification="livro",
+        year=2023,
+        city="Petrópolis",
+        cip_year=2017,
+    )
+    cand = ExtractedCandidates(cip_year=2017)
+    enricher._evaluate_needs_review(meta, JevValidationResult(classification="livro", candidates=cand), sources_consulted=[])
+    assert meta.needs_review is True
+    assert any("divergência entre ano da ficha" in r.lower() for r in meta.review_reasons)
+
+
+def test_city_sanitization():
+    """Verifica a higienização de cidades, remoção de séries editoriais e correção de erros de OCR."""
+    from organizador_pdf.classifier_jev import sanitize_city
+
+    assert sanitize_city("Grafton, Dover Pictorial Archive Series, Nova York") == "Nova York"
+    assert sanitize_city("Perrópolis") == "Petrópolis"
+    assert sanitize_city("perropolis") == "Petrópolis"
+    assert sanitize_city("Sao Paulo") == "São Paulo"
+
+
+def test_disclaimer_title_rejections():
+    """Verifica rejeição de disclaimers editoriais, CIPs e cabeçalhos usados como títulos."""
+    from organizador_pdf.classifier_jev import is_invalid_or_disclaimer_title
+
+    assert is_invalid_or_disclaimer_title("A Editora Nova Fronteira apresenta") is True
+    assert is_invalid_or_disclaimer_title("Comissão responsável pela organização do lançamento da Obra") is True
+    assert is_invalid_or_disclaimer_title("Este é um trabalho de divulgação de livros encontrados por mim na internet") is True
+    assert is_invalid_or_disclaimer_title("CIP-Brasil. Catalogação-na-fonte") is True
+    assert is_invalid_or_disclaimer_title(",,...,,._,.") is True
+    assert is_invalid_or_disclaimer_title("....") is True
+    assert is_invalid_or_disclaimer_title("Psicologia do Inconsciente") is False
+
+
+def test_isbn_rejects_oclc_and_ean():
+    """Verifica que identificadores OCLC e EAN são rejeitados no campo ISBN."""
+    from organizador_pdf.models import Identificadores
+
+    ids1 = Identificadores(isbn="OCLC:313542163")
+    assert ids1.isbn is None
+
+    ids2 = Identificadores(isbn="EAN:9788532645319")
+    assert ids2.isbn is None
+
+    ids3 = Identificadores(isbn="978-85-326-4531-9")
+    assert ids3.isbn == "978-85-326-4531-9"
+
+
+def test_batch_duplicate_isbn_detection(tmp_path: Path, sample_pdf_generator):
+    """Verifica sinalização de revisão quando o mesmo ISBN aparece em arquivos diferentes do lote."""
+    from organizador_pdf.pipeline import Pipeline
+    from organizador_pdf.models import Metadados, Identificadores, TipoPublicacao
+    from unittest.mock import MagicMock
+
+    pipeline = Pipeline()
+    file1 = sample_pdf_generator("livro1.pdf", "Livro 1", ["Conteúdo do livro 1"])
+    file2 = sample_pdf_generator("livro2.pdf", "Livro 2", ["Conteúdo do livro 2"])
+
+    # Process file1 with ISBN
+    meta1 = Metadados(
+        titulo="Livro 1",
+        autores=["Autor A"],
+        tipo_publicacao=TipoPublicacao.LIVRO,
+        identificadores=Identificadores(isbn="9788532645319"),
+    )
+    pipeline._extrair = MagicMock(return_value=(meta1, None, False))
+    res1 = pipeline.processar_arquivo(file1)
+    assert "9788532645319" in pipeline.isbns_vistos
+
+    # Process file2 with the same ISBN
+    meta2 = Metadados(
+        titulo="Livro 2",
+        autores=["Autor B"],
+        tipo_publicacao=TipoPublicacao.LIVRO,
+        identificadores=Identificadores(isbn="9788532645319"),
+    )
+    pipeline._extrair = MagicMock(return_value=(meta2, None, False))
+    res2 = pipeline.processar_arquivo(file2)
+    assert res2.metadados.needs_review is True
+    assert any("repetido no lote" in r.lower() for r in res2.metadados.review_reasons)
+
+
+
 
 
 

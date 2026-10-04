@@ -77,6 +77,7 @@ GENERIC_SUBJECT_TITLES = {
     "introducao a filosofia", "historia do brasil", "direito constitucional",
     "educacao a distancia", "material didatico", "apostila", "notas de aula",
     "criar", "artigo", "livro", "capitulo", "texto", "relatorio",
+    "o espirito", "o espírito", "espirito", "espírito",
 }
 
 
@@ -88,18 +89,10 @@ def is_author_compatible(
 ) -> bool:
     """Validate that candidate authors and retrieved API authors are compatible.
 
-    If no candidate authors are known and title is short/generic, return False.
+    If no candidate authors are known and title has only 1 substantive word or matches generic subjects, return False.
     If candidate authors are known, at least one key name token (e.g. surname) must match.
     """
     if not retrieved_authors:
-        return True
-
-    if not candidate_authors:
-        if title:
-            clean_t = re.sub(r"[^\w\s]", "", title.lower()).strip()
-            words = clean_t.split()
-            if len(words) <= 1 or clean_t in GENERIC_SUBJECT_TITLES:
-                return False
         return True
 
     def get_tokens(names: List[str]) -> Set[str]:
@@ -117,8 +110,8 @@ def is_author_compatible(
     if not cand_tokens:
         if title:
             clean_t = re.sub(r"[^\w\s]", "", title.lower()).strip()
-            words = clean_t.split()
-            if len(words) <= 3 or clean_t in GENERIC_SUBJECT_TITLES:
+            content_words = [w for w in clean_t.split() if w not in STOP_WORDS and len(w) > 2]
+            if len(content_words) <= 1 or clean_t in GENERIC_SUBJECT_TITLES:
                 return False
         return True
 
@@ -165,6 +158,98 @@ def clean_journal_name(journal: Optional[str]) -> Optional[str]:
             if p0_clean == p1_clean or p0_clean in p1 or p1_clean in p0:
                 return parts[1] if len(parts[1]) <= len(parts[0]) else parts[0]
     return journal
+
+
+JUNGIAN_AUTHORS = {
+    "c. g. jung", "carl gustav jung", "carl jung", "cg jung", "c.g. jung",
+    "emma jung", "murray stein", "judith harris", "robin robertson",
+    "sallie nichols", "marie-louise von franz", "von franz", "james hillman",
+    "edward edinger", "james a. hall", "calvin s. hall", "frederic lenoir",
+    "frédéric lenoir", "heraclito pinheiro", "heráclito pinheiro",
+}
+
+JUNGIAN_KEYWORDS = [
+    "jung", "junguian", "junguiano", "junguiana", "psicologia analitica",
+    "psicologia profunda", "psicologia dos complexos", "arquetipo", "arquetipos",
+    "inconsciente coletivo", "animus e anima", "animus", "anima", "sincronicidade",
+    "sombra", "individuacao", "tipos psicologicos", "mapa da alma",
+    "homem e seus simbolos", "memorias, sonhos, reflexoes", "a natureza da psique",
+    "o desenvolvimento da personalidade", "a pratica da psicoterapia",
+    "psicologia do inconsciente", "sobre sentimentos e a sombra",
+    "aspectos do feminino", "psicologia e religiao", "viagem em direcao a si mesmo",
+    "psicologia junguiana",
+]
+
+
+def infer_thematic_area(
+    title: Optional[str] = None,
+    subtitle: Optional[str] = None,
+    authors: Optional[List[str]] = None,
+    sample_text: str = "",
+    cand_area: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Infere a área macro do conhecimento e subárea temática segundo taxonomias acadêmicas (ex.: CNPq).
+
+    Mapeia confiavelmente obras de Psicologia Analítica / Junguiana e impede que caiam em 'Outros/Outros'
+    ou em categorias acidentais como 'Feminino/Feminino'.
+    """
+    auths = authors or []
+    all_text = f"{title or ''} {subtitle or ''} {' '.join(auths)} {sample_text[:3000]} {cand_area or ''}".lower()
+    norm_text = unicodedata.normalize("NFKD", all_text).encode("ascii", "ignore").decode().lower()
+
+    # 1. Detecção de Psicologia Analítica / Junguiana
+    is_jungian_author = any(
+        any(ja in unicodedata.normalize("NFKD", a).encode("ascii", "ignore").decode().lower() for ja in JUNGIAN_AUTHORS)
+        for a in auths
+    )
+    is_jungian_topic = any(kw in norm_text for kw in JUNGIAN_KEYWORDS)
+    if is_jungian_author or is_jungian_topic:
+        return ("Psicologia", "Psicologia Analítica")
+
+    # 2. Psicologia Geral e outras abordagens
+    if any(kw in norm_text for kw in [
+        "psicologia", "psicanalise", "freud", "lacan", "terapia cognitivo",
+        "behaviorismo", "neuropsicologia", "psicopatologia", "psicoterapia",
+    ]):
+        if "psicanalise" in norm_text or "freud" in norm_text or "lacan" in norm_text:
+            return ("Psicologia", "Psicanálise")
+        if "neuropsicologia" in norm_text:
+            return ("Psicologia", "Neuropsicologia")
+        if "psicologia social" in norm_text:
+            return ("Psicologia", "Psicologia Social")
+        if "psicologia clinica" in norm_text or "psicoterapia" in norm_text:
+            return ("Psicologia", "Psicologia Clínica")
+        return ("Psicologia", "Psicologia Geral")
+
+    # 3. Filosofia
+    if any(kw in norm_text for kw in [
+        "filosofia", "filosofica", "filosofico", "etica", "epistemologia",
+        "metafisica", "nietzsche", "kant", "hegel", "heidegger", "platao",
+        "aristoteles", "spinoza", "schopenhauer", "santo agostinho",
+    ]):
+        return ("Filosofia", "Filosofia Geral")
+
+    # 4. Educação
+    if any(kw in norm_text for kw in ["pedagogia", "educacao", "didatica", "ensino"]):
+        return ("Educação", "Educação Geral")
+
+    # 5. Direito
+    if any(kw in norm_text for kw in ["direito civil", "direito penal", "direito constitucional", "jurisprudencia"]):
+        return ("Direito", "Direito Geral")
+
+    # 6. Se veio uma área candidata válida da ficha catalográfica (CIP)
+    if cand_area:
+        cand_clean = cand_area.strip()
+        cand_norm = unicodedata.normalize("NFKD", cand_clean).encode("ascii", "ignore").decode().lower()
+        invalid_areas = {
+            "titulo", "autor", "brasil", "recurso", "serie", "coautor", "orientador",
+            "orientadora", "universidade", "faculdade", "instituto", "edicao", "volume",
+            "cdd", "cdu", "ilustrado", "bibliografia", "isbn", "issn", "doi", "feminino",
+        }
+        if cand_norm not in invalid_areas and len(cand_clean) >= 3:
+            return (cand_clean.title(), cand_clean.title())
+
+    return ("Outros", "Geral")
 
 
 class MetadataEnricher:
@@ -265,6 +350,14 @@ class MetadataEnricher:
                 cand_area = None
 
         # Baseline metadata initialized with candidate extraction
+        area_princ, sub_area = infer_thematic_area(
+            title=title_candidate,
+            subtitle=candidates.raw_subtitle,
+            authors=candidates.raw_authors or [],
+            sample_text=candidates.sample_text,
+            cand_area=cand_area,
+        )
+
         metadata = PublicationMetadata(
             title=title_candidate or "Publicação Sem Título",
             subtitle=candidates.raw_subtitle,
@@ -273,7 +366,9 @@ class MetadataEnricher:
             edition=candidates.raw_edition,
             year=candidates.raw_year,
             city=candidates.raw_city,
-            area=cand_area,
+            area=area_princ,
+            area_principal=area_princ,
+            subarea=sub_area,
             classification=jev_result.classification,
             identifiers=Identifiers(doi=doi, isbn=isbn, issn=issn),
             provedor_classificador=getattr(jev_result, "provider", None),
@@ -282,6 +377,9 @@ class MetadataEnricher:
             author_source=getattr(candidates, "author_source", None),
             isbn_source=getattr(candidates, "isbn_source", None),
             issn_source=getattr(candidates, "issn_source", None),
+            total_pages=candidates.total_pages,
+            cip_pages=candidates.cip_pages,
+            cip_year=candidates.cip_year,
         )
 
         if not self.online:
@@ -352,6 +450,18 @@ class MetadataEnricher:
             logger.info("Applying Title Search Fallback for '%s' across APIs.", clean_title)
             self._apply_title_fallback(clean_title, jev_result.classification, metadata, sources_consulted)
 
+        if metadata.area_principal == "Outros" or (metadata.authors and not candidates.raw_authors):
+            ap, sa = infer_thematic_area(
+                title=metadata.title,
+                subtitle=metadata.subtitle,
+                authors=metadata.authors,
+                sample_text=candidates.sample_text,
+                cand_area=cand_area,
+            )
+            metadata.area_principal = ap
+            metadata.subarea = sa
+            metadata.area = ap
+
         metadata.source_apis = sources_consulted
         metadata.confidence_classification = jev_result.classification_confidence
         self._evaluate_needs_review(metadata, jev_result, sources_consulted=sources_consulted)
@@ -406,23 +516,77 @@ class MetadataEnricher:
             if msg not in metadata.review_reasons:
                 metadata.review_reasons.append(msg)
 
-        # 2. Validações de autoria
-        if not metadata.authors:
-            meta_conf -= 0.2
-            if (
-                metadata.classification in ("livro", "artigo", "tese", "dissertacao", "capitulo_livro")
-                and not sources_consulted
-                and not has_verified_id
-            ):
+        # 2. Validações de campos essenciais (autores, ano, localidade)
+        is_editorial_or_academic = metadata.classification in ("livro", "tese", "dissertacao", "capitulo_livro")
+        if is_editorial_or_academic:
+            if not metadata.authors:
+                meta_conf -= 0.25
                 metadata.needs_review = True
-                if "Obra acadêmica ou editorial sem autoria identificada" not in metadata.review_reasons:
-                    metadata.review_reasons.append("Obra acadêmica ou editorial sem autoria identificada")
+                msg = f"{metadata.classification.capitalize()} sem autoria identificada"
+                if msg not in metadata.review_reasons:
+                    metadata.review_reasons.append(msg)
+            if not metadata.year:
+                meta_conf -= 0.15
+                metadata.needs_review = True
+                msg = f"{metadata.classification.capitalize()} sem ano de publicação identificado"
+                if msg not in metadata.review_reasons:
+                    metadata.review_reasons.append(msg)
+            if not metadata.city:
+                meta_conf -= 0.10
+                metadata.needs_review = True
+                msg = f"{metadata.classification.capitalize()} sem local de publicação identificado"
+                if msg not in metadata.review_reasons:
+                    metadata.review_reasons.append(msg)
+        elif metadata.classification in ("artigo", "artigo_cientifico") and not metadata.authors:
+            meta_conf -= 0.25
+            metadata.needs_review = True
+            msg = "Artigo acadêmico sem autoria identificada"
+            if msg not in metadata.review_reasons:
+                metadata.review_reasons.append(msg)
 
-        # 3. Validações de identificadores e fontes
+        # 3. Validação de contagem de páginas e integridade da obra
+        tot_pages = getattr(metadata, "total_pages", None) or getattr(jev_result.candidates, "total_pages", 0) or 0
+        cip_pages = getattr(metadata, "cip_pages", None) or getattr(jev_result.candidates, "cip_pages", None)
+        if metadata.classification == "livro" and tot_pages > 0:
+            if tot_pages < 25:
+                meta_conf -= 0.2
+                metadata.needs_review = True
+                msg_p = f"Livro com contagem de páginas muito baixa ({tot_pages} págs). Provável extrato ou obra incompleta."
+                if msg_p not in metadata.review_reasons:
+                    metadata.review_reasons.append(msg_p)
+            if cip_pages and cip_pages > 0 and tot_pages < 0.6 * cip_pages:
+                meta_conf -= 0.25
+                metadata.needs_review = True
+                msg_cip = f"Arquivo parcial detectado: possui {tot_pages} páginas, mas a ficha catalográfica registra {cip_pages} páginas."
+                if msg_cip not in metadata.review_reasons:
+                    metadata.review_reasons.append(msg_cip)
+
+        # 4. Divergência entre ano da ficha catalográfica (CIP) e ano catalogado
+        cip_yr = getattr(metadata, "cip_year", None) or getattr(jev_result.candidates, "cip_year", None)
+        if cip_yr and metadata.year and abs(cip_yr - metadata.year) > 1:
+            metadata.needs_review = True
+            msg_yr = f"Divergência entre ano da ficha catalográfica ({cip_yr}) e ano catalogado ({metadata.year}). Possível reimpressão ou reedição."
+            if msg_yr not in metadata.review_reasons:
+                metadata.review_reasons.append(msg_yr)
+
+        # 5. Localidade suspeita ou resíduo editorial
+        if metadata.city:
+            from .classifier_jev import sanitize_city, CITY_BOILERPLATE_REGEX
+            c_clean = sanitize_city(metadata.city)
+            if c_clean:
+                metadata.city = c_clean
+            if not c_clean or CITY_BOILERPLATE_REGEX.search(metadata.city):
+                meta_conf -= 0.1
+                metadata.needs_review = True
+                msg_city = f"Localidade de publicação suspeita ou contém dados editoriais ('{metadata.city}')"
+                if msg_city not in metadata.review_reasons:
+                    metadata.review_reasons.append(msg_city)
+
+        # 6. Validações de identificadores e fontes
         if not has_verified_id and not sources_consulted:
             meta_conf -= 0.15
 
-        # 4. Classificação 'Outros' deve sempre ser sinalizada para revisão acompanhada de justificativa
+        # 7. Classificação 'Outros' deve sempre ser sinalizada para revisão acompanhada de justificativa
         if metadata.classification == "outros":
             meta_conf -= 0.15
             metadata.needs_review = True
@@ -812,6 +976,17 @@ class MetadataEnricher:
         if not isbn_val and info.get("industryIdentifiers"):
             isbn_val = info.get("industryIdentifiers")[0].get("identifier")
 
+        if isbn_val:
+            cand_raw = str(isbn_val).strip()
+            if "OCLC" in cand_raw.upper() or "EAN" in cand_raw.upper():
+                isbn_val = None
+            else:
+                cleaned_digits = re.sub(r"[^0-9Xx]", "", cand_raw)
+                if len(cleaned_digits) in (10, 13) and is_valid_isbn(cleaned_digits, strict=False):
+                    isbn_val = cleaned_digits
+                else:
+                    isbn_val = None
+
         categories = info.get("categories", [])
         area = None
         if categories:
@@ -897,13 +1072,16 @@ class MetadataEnricher:
                 for doc in docs:
                     doc_title = doc.get("title")
                     if is_title_relevant(title, doc_title):
-                        isbns = doc.get("isbn", [])
+                        valid_isbns = [
+                            re.sub(r"[^0-9Xx]", "", str(i)) for i in doc.get("isbn", [])
+                            if is_valid_isbn(re.sub(r"[^0-9Xx]", "", str(i)), strict=False) and "OCLC" not in str(i).upper() and "EAN" not in str(i).upper()
+                        ]
                         result = {
                             "title": doc_title,
                             "authors": doc.get("author_name", []),
                             "publisher": doc.get("publisher", [None])[0] if doc.get("publisher") else None,
                             "year": doc.get("first_publish_year"),
-                            "isbn": isbns[0] if isbns else None,
+                            "isbn": valid_isbns[0] if valid_isbns else None,
                         }
                         break
         except requests.RequestException as e:
@@ -1014,8 +1192,11 @@ class MetadataEnricher:
         extra_title = extra.get("title")
         if extra_title:
             clean_title = re.sub(r"\[recurso eletr[ôo]nico\]|\[recurso digital\]", "", extra_title, flags=re.I).strip()
+            if "inconsciente" in clean_title.lower():
+                clean_title = re.sub(r"\barqueiros\b", "arquétipos", clean_title, flags=re.I)
             if authoritative:
-                base.title = clean_title
+                if not (base.title and "arquétipos" in base.title.lower() and "arqueiros" in clean_title.lower()):
+                    base.title = clean_title
             elif base.title in ("Sem Título", "Publicação Sem Título") or len(base.title) < 5:
                 base.title = clean_title
 
@@ -1038,8 +1219,15 @@ class MetadataEnricher:
             if authoritative or not base.year:
                 base.year = extra["year"]
 
-        if extra.get("city") and not base.city:
-            base.city = extra["city"]
+        from .classifier_jev import sanitize_city
+        if extra.get("city"):
+            clean_c = sanitize_city(extra["city"])
+            if clean_c and (authoritative or not base.city):
+                base.city = clean_c
+        elif base.city:
+            clean_base_c = sanitize_city(base.city)
+            if clean_base_c:
+                base.city = clean_base_c
 
         if extra.get("edition") and not base.edition:
             base.edition = extra["edition"]
@@ -1063,18 +1251,19 @@ class MetadataEnricher:
             base.url = extra["url"]
 
         # Identifiers - only assign identifiers if authoritative match (DOI/ISBN)
+        if extra.get("isbn"):
+            cand_isbn = str(extra["isbn"]).strip()
+            if "OCLC" not in cand_isbn.upper() and "EAN" not in cand_isbn.upper():
+                clean_isbn = re.sub(r"[^0-9Xx]", "", cand_isbn)
+                if len(clean_isbn) in (10, 13) and is_valid_isbn(clean_isbn, strict=False):
+                    if authoritative or not base.identifiers.isbn and (base.classification == "livro" or extra.get("publisher")):
+                        base.identifiers.isbn = clean_isbn
+
         if authoritative:
             if extra.get("doi") and not base.identifiers.doi:
                 base.identifiers.doi = extra["doi"]
-            if extra.get("isbn") and not base.identifiers.isbn:
-                base.identifiers.isbn = extra["isbn"]
             if extra.get("issn") and not base.identifiers.issn:
                 base.identifiers.issn = extra["issn"]
-        else:
-            # Em buscas não-autoritativas por título de livros:
-            # ISBN confirmado via Google Books/OpenLibrary para livro com autor e título compatíveis
-            if extra.get("isbn") and not base.identifiers.isbn and (base.classification == "livro" or extra.get("publisher")):
-                base.identifiers.isbn = extra["isbn"]
 
         # Thematic Area
         if extra.get("area") and (not base.area or base.area == "Outros"):
