@@ -161,7 +161,7 @@ def processar(
         if origem is None or destino is None:
             saida.print("[bold red]--origem e --destino são obrigatórios para o modo interativo.[/]")
             raise typer.Exit(code=2)
-        from scripts.interactive_validator import run_interactive_validator
+        from .interactive_validator import run_interactive_validator
         cod = run_interactive_validator(
             input_dir=str(origem.resolve()),
             output_dir=str(destino.resolve()),

@@ -325,3 +325,84 @@ def test_jev_classifier_blocks_network_when_permitir_rede_false(monkeypatch):
     monkeypatch.setenv("TYPESAFE_API_KEY", "dummy-secret-key")
     classifier = JevClassifier(permitir_rede=False)
     assert classifier.api_key is None
+
+
+def test_strict_zero_network_when_sem_enriquecimento_online(tmp_path: Path, monkeypatch, sample_pdf_generator):
+    """Ensure that with sem_enriquecimento_online=True or permitir_rede=False, zero network requests occur."""
+    import requests
+    from src.organizador_pdf.metadata_api import MetadataEnricher
+    from src.organizador_pdf.classifier_jev import JevClassifier
+    from src.organizador_pdf.interactive_validator import validate_and_process_pdf
+    from src.models import ExtractedCandidates, JevValidationResult
+
+    # Strictly block any network call via requests
+    def mock_fail(*args, **kwargs):
+        raise RuntimeError("VIOLAÇÃO DE REDE: Chamada de rede externa detectada quando permitir_rede=False!")
+
+    monkeypatch.setattr(requests.Session, "send", mock_fail)
+    monkeypatch.setattr(requests.Session, "request", mock_fail)
+    monkeypatch.setattr(requests, "get", mock_fail)
+    monkeypatch.setattr(requests, "post", mock_fail)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "dummy-secret-key")
+
+    # 1. MetadataEnricher test
+    enricher = MetadataEnricher(online=False)
+    dummy_jev = JevValidationResult(
+        classification="livro",
+        confidence=0.98,
+        reasoning="Test",
+        candidates=ExtractedCandidates(
+            raw_title="Título Offline",
+            raw_authors=["Autor Teste"],
+            raw_year=2024,
+            isbn="978-85-326-1234-5",
+            doi="10.1000/182",
+        ),
+        probabilities={"isbn": 1.0},
+    )
+    result = enricher.enrich(dummy_jev)
+    assert result.title == "Título Offline"
+    assert result.source_apis == []
+
+    # 2. JevClassifier test
+    pages = ["Documento de teste com conteúdo básico e ISBN 978-85-326-1234-5."]
+    pdf_path = sample_pdf_generator("doc_offline.pdf", "Offline Doc", pages)
+    classifier = JevClassifier(permitir_rede=False)
+    res = classifier.classify_and_validate(str(pdf_path))
+    assert res.classification is not None
+
+    # 3. Interactive validator process test (non-interactive, sem_enriquecimento_online=True)
+    out_dir = tmp_path / "saida_offline"
+    out_dir.mkdir()
+    ok = validate_and_process_pdf(
+        pdf_path=str(pdf_path),
+        output_base_dir=str(out_dir),
+        interactive=False,
+        move_original=False,
+        sem_enriquecimento_online=True,
+    )
+    assert ok is True
+
+
+def test_scripts_interactive_validator_shim_import():
+    """Verify that scripts/interactive_validator.py works as a backwards-compatible shim."""
+    import scripts.interactive_validator as shim
+
+    assert hasattr(shim, "run_interactive_validator")
+    assert hasattr(shim, "main")
+    assert hasattr(shim, "validate_and_process_pdf")
+
+
+def test_main_respects_config_verificar_online(tmp_path: Path, monkeypatch):
+    """Verify that main.py respects ORGPDF_VERIFICAR_ONLINE=false from the environment."""
+    from main import build_parser, Config
+
+    monkeypatch.setenv("ORGPDF_VERIFICAR_ONLINE", "false")
+    config = Config.do_ambiente()
+    assert config.verificar_online is False
+
+    parser = build_parser()
+    args = parser.parse_args(["--input", str(tmp_path), "--output", str(tmp_path)])
+    enriquecimento_online = (not args.sem_enriquecimento_online) and config.verificar_online
+    assert enriquecimento_online is False
+

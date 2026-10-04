@@ -13,6 +13,7 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 from organizador_pdf.organizer import PipelineOrganizer
+from organizador_pdf.config import Config
 
 load_dotenv()
 
@@ -161,14 +162,18 @@ def main() -> int:
 
     mover_original = bool(args.mover)
 
+    config = Config.do_ambiente()
+    enriquecimento_online = (not args.sem_enriquecimento_online) and config.verificar_online
+    sem_enriquecimento = not enriquecimento_online
+
     if args.interactive:
-        from scripts.interactive_validator import run_interactive_validator
+        from organizador_pdf.interactive_validator import run_interactive_validator
         return run_interactive_validator(
             input_dir=str(input_dir),
             output_dir=str(output_dir),
             interactive=True,
             move_original=mover_original,
-            sem_enriquecimento_online=args.sem_enriquecimento_online,
+            sem_enriquecimento_online=sem_enriquecimento,
         )
 
     print("\n" + "=" * 75)
@@ -180,12 +185,12 @@ def main() -> int:
     print(f"🔍 Recursivo      : {'Sim' if args.recursive else 'Não (somente raiz)'}")
     print(f"🔄 Retomada       : {'Ativa (--resume)' if args.resume else 'Padrão'}")
     print(f"🛡️  Quarentena     : {'Desativada (--no-quarantine)' if args.no_quarantine else 'Ativa (revisao_manual/)'}")
-    print(f"🌐 Enriquecimento : {'Desativado (--sem-enriquecimento-online)' if args.sem_enriquecimento_online else 'Ativo (APIs públicas)'}")
+    print(f"🌐 Enriquecimento : {'Desativado (--sem-enriquecimento-online / ORGPDF_VERIFICAR_ONLINE=false)' if sem_enriquecimento else 'Ativo (APIs públicas)'}")
     if args.dry_run:
         print(f"⚠️  MODO          : SIMULAÇÃO / DRY-RUN (Nenhum arquivo será gravado ou movido)")
     print("=" * 75 + "\n")
 
-    organizer = PipelineOrganizer(enriquecimento_online=not args.sem_enriquecimento_online)
+    organizer = PipelineOrganizer(enriquecimento_online=enriquecimento_online)
     results = organizer.process_directory(
         input_dir=str(input_dir),
         output_dir=str(output_dir),
