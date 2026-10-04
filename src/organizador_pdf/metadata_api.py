@@ -71,13 +71,35 @@ def is_title_relevant(searched_title: str, retrieved_title: Optional[str], thres
     return ratio >= threshold
 
 
-def is_author_compatible(candidate_authors: List[str], retrieved_authors: List[str]) -> bool:
+GENERIC_SUBJECT_TITLES = {
+    "psicologia social", "filosofia", "sociologia", "antropologia",
+    "metodologia cientifica", "metodologia de pesquisa", "introducao a psicologia",
+    "introducao a filosofia", "historia do brasil", "direito constitucional",
+    "educacao a distancia", "material didatico", "apostila", "notas de aula",
+    "criar", "artigo", "livro", "capitulo", "texto", "relatorio",
+}
+
+
+def is_author_compatible(
+    candidate_authors: List[str],
+    retrieved_authors: List[str],
+    *,
+    title: Optional[str] = None,
+) -> bool:
     """Validate that candidate authors and retrieved API authors are compatible.
 
-    If no candidate authors are known, any retrieved author is acceptable.
+    If no candidate authors are known and title is short/generic, return False.
     If candidate authors are known, at least one key name token (e.g. surname) must match.
     """
-    if not candidate_authors or not retrieved_authors:
+    if not retrieved_authors:
+        return True
+
+    if not candidate_authors:
+        if title:
+            clean_t = re.sub(r"[^\w\s]", "", title.lower()).strip()
+            words = clean_t.split()
+            if len(words) <= 1 or clean_t in GENERIC_SUBJECT_TITLES:
+                return False
         return True
 
     def get_tokens(names: List[str]) -> Set[str]:
@@ -93,6 +115,11 @@ def is_author_compatible(candidate_authors: List[str], retrieved_authors: List[s
     ret_tokens = get_tokens(retrieved_authors)
 
     if not cand_tokens:
+        if title:
+            clean_t = re.sub(r"[^\w\s]", "", title.lower()).strip()
+            words = clean_t.split()
+            if len(words) <= 3 or clean_t in GENERIC_SUBJECT_TITLES:
+                return False
         return True
 
     overlap = cand_tokens.intersection(ret_tokens)
@@ -430,6 +457,10 @@ class MetadataEnricher:
     ) -> None:
         """Search APIs by title according to publication type priority with relevance and author checks."""
         candidate_authors = metadata.authors or []
+        clean_t = re.sub(r"[^\w\s]", "", title.lower()).strip()
+        if not candidate_authors and (len(clean_t.split()) <= 1 or clean_t in GENERIC_SUBJECT_TITLES):
+            logger.info("Ignorando busca não-autoritativa por título genérico ('%s') sem autoria confirmada.", title)
+            return
 
         if classification in ("artigo", "artigo_cientifico"):
             # Priority: Crossref -> OpenAlex
@@ -437,7 +468,7 @@ class MetadataEnricher:
             if (
                 cr_meta
                 and is_title_relevant(title, cr_meta.get("title"))
-                and is_author_compatible(candidate_authors, cr_meta.get("authors", []))
+                and is_author_compatible(candidate_authors, cr_meta.get("authors", []), title=title)
             ):
                 self._merge_metadata(metadata, cr_meta, authoritative=False)
                 sources_consulted.append("Crossref (Title Search)")
@@ -446,7 +477,7 @@ class MetadataEnricher:
                 if (
                     oa_meta
                     and is_title_relevant(title, oa_meta.get("title"))
-                    and is_author_compatible(candidate_authors, oa_meta.get("authors", []))
+                    and is_author_compatible(candidate_authors, oa_meta.get("authors", []), title=title)
                 ):
                     self._merge_metadata(metadata, oa_meta, authoritative=False)
                     sources_consulted.append("OpenAlex (Title Search)")
@@ -457,7 +488,7 @@ class MetadataEnricher:
             if (
                 gb_meta
                 and is_title_relevant(title, gb_meta.get("title"))
-                and is_author_compatible(candidate_authors, gb_meta.get("authors", []))
+                and is_author_compatible(candidate_authors, gb_meta.get("authors", []), title=title)
             ):
                 self._merge_metadata(metadata, gb_meta, authoritative=False)
                 sources_consulted.append("Google Books (Title Search)")
@@ -466,7 +497,7 @@ class MetadataEnricher:
                 if (
                     ol_meta
                     and is_title_relevant(title, ol_meta.get("title"))
-                    and is_author_compatible(candidate_authors, ol_meta.get("authors", []))
+                    and is_author_compatible(candidate_authors, ol_meta.get("authors", []), title=title)
                 ):
                     self._merge_metadata(metadata, ol_meta, authoritative=False)
                     sources_consulted.append("OpenLibrary (Title Search)")
@@ -477,7 +508,7 @@ class MetadataEnricher:
             if (
                 oa_meta
                 and is_title_relevant(title, oa_meta.get("title"))
-                and is_author_compatible(candidate_authors, oa_meta.get("authors", []))
+                and is_author_compatible(candidate_authors, oa_meta.get("authors", []), title=title)
             ):
                 self._merge_metadata(metadata, oa_meta, authoritative=False)
                 sources_consulted.append("OpenAlex (Title Search)")
@@ -486,7 +517,7 @@ class MetadataEnricher:
                 if (
                     cr_meta
                     and is_title_relevant(title, cr_meta.get("title"))
-                    and is_author_compatible(candidate_authors, cr_meta.get("authors", []))
+                    and is_author_compatible(candidate_authors, cr_meta.get("authors", []), title=title)
                 ):
                     self._merge_metadata(metadata, cr_meta, authoritative=False)
                     sources_consulted.append("Crossref (Title Search)")
@@ -497,7 +528,7 @@ class MetadataEnricher:
             if (
                 gb_meta
                 and is_title_relevant(title, gb_meta.get("title"))
-                and is_author_compatible(candidate_authors, gb_meta.get("authors", []))
+                and is_author_compatible(candidate_authors, gb_meta.get("authors", []), title=title)
             ):
                 self._merge_metadata(metadata, gb_meta, authoritative=False)
                 sources_consulted.append("Google Books (Title Search)")
@@ -509,7 +540,7 @@ class MetadataEnricher:
                 if (
                     ol_meta
                     and is_title_relevant(title, ol_meta.get("title"))
-                    and is_author_compatible(candidate_authors, ol_meta.get("authors", []))
+                    and is_author_compatible(candidate_authors, ol_meta.get("authors", []), title=title)
                 ):
                     self._merge_metadata(metadata, ol_meta, authoritative=False)
                     sources_consulted.append("OpenLibrary (Title Search)")
@@ -520,7 +551,7 @@ class MetadataEnricher:
                     if (
                         cr_meta
                         and is_title_relevant(title, cr_meta.get("title"))
-                        and is_author_compatible(candidate_authors, cr_meta.get("authors", []))
+                        and is_author_compatible(candidate_authors, cr_meta.get("authors", []), title=title)
                     ):
                         self._merge_metadata(metadata, cr_meta, authoritative=False)
                         sources_consulted.append("Crossref (Title Search)")
@@ -531,7 +562,7 @@ class MetadataEnricher:
                         if (
                             oa_meta
                             and is_title_relevant(title, oa_meta.get("title"))
-                            and is_author_compatible(candidate_authors, oa_meta.get("authors", []))
+                            and is_author_compatible(candidate_authors, oa_meta.get("authors", []), title=title)
                         ):
                             self._merge_metadata(metadata, oa_meta, authoritative=False)
                             sources_consulted.append("OpenAlex (Title Search)")
@@ -1001,6 +1032,7 @@ class MetadataEnricher:
         if extra.get("publisher"):
             if authoritative or not base.publisher:
                 base.publisher = extra["publisher"]
+                base.editora = extra["publisher"]
 
         if extra.get("year"):
             if authoritative or not base.year:
@@ -1016,6 +1048,7 @@ class MetadataEnricher:
             clean_j = clean_journal_name(extra["journal"])
             if clean_j and (not base.journal or authoritative or len(base.journal) < len(clean_j)):
                 base.journal = clean_j
+                base.periodico = clean_j
 
         if extra.get("volume") and not base.volume:
             base.volume = str(extra["volume"])
@@ -1029,13 +1062,19 @@ class MetadataEnricher:
         if extra.get("url") and not base.url:
             base.url = extra["url"]
 
-        # Identifiers
-        if extra.get("doi") and not base.identifiers.doi:
-            base.identifiers.doi = extra["doi"]
-        if extra.get("isbn") and not base.identifiers.isbn:
-            base.identifiers.isbn = extra["isbn"]
-        if extra.get("issn") and not base.identifiers.issn:
-            base.identifiers.issn = extra["issn"]
+        # Identifiers - only assign identifiers if authoritative match (DOI/ISBN)
+        if authoritative:
+            if extra.get("doi") and not base.identifiers.doi:
+                base.identifiers.doi = extra["doi"]
+            if extra.get("isbn") and not base.identifiers.isbn:
+                base.identifiers.isbn = extra["isbn"]
+            if extra.get("issn") and not base.identifiers.issn:
+                base.identifiers.issn = extra["issn"]
+        else:
+            # Em buscas não-autoritativas por título de livros:
+            # ISBN confirmado via Google Books/OpenLibrary para livro com autor e título compatíveis
+            if extra.get("isbn") and not base.identifiers.isbn and (base.classification == "livro" or extra.get("publisher")):
+                base.identifiers.isbn = extra["isbn"]
 
         # Thematic Area
         if extra.get("area") and (not base.area or base.area == "Outros"):

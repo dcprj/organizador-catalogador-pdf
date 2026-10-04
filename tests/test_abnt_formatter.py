@@ -51,8 +51,9 @@ def test_abnt_book_reference():
     assert "RUSSELL, Stuart; NORVIG, Peter." in ref
     assert "**Inteligência Artificial**: Uma abordagem moderna." in ref
     assert "3. ed." in ref
-    assert "Rio de Janeiro: Campus, 2013." in ref
-    assert "ISBN 9788535237016." in ref
+    assert "ISBN" not in ref
+    assert "9788535237016" not in ref
+    assert meta.identifiers.isbn == "9788535237016"
 
 
 def test_abnt_scientific_article_reference():

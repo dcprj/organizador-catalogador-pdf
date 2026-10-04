@@ -1,7 +1,12 @@
 """Tests for Markdown conversion, YAML Frontmatter assembly, and filename standardization."""
 
 import yaml
-from organizador_pdf.converter import MarkdownConverter, generate_standardized_filename, sanitize_filename
+from organizador_pdf.converter import (
+    MarkdownConverter,
+    generate_standardized_filename,
+    migrar_markdown_frontmatter,
+    sanitize_filename,
+)
 from organizador_pdf.models import PublicationMetadata, Identifiers
 
 
@@ -64,12 +69,18 @@ def test_converter_yaml_frontmatter():
     assert frontmatter.endswith("\n---\n\n")
 
     parsed = yaml.safe_load(frontmatter.strip().strip("-").strip())
-    assert parsed["title"] == "Refactoring: Improving the Design of Existing Code"
-    assert parsed["authors"] == ["Martin Fowler", "Kent Beck"]
-    assert parsed["publisher"] == "Addison-Wesley"
-    assert parsed["edition"] == "2. ed."
-    assert parsed["identifiers"]["isbn"] == "9780134757599"
-    assert parsed["classification"] == "livro"
+    assert parsed["versao_esquema"] == "2.0"
+    assert parsed["titulo"] == "Refactoring: Improving the Design of Existing Code"
+    assert parsed["autores"] == ["Martin Fowler", "Kent Beck"]
+    assert parsed["editora"] == "Addison-Wesley"
+    assert parsed["edicao"] == "2. ed."
+    assert parsed["ano"] == 2018
+    assert parsed["isbn"] == "9780134757599"
+    assert parsed["identificadores"]["isbn"] == "9780134757599"
+    assert parsed["tipo_documento"] == "livro"
+    # Ensure duplicate English keys are NOT present in canonical schema 2.0
+    for english_key in ["title", "authors", "publisher", "year", "classification"]:
+        assert english_key not in parsed
 
 
 def test_converter_assemble_markdown():
@@ -87,3 +98,63 @@ def test_converter_assemble_markdown():
     assert "# Estudo sobre Redes Neurais" in md_output
     assert "## Referência Bibliográfica" in md_output
     assert abnt_ref in md_output
+
+
+def test_migrar_markdown_frontmatter_sem_conflito():
+    legacy_md = """---
+title: "Neuropsicologia: Teoria e Prática"
+titulo: "Neuropsicologia: Teoria e Prática"
+year: 2014
+ano: 2014
+authors:
+  - Daniel Fuentes
+autores:
+  - Daniel Fuentes
+publisher: "Artmed"
+editora_ou_periodico: "Artmed"
+classification: "livro"
+needs_review: false
+---
+
+# Neuropsicologia: Teoria e Prática
+Conteúdo do documento.
+"""
+    novo_md, houve_conflito, razoes = migrar_markdown_frontmatter(legacy_md)
+    assert not houve_conflito
+    assert len(razoes) == 0
+
+    parsed = yaml.safe_load(novo_md.split("---")[1])
+    assert parsed["versao_esquema"] == "2.0"
+    assert parsed["titulo"] == "Neuropsicologia: Teoria e Prática"
+    assert parsed["ano"] == 2014
+    assert parsed["autores"] == ["Daniel Fuentes"]
+    assert parsed["editora"] == "Artmed"
+    assert parsed["needs_review"] is False
+    # Garante ausência de chaves legadas em inglês
+    for k in ["title", "year", "authors", "publisher", "classification"]:
+        assert k not in parsed
+
+
+def test_migrar_markdown_frontmatter_com_conflito():
+    divergent_md = """---
+title: "Título em Inglês Diferente"
+titulo: "Título em Português Divergente"
+year: 2013
+ano: 2023
+needs_review: false
+---
+
+# Título do Documento
+Texto
+"""
+    novo_md, houve_conflito, razoes = migrar_markdown_frontmatter(divergent_md)
+    assert houve_conflito is True
+    assert len(razoes) >= 2
+    assert any("título" in r.lower() for r in razoes)
+    assert any("ano" in r.lower() for r in razoes)
+
+    parsed = yaml.safe_load(novo_md.split("---")[1])
+    assert parsed["versao_esquema"] == "2.0"
+    assert parsed["needs_review"] is True
+    assert "conflito" in " ".join(parsed["motivos_revisao"]).lower()
+

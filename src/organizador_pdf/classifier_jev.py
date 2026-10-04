@@ -131,6 +131,7 @@ DISCLAIMER_TITLE_PATTERN = re.compile(
     r"direitos?\s+reservados?|termo(?:s)?\s+de\s+uso|licen[çc]a\s+de\s+uso|creative\s+commons|"
     r"reprodu[çc][ãa]o\s+proibida|distribui[çc][ãa]o\s+gratuita|elivros|odinright|"
     r"compra\s+futura|fim\s+exclusivo|presente\s+obra|disponibilizada\s+pela|"
+    r"totalmente\s+gratuita|acreditar\s+que\s+o\s+conhecimento|conhecimento\s+e\s+a\s+educa|"
     r"dados\s+internacionais\s+de\s+cataloga[çc][ãa]o|ficha\s+catalogr[áa]fica)\b",
     re.I,
 )
@@ -191,6 +192,8 @@ def is_invalid_or_disclaimer_title(title: Optional[str]) -> bool:
         return True
     t = title.strip()
     if len(t) < 3:
+        return True
+    if t.lower() in GENERIC_SINGLE_WORD_TITLES:
         return True
     if IDENTIFIER_AS_TITLE_PATTERN.match(t):
         return True
@@ -544,12 +547,12 @@ def parse_academic_thesis(text: str) -> Optional[Dict[str, Any]]:
 
 def parse_thesis_resumo_citation(doc: pymupdf.Document) -> Optional[Dict[str, Any]]:
     """Parse formal thesis reference from the Resumo page according to ABNT NBR 14724."""
-    for page_idx in range(min(12, len(doc))):
+    for page_idx in range(min(15, len(doc))):
         text = doc[page_idx].get_text("text") or ""
-        if "resumo" not in text.lower():
+        if "resumo" not in text.lower() and "abstract" not in text.lower():
             continue
         m = re.search(
-            r"Resumo\s*\n+([A-ZÁÉÍÓÚÂÊÔÃÕÇ-]+,\s+[A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s\.]+?)\.\s*[“\"]?([^”\"\n\r:]+?)[”\"]?(?::\s*([^–\.\n\r]+?))?\.\s*(\d{4})\.\s*(Disserta[çc][ãa]o|Tese)",
+            r"(?:Resumo|Abstract)\s*\n+([A-ZÁÉÍÓÚÂÊÔÃÕÇ-]+,\s+[A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s\.]+?)\.\s*[“\"]?([^”\"\n\r:]+?)[”\"]?(?::\s*([^–\.\n\r]+?))?\.\s*(\d{4})\s*[\.\-–]\s*(?:.*?\b)?(Disserta[çc][ãa]o|Tese)",
             text,
             re.I,
         )
@@ -592,6 +595,36 @@ def parse_thesis_resumo_citation(doc: pymupdf.Document) -> Optional[Dict[str, An
     return None
 
 
+def parse_thesis_folha_de_rosto(doc: pymupdf.Document) -> Optional[Dict[str, Any]]:
+    """Extrai autor e título da folha de rosto de tese/dissertação acadêmica."""
+    for page_idx in range(min(6, len(doc))):
+        text = doc[page_idx].get_text("text") or ""
+        m_apres = re.search(
+            r"(?:Tese|Disserta[çc][ãa]o)\s+(?:apresentada|defendida)\s+(?:ao|à|como)",
+            text,
+            re.I,
+        )
+        if not m_apres:
+            continue
+        lines_before = [l.strip() for l in text[:m_apres.start()].splitlines() if l.strip()]
+        meaningful = [
+            l for l in lines_before
+            if not re.search(r"\b(?:universidade|faculdade|instituto|programa|p[oó]s-?gradua|departamento|campus|centro|puc|usp|unicamp|unesp)\b", l, re.I)
+            and len(l) >= 3
+        ]
+        if len(meaningful) >= 2:
+            cand_auth = meaningful[0]
+            cand_title = " ".join(meaningful[1:])
+            if len(cand_auth.split()) in (2, 3, 4) and not re.search(r"\b(?:doutor|mestre|orientador|curso)\b", cand_auth, re.I):
+                clean_title = sanitize_title_candidate(cand_title)
+                if clean_title and not is_invalid_or_disclaimer_title(clean_title):
+                    return {
+                        "author": strip_author_prefixes(cand_auth.title()),
+                        "title": clean_title,
+                    }
+    return None
+
+
 def extract_candidate_metadata(
     sample_text: str,
     pdf_path: Optional[str] = None,
@@ -603,10 +636,27 @@ def extract_candidate_metadata(
     # 1. Document structural parsing (CIP card and Thesis Resumo) and front matter - HIGHEST PRIORITY
     head_text = ""
     thesis_resumo_found = False
+    pdf_title_cand: Optional[str] = None
+    pdf_author_cand: Optional[str] = None
+
     if pdf_path and os.path.exists(pdf_path):
         try:
             with pymupdf.open(pdf_path) as doc:
                 total_p = len(doc)
+                pdf_meta = doc.metadata or {}
+                raw_prop_title = pdf_meta.get("title")
+                if raw_prop_title:
+                    clean_prop_t = sanitize_title_candidate(str(raw_prop_title).strip())
+                    if clean_prop_t and not is_invalid_or_disclaimer_title(clean_prop_t):
+                        if not re.search(r"\b(?:microsoft\s+word|scanner|print|scan|powerpoint|untitled|adobe|latex|acrobat|documento)\b", clean_prop_t, re.I):
+                            pdf_title_cand = clean_prop_t
+
+                raw_prop_author = pdf_meta.get("author")
+                if raw_prop_author:
+                    clean_prop_a = strip_author_prefixes(str(raw_prop_author).strip())
+                    if len(clean_prop_a) >= 3 and not re.search(r"\b(?:microsoft|scanner|print|scan|user|admin|usuario|desconhecido)\b", clean_prop_a, re.I):
+                        pdf_author_cand = clean_prop_a
+
                 # 1a. Page-by-page CIP extraction
                 for page_idx in range(min(6, total_p)):
                     p_text = doc[page_idx].get_text("text") or ""
@@ -640,22 +690,31 @@ def extract_candidate_metadata(
                     thesis_resumo = parse_thesis_resumo_citation(doc)
                     if thesis_resumo:
                         thesis_resumo_found = True
-                        candidates.raw_title = thesis_resumo["title"]
-                        candidates.title_source = "resumo_academico"
-                        candidates.raw_subtitle = thesis_resumo.get("subtitle")
-                        if thesis_resumo.get("author"):
+                        if not candidates.raw_title and thesis_resumo.get("title"):
+                            candidates.raw_title = thesis_resumo["title"]
+                            candidates.title_source = "resumo_academico"
+                        if not candidates.raw_subtitle and thesis_resumo.get("subtitle"):
+                            candidates.raw_subtitle = thesis_resumo.get("subtitle")
+                        if not candidates.raw_authors and thesis_resumo.get("author"):
                             candidates.raw_authors = [thesis_resumo["author"]]
                             candidates.author_source = "resumo_academico"
-                        if thesis_resumo.get("year"):
+                        if not candidates.raw_year and thesis_resumo.get("year"):
                             candidates.raw_year = thesis_resumo["year"]
                         if thesis_resumo.get("institution") and not candidates.raw_publisher:
                             candidates.raw_publisher = thesis_resumo["institution"]
                         if thesis_resumo.get("city") and not candidates.raw_city:
                             candidates.raw_city = thesis_resumo["city"]
-                else:
-                    thesis_resumo = parse_thesis_resumo_citation(doc)
-                    if thesis_resumo:
-                        thesis_resumo_found = True
+
+                # 1c. Thesis Folha de Rosto fallback parsing
+                if not candidates.raw_title or not candidates.raw_authors:
+                    thesis_rosto = parse_thesis_folha_de_rosto(doc)
+                    if thesis_rosto:
+                        if not candidates.raw_title and thesis_rosto.get("title"):
+                            candidates.raw_title = thesis_rosto["title"]
+                            candidates.title_source = "folha_de_rosto"
+                        if not candidates.raw_authors and thesis_rosto.get("author"):
+                            candidates.raw_authors = [thesis_rosto["author"]]
+                            candidates.author_source = "folha_de_rosto"
 
                 # 2. Extract DOI and ISSN strictly from front pages (pages 1 to 5)
                 head_text = "\n".join(doc[i].get_text("text") or "" for i in range(min(5, total_p)))
@@ -826,14 +885,27 @@ def extract_candidate_metadata(
                 break
 
     # 9. Disambiguate Title vs Author:
-    # If raw_title is identical or shares surname with candidate author's name, raw_title is the author!
+    cand_title_str = (candidates.raw_title or "").strip()
+    words = cand_title_str.split()
+    looks_like_person_name = (
+        len(words) in (2, 3, 4)
+        and cand_title_str.isupper()
+        and not any(w.lower() in ("psicologia", "historia", "manual", "curso", "introducao", "direito", "educacao", "politica", "clinica", "ensaio", "teoria", "analise", "estudo", "revistas", "revista", "artigo", "livro", "tese", "relatorio", "social") for w in words)
+        and all(len(w) >= 2 for w in words)
+    )
+    if looks_like_person_name:
+        if not candidates.raw_authors:
+            candidates.raw_authors = [cand_title_str.title()]
+            candidates.author_source = "texto_nativo"
+        candidates.raw_title = None
+        candidates.title_source = None
+
     if candidates.raw_title and fn_author:
         fn_auth_clean = re.sub(r"[^\w]", "", fn_author.lower())
         title_clean = re.sub(r"[^\w]", "", candidates.raw_title.lower())
         fn_tokens = {w for w in re.split(r"\W+", fn_author.lower()) if len(w) >= 4}
         title_tokens = {w for w in re.split(r"\W+", candidates.raw_title.lower()) if len(w) >= 4}
         if fn_auth_clean in title_clean or title_clean in fn_auth_clean or (fn_tokens and title_tokens and fn_tokens.intersection(title_tokens)):
-            # raw_title is actually the author!
             if not candidates.raw_authors:
                 candidates.raw_authors = [candidates.raw_title.title()]
                 candidates.author_source = "texto_nativo"
@@ -843,8 +915,21 @@ def extract_candidate_metadata(
             elif len(meaningful_lines) > 1 and meaningful_lines[0] == candidates.raw_title:
                 candidates.raw_title = meaningful_lines[1]
                 candidates.title_source = "texto_nativo"
+            else:
+                candidates.raw_title = None
+                candidates.title_source = None
 
-    # 10. Multi-word filename title priority over single-word, boilerplate or identifier extracted line
+    # 10. Prioridade para propriedades internas do PDF (doc.metadata) quando o texto nativo for disclaimer ou ausente
+    if not candidates.raw_title or is_invalid_or_disclaimer_title(candidates.raw_title):
+        if pdf_title_cand and not is_invalid_or_disclaimer_title(pdf_title_cand):
+            candidates.raw_title = pdf_title_cand
+            candidates.title_source = "propriedades_pdf"
+
+    if not candidates.raw_authors and pdf_author_cand:
+        candidates.raw_authors = [pdf_author_cand]
+        candidates.author_source = "propriedades_pdf"
+
+    # 11. Multi-word filename title priority over single-word, boilerplate or identifier extracted line
     if fn_title:
         fn_title_clean = sanitize_title_candidate(fn_title) or fn_title
         fn_words = fn_title_clean.split()
@@ -860,6 +945,7 @@ def extract_candidate_metadata(
             or cand_lower in GENERIC_SINGLE_WORD_TITLES
             or (len(cand_words) <= 1 and len(fn_words) >= 2)
             or (len(cand_words) == 1 and cand_lower in ("criar", "artigo", "livro", "capítulo", "texto"))
+            or (bool(fn_author) and len(fn_words) >= 2 and (candidates.raw_title.endswith(".") or "sobre" in cand_lower or "texto" in cand_lower))
         )
         if deve_usar_fn_title and not is_invalid_or_disclaimer_title(fn_title_clean):
             candidates.raw_title = fn_title_clean
@@ -1199,9 +1285,11 @@ class JevClassifier:
             r"plano de ensino",
         ]
         has_courseware = any(re.search(pat, lower_text) for pat in courseware_markers)
-        if has_courseware and not candidates.doi:
-            scores["apostila"] += 14.0
+        if has_courseware:
+            scores["apostila"] += 16.0
             scores["revista"] -= 10.0
+            scores["tese"] -= 12.0
+            scores["livro"] -= 6.0
 
         # 2. Academic Thesis / Dissertation (Teses, Dissertações -> 'tese')
         thesis_markers = [
@@ -1211,10 +1299,14 @@ class JevClassifier:
             "requisito para obtenção do título de doutor",
             "requisito para obtenção do título de mestre",
             "requisito para a obtenção do título de mestre",
+            "requisito para obtenção do grau de doutor",
+            "requisito para obtenção do grau de mestre",
             "programa de pós-graduação stricto sensu",
-            "programa de pós-graduação",
+            "defesa de tese",
+            "defesa de dissertação",
+            "banca examinadora",
         ]
-        if any(w in lower_text for w in thesis_markers):
+        if any(w in lower_text for w in thesis_markers) and not has_courseware:
             scores["tese"] += 14.0
             scores["livro"] -= 6.0
             scores["revista"] -= 10.0
@@ -1222,9 +1314,14 @@ class JevClassifier:
 
         # 3. Book Indicators
         if candidates.isbn:
-            scores["livro"] += 6.0
+            scores["livro"] += 12.0
+            scores["tese"] -= 12.0  # Livro com ISBN comercial não é tese acadêmica não publicada
         if any(w in lower_text for w in ["ficha catalográfica", "cip-brasil", "catalogação na publicação", "cdd", "cdu"]):
             scores["livro"] += 5.0
+        pub_lower = (candidates.raw_publisher or "").lower()
+        if any(cp in pub_lower for cp in ["artmed", "edusc", "companhia das letras", "zahar", "cortez", "vozes", "autêntica", "saraiva", "novatec", "elsevier", "atlas"]):
+            scores["livro"] += 10.0
+            scores["tese"] -= 14.0
         if any(w in lower_text for w in ["sumário", "capítulo 1", "capítulo i", "prefácio", "agradecimentos"]):
             scores["livro"] += 2.0
         if total_pages > 70 and not has_courseware:

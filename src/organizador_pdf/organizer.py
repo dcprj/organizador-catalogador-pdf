@@ -212,26 +212,33 @@ def gerar_markdown(
         if t not in tags:
             tags.append(t)
 
+    is_artigo = metadados.tipo_publicacao.value in ("artigo", "artigo_cientifico", "revista")
+    editora_val = getattr(metadados, "editora", None)
+    periodico_val = getattr(metadados, "periodico", None) or getattr(metadados, "journal", None)
+    if not editora_val and not is_artigo:
+        editora_val = metadados.editora_ou_periodico
+
     frontmatter: dict[str, object] = {
-        "tipo_publicacao": metadados.tipo_publicacao.value,
-        "area_principal": metadados.area_principal,
-        "subarea": metadados.subarea,
+        "versao_esquema": "2.0",
+        "tipo_documento": metadados.tipo_publicacao.value,
         "titulo": metadados.titulo,
-        "title": metadados.titulo,
         "subtitulo": metadados.subtitulo,
         "autores": metadados.autores,
-        "authors": metadados.autores,
         "autor_principal": metadados.autor_para_nome,
-        "editora_ou_periodico": metadados.editora_ou_periodico,
-        "publisher": metadados.editora_ou_periodico,
+        "editora": editora_val,
+        "periodico": periodico_val if is_artigo else None,
         "ano": metadados.ano,
-        "year": metadados.ano,
         "local": metadados.local,
-        "city": metadados.local,
+        "area_principal": metadados.area_principal,
+        "subarea": metadados.subarea,
+        "identificadores": {
+            "isbn": metadados.identificadores.isbn or "",
+            "doi": metadados.identificadores.doi or "",
+            "issn": metadados.identificadores.issn or "",
+        },
         "isbn": metadados.identificadores.isbn,
         "issn": metadados.identificadores.issn,
         "doi": metadados.identificadores.doi,
-        "classification": metadados.classification,
         "referencia_abnt": metadados.referencia_abnt,
         "tags": tags,
         "arquivo_origem": arquivo_origem.name if arquivo_origem else None,
@@ -251,6 +258,13 @@ def gerar_markdown(
         "review_reasons": metadados.review_reasons,
         "source_apis": metadados.source_apis,
     }
+    if is_artigo:
+        if getattr(metadados, "volume", None):
+            frontmatter["volume"] = metadados.volume
+        if getattr(metadados, "number", None):
+            frontmatter["numero"] = metadados.number
+        if getattr(metadados, "pages", None):
+            frontmatter["paginas"] = metadados.pages
 
     yaml_texto = yaml.safe_dump(
         frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False

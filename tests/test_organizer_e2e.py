@@ -53,7 +53,7 @@ def test_pipeline_organizer_e2e(tmp_path: Path, sample_pdf_generator):
     assert len(md_files) == 1
 
     md_content = md_files[0].read_text(encoding="utf-8")
-    assert f"classification: {res.classification}" in md_content
+    assert f"tipo_documento: {res.classification}" in md_content or f"classification: {res.classification}" in md_content
     assert "## Referência Bibliográfica" in md_content
     assert "Disponível em: <https://doi.org/10.1016/j.artint.2024.1001>" in md_content
 

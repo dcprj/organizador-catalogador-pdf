@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-typesafe = ["typesafe-sdk>=0.1.0"]
+typesafe = ["typesafe-sdk>=0.1.0,<1.0.0"]
 dev = ["pytest>=8.0"]
 build = ["pyinstaller>=6.0"]
 

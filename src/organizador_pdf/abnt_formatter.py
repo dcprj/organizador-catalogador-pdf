@@ -178,9 +178,6 @@ class ABNTFormatter:
         year_str = str(m.year) if m.year else "[20--]"
         parts.append(f"{city}: {publisher}, {year_str}.")
 
-        if m.identifiers.isbn:
-            parts.append(f"ISBN {m.identifiers.isbn}.")
-
         return " ".join(parts)
 
     @classmethod
@@ -260,9 +257,6 @@ class ABNTFormatter:
         city = m.city or "[S. l.]"
         year_str = str(m.year) if m.year else "[20--]"
         parts.append(f"{city}, {year_str}.")
-
-        if m.identifiers.issn:
-            parts.append(f"ISSN {m.identifiers.issn}.")
 
         return " ".join(parts)
 

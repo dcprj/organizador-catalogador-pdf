@@ -238,46 +238,80 @@ class MarkdownConverter:
     @staticmethod
     def build_yaml_frontmatter(metadata: PublicationMetadata) -> str:
         frontmatter_dict: Dict[str, Any] = {
-            "title": metadata.title or metadata.titulo,
+            "versao_esquema": "2.0",
+            "tipo_documento": metadata.classification or getattr(metadata, "tipo_publicacao", TipoPublicacao.OUTROS).value,
+            "titulo": metadata.title or metadata.titulo or "Sem Título",
         }
         sub = metadata.subtitle or metadata.subtitulo
         if sub:
-            frontmatter_dict["subtitle"] = sub
+            frontmatter_dict["subtitulo"] = sub
 
-        frontmatter_dict["authors"] = metadata.authors or metadata.autores or []
-        frontmatter_dict["publisher"] = metadata.publisher or metadata.editora_ou_periodico or ""
+        autores = metadata.authors or metadata.autores or []
+        frontmatter_dict["autores"] = autores
+        if autores:
+            frontmatter_dict["autor_principal"] = autores[0]
+
+        # Separar periódico de editora conforme ABNT NBR 6023
+        is_article_or_journal = (metadata.classification or "").lower() in ("artigo", "artigo_cientifico", "revista")
+        if is_article_or_journal:
+            journal_val = metadata.journal or getattr(metadata, "periodico", None)
+            if journal_val:
+                frontmatter_dict["periodico"] = journal_val
+            pub_val = metadata.publisher or getattr(metadata, "editora", None)
+            if pub_val and pub_val != journal_val:
+                frontmatter_dict["editora"] = pub_val
+            if metadata.volume:
+                frontmatter_dict["volume"] = metadata.volume
+            if metadata.number:
+                frontmatter_dict["numero"] = metadata.number
+            if metadata.pages:
+                frontmatter_dict["paginas"] = metadata.pages
+        else:
+            pub_val = metadata.publisher or getattr(metadata, "editora", None) or getattr(metadata, "editora_ou_periodico", None)
+            if pub_val:
+                frontmatter_dict["editora"] = pub_val
 
         city = metadata.city or metadata.local
         if city:
-            frontmatter_dict["city"] = city
+            frontmatter_dict["local"] = city
 
         if metadata.edition:
-            frontmatter_dict["edition"] = metadata.edition
+            frontmatter_dict["edicao"] = metadata.edition
 
-        frontmatter_dict["identifiers"] = {
+        yr = metadata.year or metadata.ano
+        if yr:
+            frontmatter_dict["ano"] = yr
+
+        ar = metadata.area or metadata.area_principal
+        if ar and ar != "Outros":
+            frontmatter_dict["area_principal"] = ar
+        sub_ar = getattr(metadata, "subarea", None)
+        if sub_ar and sub_ar not in ("Geral", "Outros", ar):
+            frontmatter_dict["subarea"] = sub_ar
+
+        frontmatter_dict["identificadores"] = {
             "isbn": metadata.identificadores.isbn or "",
             "doi": metadata.identificadores.doi or "",
             "issn": metadata.identificadores.issn or "",
         }
-        frontmatter_dict["classification"] = metadata.classification
+        if metadata.identificadores.isbn:
+            frontmatter_dict["isbn"] = metadata.identificadores.isbn
+        if metadata.identificadores.doi:
+            frontmatter_dict["doi"] = metadata.identificadores.doi
+        if metadata.identificadores.issn:
+            frontmatter_dict["issn"] = metadata.identificadores.issn
 
-        yr = metadata.year or metadata.ano
-        if yr:
-            frontmatter_dict["year"] = yr
+        if getattr(metadata, "referencia_abnt", None):
+            frontmatter_dict["referencia_abnt"] = metadata.referencia_abnt
 
-        ar = metadata.area or metadata.area_principal
-        if ar and ar != "Outros":
-            frontmatter_dict["area"] = ar
-
-        if metadata.journal:
-            frontmatter_dict["journal"] = metadata.journal
         if metadata.source_apis:
-            frontmatter_dict["enriched_by"] = metadata.source_apis
+            frontmatter_dict["fontes_enriquecimento"] = metadata.source_apis
 
         # Gera tags para Obsidian / Logseq
         tags = list(metadata.tags)
-        if metadata.classification:
-            tag_cls = f"tipo/{metadata.classification}"
+        cls_name = metadata.classification or getattr(metadata, "tipo_publicacao", TipoPublicacao.OUTROS).value
+        if cls_name:
+            tag_cls = f"tipo/{cls_name}"
             if tag_cls not in tags:
                 tags.append(tag_cls)
         if yr:
@@ -308,6 +342,8 @@ class MarkdownConverter:
             frontmatter_dict["isbn_source"] = metadata.isbn_source
         if getattr(metadata, "doi_source", None):
             frontmatter_dict["doi_source"] = metadata.doi_source
+        if getattr(metadata, "issn_source", None):
+            frontmatter_dict["issn_source"] = metadata.issn_source
         if getattr(metadata, "provedor_classificador", None):
             frontmatter_dict["provedor_classificador"] = metadata.provedor_classificador
 
@@ -379,3 +415,125 @@ def listar_pdfs(origem: Path, *, recursivo: bool = True) -> list[Path]:
         and not caminho.name.startswith(".")
     ]
     return sorted(encontrados)
+
+
+def migrar_markdown_frontmatter(texto_markdown: str) -> tuple[str, bool, list[str]]:
+    """Migra frontmatter YAML de Markdown legados para o esquema canônico 2.0.
+
+    - Detecta conflitos entre pares legados (title/titulo, year/ano, authors/autores, publisher/editora).
+    - Remove aliases redundantes em inglês.
+    - Anota conflitos e sinaliza needs_review = True quando detectados.
+    - Versiona o esquema com versao_esquema: "2.0".
+
+    Retorna:
+        (texto_migrado, migrado, lista_de_conflitos)
+    """
+    if not texto_markdown.startswith("---"):
+        return texto_markdown, False, []
+
+    partes = texto_markdown.split("---", 2)
+    if len(partes) < 3:
+        return texto_markdown, False, []
+
+    yaml_str = partes[1]
+    corpo = partes[2]
+    try:
+        dados = yaml.safe_load(yaml_str) or {}
+    except Exception:
+        return texto_markdown, False, []
+
+    if not isinstance(dados, dict):
+        return texto_markdown, False, []
+
+    conflitos: list[str] = []
+    alterado = False
+
+    # Conflitos de Título
+    if "title" in dados and "titulo" in dados:
+        t_en = str(dados["title"]).strip()
+        t_pt = str(dados["titulo"]).strip()
+        if t_en and t_pt and t_en.lower() != t_pt.lower():
+            conflitos.append(f"Conflito entre 'title' ('{t_en}') e 'titulo' ('{t_pt}')")
+        del dados["title"]
+        alterado = True
+    elif "title" in dados:
+        dados["titulo"] = dados.pop("title")
+        alterado = True
+
+    # Subtítulo
+    if "subtitle" in dados:
+        sub = dados.pop("subtitle")
+        if "subtitulo" not in dados:
+            dados["subtitulo"] = sub
+        alterado = True
+
+    # Conflitos de Ano
+    if "year" in dados and "ano" in dados:
+        try:
+            if int(dados["year"]) != int(dados["ano"]):
+                conflitos.append(f"Conflito entre 'year' ({dados['year']}) e 'ano' ({dados['ano']})")
+        except (ValueError, TypeError):
+            if str(dados["year"]) != str(dados["ano"]):
+                conflitos.append(f"Conflito entre 'year' ({dados['year']}) e 'ano' ({dados['ano']})")
+        del dados["year"]
+        alterado = True
+    elif "year" in dados:
+        dados["ano"] = dados.pop("year")
+        alterado = True
+
+    # Conflitos de Autores
+    if "authors" in dados and "autores" in dados:
+        a_en = dados["authors"]
+        a_pt = dados["autores"]
+        if a_en != a_pt:
+            conflitos.append(f"Conflito entre 'authors' ({a_en}) e 'autores' ({a_pt})")
+        del dados["authors"]
+        alterado = True
+    elif "authors" in dados:
+        dados["autores"] = dados.pop("authors")
+        alterado = True
+
+    # Conflitos de Editora / Publisher
+    if "publisher" in dados:
+        pub = dados.pop("publisher")
+        if "editora" in dados and dados["editora"] != pub:
+            conflitos.append(f"Conflito entre 'publisher' ('{pub}') e 'editora' ('{dados['editora']}')")
+        elif "editora_ou_periodico" in dados and dados["editora_ou_periodico"] != pub:
+            conflitos.append(f"Conflito entre 'publisher' ('{pub}') e 'editora_ou_periodico' ('{dados['editora_ou_periodico']}')")
+        if "editora" not in dados:
+            dados["editora"] = pub
+        alterado = True
+
+    # City -> Local
+    if "city" in dados:
+        c = dados.pop("city")
+        if "local" in dados and dados["local"] != c:
+            conflitos.append(f"Conflito entre 'city' ('{c}') e 'local' ('{dados['local']}')")
+        elif "local" not in dados:
+            dados["local"] = c
+        alterado = True
+
+    # Classification / Tipo
+    if "classification" in dados:
+        cls_val = dados.pop("classification")
+        if "tipo_documento" not in dados:
+            dados["tipo_documento"] = cls_val
+        alterado = True
+
+    # Se houve conflitos, marca needs_review
+    if conflitos:
+        dados["needs_review"] = True
+        reasons = list(dados.get("motivos_revisao") or dados.get("review_reasons") or [])
+        for c in conflitos:
+            if c not in reasons:
+                reasons.append(c)
+        dados["motivos_revisao"] = reasons
+        if "review_reasons" in dados:
+            del dados["review_reasons"]
+
+    dados["versao_esquema"] = "2.0"
+
+    novo_yaml = yaml.safe_dump(
+        dados, sort_keys=False, allow_unicode=True, default_flow_style=False
+    ).strip()
+    return f"---\n{novo_yaml}\n---{corpo}", bool(conflitos), conflitos

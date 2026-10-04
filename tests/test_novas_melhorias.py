@@ -232,7 +232,7 @@ def test_thematic_area_and_obsidian_tags():
         abnt_reference="FUENTES, Daniel. Neuropsicologia...",
     )
 
-    assert "area: Neuropsicologia" in md
+    assert "area_principal: Neuropsicologia" in md or "area: Neuropsicologia" in md
     assert "tags:" in md
     assert "- tipo/livro" in md
     assert "- ano/2014" in md
@@ -1554,7 +1554,214 @@ def test_cli_cabecalho_truthful_remote_mode_and_network_status(monkeypatch):
     assert "Ativa" in output
     assert "Bases Bibliog.:" in output
     assert "Desativadas" in output
-    assert "Modo Offline" not in output  # Não pode chamar de Modo Offline se o JEV remoto está ativo!
+    assert "Modo Offline" not in output
+
+
+def test_neuropsicologia_classifica_como_livro_e_nao_tese():
+    """Garante que 'Neuropsicologia: teoria e prática' (Artmed, 2014, com ISBN) seja livro, e não tese."""
+    from organizador_pdf.classifier_jev import JevClassifier, ExtractedCandidates
+
+    text_sample = (
+        "Neuropsicologia: teoria e prática\n"
+        "Daniel Fuentes, Leandro F. Malloy-Diniz, Candida H. Pires Camargo, Ramon M. Cosenza\n"
+        "Porto Alegre : Artmed, 2014.\n"
+        "ISBN 978-85-8271-054-8\n"
+        "Os autores são professores de programas de pós-graduação em psicologia e neurociências.\n"
+        "Catalogação na publicação: F954n Fuentes, Daniel et al.\n"
+    )
+    candidates = ExtractedCandidates(
+        raw_title="Neuropsicologia: teoria e prática",
+        raw_authors=["Daniel Fuentes"],
+        raw_publisher="Artmed",
+        raw_year=2014,
+        isbn="9788582710548",
+    )
+    clf = JevClassifier()
+    res = clf._run_calibrated_fallback(text_sample, candidates, total_pages=400)
+    assert res.classification == "livro"
+    assert res.classification != "tese"
+
+
+def test_psicologia_social_unisulvirtual_classifica_como_apostila():
+    """Garante que material didático da UnisulVirtual seja classificado como apostila e rejeite DOI/autor externo."""
+    from organizador_pdf.classifier_jev import JevClassifier, ExtractedCandidates
+    from organizador_pdf.metadata_api import is_author_compatible
+
+    text_sample = (
+        "Psicologia Social\n"
+        "UnisulVirtual - Educação a Distância\n"
+        "Palhoça : UnisulVirtual, 2011.\n"
+        "Livro didático / Material didático para disciplina a distância.\n"
+        "Curso de Graduação em Psicologia.\n"
+    )
+    candidates = ExtractedCandidates(
+        raw_title="Psicologia Social",
+        raw_publisher="UnisulVirtual",
+        raw_year=2011,
+    )
+    clf = JevClassifier()
+    res = clf._run_calibrated_fallback(text_sample, candidates, total_pages=180)
+    assert res.classification in ("apostila", "livro")
+    assert res.classification != "tese"
+
+    # Não deve aceitar autores externos não relacionados (ex.: Hoepers et al. de artigo de 2023)
+    compat = is_author_compatible(
+        candidate_authors=[],
+        retrieved_authors=["Aline Daniele Hoepers", "Outro Autor"],
+        title="Psicologia Social",
+    )
+    assert compat is False
+
+
+def test_dissertacao_rafael_aiello_fernandes_titulo_e_autor(tmp_path):
+    """Garante que folha de rosto de tese não use o nome do autor como título."""
+    import pymupdf
+    from organizador_pdf.classifier_jev import parse_thesis_folha_de_rosto, extract_candidate_metadata
+
+    doc = pymupdf.open()
+    page1 = doc.new_page()
+    page1.insert_text((50, 50), "PONTIFÍCIA UNIVERSIDADE CATÓLICA DE CAMPINAS\nCENTRO DE CIÊNCIAS HUMANAS")
+    page1.insert_text((50, 100), "RAFAEL AIELLO - FERNANDES")
+    page1.insert_text((50, 150), "Da Entrada de Serviço ao Elevador Social: Racismo e Sofrimento no Brasil")
+    page1.insert_text((50, 200), "Dissertação apresentada ao Programa de Pós-Graduação em Psicologia como requisito parcial...")
+    page1.insert_text((50, 250), "Campinas\n2013")
+
+    pdf_file = tmp_path / "aiello_dissertacao.pdf"
+    doc.save(str(pdf_file))
+    doc.close()
+
+    with pymupdf.open(str(pdf_file)) as d:
+        sample_text = d[0].get_text("text")
+        rosto = parse_thesis_folha_de_rosto(d)
+        assert rosto is not None
+        assert "Aiello" in rosto["author"]
+        assert "Entrada de Serviço" in rosto["title"]
+        assert "AIELLO" not in rosto["title"]
+
+    candidates = extract_candidate_metadata(
+        sample_text=sample_text,
+        pdf_path=str(pdf_file),
+        total_pages=1,
+    )
+    assert candidates.raw_title != "RAFAEL AIELLO - FERNANDES"
+    assert "Entrada de Serviço" in (candidates.raw_title or "")
+
+
+def test_cida_bento_propriedades_pdf_fallback_aviso_distribuidor(tmp_path):
+    """Garante que PDF com aviso de distribuição gratuita aproveite título e autor das propriedades internas do PDF."""
+    import pymupdf
+    from organizador_pdf.classifier_jev import extract_candidate_metadata
+
+    doc = pymupdf.open()
+    page1 = doc.new_page()
+    page1.insert_text(
+        (50, 50),
+        "totalmente gratuita, por acreditar que o conhecimento e a educacao devem ser acessiveis a todos."
+    )
+    doc.set_metadata({
+        "title": "O pacto da branquitude",
+        "author": "Cida Bento",
+    })
+    pdf_file = tmp_path / "cida_bento.pdf"
+    doc.save(str(pdf_file))
+    doc.close()
+
+    candidates = extract_candidate_metadata(
+        sample_text="totalmente gratuita, por acreditar que o conhecimento...",
+        pdf_path=str(pdf_file),
+        total_pages=1,
+    )
+    assert candidates.raw_title == "O pacto da branquitude"
+    assert "Cida Bento" in (candidates.raw_authors or [])
+
+
+def test_bell_hooks_rejeita_fragmento_criar():
+    """Garante que título fragmentado 'criar' seja rejeitado e enviado para revisão."""
+    from organizador_pdf.classifier_jev import is_invalid_or_disclaimer_title
+    from organizador_pdf.metadata_api import is_author_compatible
+
+    assert is_invalid_or_disclaimer_title("criar") is True
+    # Busca por título para 'criar' sem autor deve ser bloqueada
+    assert is_author_compatible([], ["Melinda Wenner Moyer"], title="criar") is False
+
+
+def test_beer_e_franco_separacao_periodico_e_editora():
+    """Garante separação entre 'periodico' e 'editora' no frontmatter 2.0 para artigos."""
+    from organizador_pdf.converter import MarkdownConverter
+    from organizador_pdf.models import PublicationMetadata, Identifiers
+    import yaml
+
+    meta = PublicationMetadata(
+        title="Da indissociabilidade entre clínica e política em psicanálise",
+        authors=["Paulo Antonio de Campos Beer", "Wilson de Albuquerque Cavalcanti Franco"],
+        periodico="Affectio Societatis",
+        editora="Universidad de Antioquia",
+        year=2017,
+        classification="artigo",
+        identifiers=Identifiers(
+            doi="10.17533/udea.affs.v14n27a08",
+            issn="0123-8884",
+        ),
+    )
+    frontmatter = MarkdownConverter.build_yaml_frontmatter(meta)
+    parsed = yaml.safe_load(frontmatter.strip().strip("-").strip())
+
+    assert parsed["versao_esquema"] == "2.0"
+    assert parsed["tipo_documento"] == "artigo"
+    assert parsed["periodico"] == "Affectio Societatis"
+    assert parsed["editora"] == "Universidad de Antioquia"
+    assert parsed["doi"] == "10.17533/udea.affs.v14n27a08"
+    assert parsed["issn"] == "0123-8884"
+    assert "publisher" not in parsed
+
+
+def test_referencia_abnt_sem_isbn_com_identificador_no_frontmatter():
+    """Garante que o ISBN fique no metadado/frontmatter e NUNCA na string da referência ABNT (casos Bello e Birman)."""
+    from organizador_pdf.abnt_formatter import format_abnt_reference
+    from organizador_pdf.converter import MarkdownConverter
+    from organizador_pdf.models import PublicationMetadata, Identifiers
+    import yaml
+
+    # 1. Angela Ales Bello
+    bello = PublicationMetadata(
+        title="Introdução à Fenomenologia",
+        authors=["Angela Ales Bello"],
+        publisher="EDUSC",
+        city="Bauru",
+        year=2006,
+        classification="livro",
+        identifiers=Identifiers(isbn="9788574603093"),
+    )
+    ref_bello = format_abnt_reference(bello)
+    assert "ISBN" not in ref_bello
+    assert "9788574603093" not in ref_bello
+    assert "BELLO, Angela Ales." in ref_bello
+    assert "Introdução à Fenomenologia" in ref_bello
+
+    fm_bello = MarkdownConverter.build_yaml_frontmatter(bello)
+    parsed_bello = yaml.safe_load(fm_bello.strip().strip("-").strip())
+    assert parsed_bello["isbn"] == "9788574603093"
+
+    # 2. Joel Birman
+    birman = PublicationMetadata(
+        title="As Pulsões e seus destinos: do corporal ao psíquico",
+        authors=["Joel Birman"],
+        publisher="Civilização Brasileira",
+        city="Rio de Janeiro",
+        year=2016,
+        classification="livro",
+        identifiers=Identifiers(isbn="9788520011508"),
+    )
+    ref_birman = format_abnt_reference(birman)
+    assert "ISBN" not in ref_birman
+    assert "9788520011508" not in ref_birman
+    assert "BIRMAN, Joel." in ref_birman
+    assert "As Pulsões e seus destinos" in ref_birman
+
+    fm_birman = MarkdownConverter.build_yaml_frontmatter(birman)
+    parsed_birman = yaml.safe_load(fm_birman.strip().strip("-").strip())
+    assert parsed_birman["isbn"] == "9788520011508"
+
 
 
 

@@ -237,7 +237,9 @@ class Metadados(BaseModel):
     subtitulo: Optional[str] = Field(default=None, description="Subtítulo do trabalho, se houver.")
     autores: list[str] = Field(default_factory=list, description="Lista de autores formatados.")
     autor_principal: Optional[str] = Field(default=None, description="Autor principal.")
-    editora_ou_periodico: Optional[str] = Field(default=None, description="Editora ou periódico.")
+    editora: Optional[str] = Field(default=None, description="Editora da publicação.")
+    periodico: Optional[str] = Field(default=None, description="Nome do periódico ou revista (para artigos).")
+    editora_ou_periodico: Optional[str] = Field(default=None, description="Campo consolidado para compatibilidade.")
     ano: Optional[int] = Field(default=None, description="Ano de publicação com 4 dígitos.")
     local: Optional[str] = Field(default=None, description="Cidade ou local de publicação.")
     identificadores: Identificadores = Field(default_factory=Identificadores)
@@ -270,44 +272,99 @@ class Metadados(BaseModel):
         if not isinstance(data, dict):
             return data
         d = dict(data)
-        # Título
-        if "title" in d and "titulo" not in d:
+        reasons = list(d.get("review_reasons") or [])
+
+        # Detecção de conflitos entre campos legados inglês/português
+        # 1. Título
+        if "title" in d and "titulo" in d:
+            t1, t2 = str(d["title"]).strip(), str(d["titulo"]).strip()
+            if t1 and t2 and t1.lower() != t2.lower():
+                d["needs_review"] = True
+                reasons.append(f"Conflito entre campos legados de título: '{t1}' vs '{t2}'")
+            d["titulo"] = t2 or t1
+            d["title"] = d["titulo"]
+        elif "title" in d and "titulo" not in d:
             d["titulo"] = d["title"]
         elif "titulo" in d and "title" not in d:
             d["title"] = d["titulo"]
-        # Subtítulo
+
+        # 2. Subtítulo
         if "subtitle" in d and "subtitulo" not in d:
             d["subtitulo"] = d["subtitle"]
-        # Autores
-        if "authors" in d and "autores" not in d:
+
+        # 3. Autores
+        if "authors" in d and "autores" in d:
+            a1, a2 = d["authors"], d["autores"]
+            if a1 != a2:
+                d["needs_review"] = True
+                reasons.append("Conflito detectado entre listas legadas de autores")
+            d["autores"] = a2 or a1
+            d["authors"] = d["autores"]
+        elif "authors" in d and "autores" not in d:
             d["autores"] = d["authors"]
+        elif "autores" in d and "authors" not in d:
+            d["authors"] = d["autores"]
+
         # Autor principal
         if not d.get("autor_principal") and d.get("autores"):
             d["autor_principal"] = d["autores"][0]
-        # Editora
-        if "publisher" in d and "editora_ou_periodico" not in d:
-            d["editora_ou_periodico"] = d["publisher"]
-        # Ano
-        if "year" in d and "ano" not in d:
+
+        # 4. Periódico vs Editora (separação estruturada)
+        if "journal" in d and "periodico" not in d:
+            d["periodico"] = d["journal"]
+        elif "periodico" in d and "journal" not in d:
+            d["journal"] = d["periodico"]
+
+        if "publisher" in d and "editora" not in d:
+            d["editora"] = d["publisher"]
+        elif "editora" in d and "publisher" not in d:
+            d["publisher"] = d["editora"]
+
+        if not d.get("editora_ou_periodico"):
+            d["editora_ou_periodico"] = d.get("periodico") or d.get("editora") or d.get("publisher")
+
+        # 5. Ano
+        if "year" in d and "ano" in d:
+            try:
+                y1, y2 = int(d["year"]), int(d["ano"])
+                if y1 != y2:
+                    d["needs_review"] = True
+                    reasons.append(f"Conflito entre campos legados de ano: '{y1}' vs '{y2}'")
+                d["ano"] = y2
+            except (ValueError, TypeError):
+                d["ano"] = d["ano"] or d["year"]
+            d["year"] = d["ano"]
+        elif "year" in d and "ano" not in d:
             d["ano"] = d["year"]
-        # Local
+        elif "ano" in d and "year" not in d:
+            d["year"] = d["ano"]
+
+        # 6. Local / Cidade
         if "city" in d and "local" not in d:
             d["local"] = d["city"]
+        elif "local" in d and "city" not in d:
+            d["city"] = d["local"]
+
         # Área
         area_val = d.get("area") or d.get("area_principal") or "Outros"
         d["area_principal"] = area_val if area_val else "Outros"
         subarea_val = d.get("subarea") or area_val or "Geral"
         d["subarea"] = subarea_val if subarea_val else "Geral"
+
         # Classificação / Tipo
         raw_tipo = d.get("tipo_publicacao") or d.get("classification")
         if raw_tipo:
             d["tipo_publicacao"] = TipoPublicacao.normalizar(raw_tipo)
+
         # Identificadores
         if "identifiers" in d and "identificadores" not in d:
             d["identificadores"] = d["identifiers"]
+
         # ABNT
         if "abnt_reference" in d and "referencia_abnt" not in d:
             d["referencia_abnt"] = d["abnt_reference"]
+
+        d["review_reasons"] = reasons
         return d
 
     # Aliases via propriedades para compatibilidade com código em inglês
@@ -337,10 +394,11 @@ class Metadados(BaseModel):
 
     @property
     def publisher(self) -> Optional[str]:
-        return self.editora_ou_periodico
+        return self.editora or self.editora_ou_periodico
 
     @publisher.setter
     def publisher(self, value: Optional[str]) -> None:
+        self.editora = value
         self.editora_ou_periodico = value
 
     @property
