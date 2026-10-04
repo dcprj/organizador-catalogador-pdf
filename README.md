@@ -55,7 +55,10 @@ pip install -r requirements.txt
 
 ## Uso
 
-O comando principal é `organizador-pdf` (ou `python main.py` / `python -m organizador_pdf`).
+O projeto oferece duas interfaces de execução complementares:
+
+1. **`organizador-pdf` (ou `python -m organizador_pdf`)**: CLI oficial de alta performance recomendada para produção. Suporta processamento paralelo com múltiplos workers (`--paralelo`), retomada com `--resume`, subpasta customizada para Markdowns (`--subpasta-md`) e organiza os arquivos em uma **árvore taxonômica hierárquica CNPq** (`<destino>/<Grande Área>/<Área>/<Tipo>/`).
+2. **`python main.py`**: Ponto de entrada direto para organização em **estrutura plana por categoria** (`<destino>/<Tipo>/`), ideal para organização simplificada de bibliotecas pessoais.
 
 ```bash
 # Simulação rápida: analisa e exibe a catalogação sem gravar nem mover nada

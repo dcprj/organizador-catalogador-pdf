@@ -406,3 +406,51 @@ def test_main_respects_config_verificar_online(tmp_path: Path, monkeypatch):
     enriquecimento_online = (not args.sem_enriquecimento_online) and config.verificar_online
     assert enriquecimento_online is False
 
+
+def test_resume_preserva_sem_enriquecimento_online_cli(tmp_path: Path, monkeypatch, sample_pdf_generator):
+    """Test full pipeline resume with sem_enriquecimento_online=True, ensuring network is strictly blocked."""
+    import requests
+    from typer.testing import CliRunner
+    from src.organizador_pdf.cli import app
+    from src.organizador_pdf.estado import EstadoDeExecucao, ParametrosSalvos
+
+    # Strictly block any network call
+    def mock_fail(*args, **kwargs):
+        raise RuntimeError("VIOLAÇÃO DE REDE: Tentativa de conexão externa durante retomada sem enriquecimento!")
+
+    monkeypatch.setattr(requests.Session, "send", mock_fail)
+    monkeypatch.setattr(requests.Session, "request", mock_fail)
+    monkeypatch.setattr(requests, "get", mock_fail)
+    monkeypatch.setattr(requests, "post", mock_fail)
+
+    origem = tmp_path / "origem"
+    destino = tmp_path / "destino"
+    origem.mkdir()
+    destino.mkdir()
+
+    pages = ["Documento de teste para retomada sem enriquecimento online."]
+    pdf1 = sample_pdf_generator("pdf1.pdf", "PDF 1", pages)
+    pdf1.rename(origem / "pdf1.pdf")
+
+    # Manually seed an interrupted state with enriquecimento_online=False
+    estado = EstadoDeExecucao(
+        parametros=ParametrosSalvos(
+            origem=str(origem),
+            destino=str(destino),
+            dry_run=False,
+            recursive=True,
+            mover=False,
+            subpasta_markdown=None,
+            paralelo=1,
+            quarantine=True,
+            enriquecimento_online=False,
+        ),
+        concluidos=[],
+    )
+    estado.salvar()
+
+    runner = CliRunner()
+    res = runner.invoke(app, ["--resume"])
+    assert res.exit_code == 0
+
+
