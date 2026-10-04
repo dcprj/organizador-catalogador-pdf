@@ -66,8 +66,10 @@ class ExtratorDeterministico:
         enriquecimento_online: bool = True,
         max_paginas: int = 10,
         max_caracteres: int = 30000,
+        typesafe_api_key: Optional[str] = None,
+        classificador_modo: str = "auto",
     ) -> None:
-        self.classifier = JevClassifier()
+        self.classifier = JevClassifier(api_key=typesafe_api_key, modo=classificador_modo)
         self.enricher = MetadataEnricher(online=enriquecimento_online)
         self.max_paginas = max_paginas
         self.max_caracteres = max_caracteres
@@ -104,6 +106,8 @@ class Pipeline:
             enriquecimento_online=enriquecer,
             max_paginas=getattr(self.config, "max_paginas", 10),
             max_caracteres=getattr(self.config, "max_caracteres", 30000),
+            typesafe_api_key=getattr(self.config, "typesafe_api_key", None),
+            classificador_modo=getattr(self.config, "classificador", "auto"),
         )
         self.extrator_fallback = extrator_fallback
 
@@ -120,13 +124,23 @@ class Pipeline:
 
             etapa = "extração de metadados"
             metadados, aviso, usou_fallback = self._extrair(documento, caminho.name)
-            provedor_usado = self._nome_do_provedor_usado(usou_fallback)
 
             enriquecer = getattr(self.opcoes, "enriquecimento_online", getattr(self.opcoes, "online", True))
             if enriquecer and getattr(self.config, "verificar_online", True):
                 metadados, aviso_online = verificar_identificadores(metadados)
                 if aviso_online:
                     aviso = f"{aviso} Além disso, {aviso_online}" if aviso else aviso_online
+
+            if aviso:
+                metadados.needs_review = True
+                if aviso not in metadados.review_reasons:
+                    metadados.review_reasons.append(aviso)
+
+            prov_classificador = getattr(metadados, "provedor_classificador", None)
+            if prov_classificador:
+                provedor_usado = prov_classificador
+            else:
+                provedor_usado = self._nome_do_provedor_usado(usou_fallback)
 
             if metadados.needs_review and metadados.review_reasons:
                 revisoes_str = "; ".join(metadados.review_reasons)

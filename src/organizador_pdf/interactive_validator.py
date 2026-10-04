@@ -91,6 +91,7 @@ def explain_jev_classification(
     api_key: Optional[str] = None,
     max_paginas: Optional[int] = None,
     max_caracteres: Optional[int] = None,
+    classificador_modo: str = "auto",
     **kwargs,
 ) -> JevValidationResult:
     """Run Jev classifier while providing transparent diagnostic reporting."""
@@ -103,7 +104,7 @@ def explain_jev_classification(
                 stacklevel=2,
             )
     actual_api_key = api_key or os.getenv("TYPESAFE_API_KEY")
-    classifier = JevClassifier(api_key=actual_api_key)
+    classifier = JevClassifier(api_key=actual_api_key, modo=classificador_modo)
 
     classify_kwargs: Dict[str, Any] = {}
     if max_paginas is not None:
@@ -275,6 +276,7 @@ def validate_and_process_pdf(
     quarantine: bool = True,
     subpasta_markdown: Optional[str] = None,
     dry_run: bool = False,
+    classificador: Optional[str] = None,
     **kwargs,
 ) -> bool:
     """Process a single PDF through the complete interactive validation pipeline."""
@@ -293,6 +295,8 @@ def validate_and_process_pdf(
         max_paginas = config.max_paginas
     if max_caracteres is None:
         max_caracteres = config.max_caracteres
+    actual_api_key = api_key or getattr(config, "typesafe_api_key", None) or os.getenv("TYPESAFE_API_KEY")
+    classificador_modo = classificador or getattr(config, "classificador", "auto")
 
     pdf_file = Path(pdf_path).resolve()
     print(f"\n{BOLD}{'─' * 75}{RESET}")
@@ -337,9 +341,10 @@ def validate_and_process_pdf(
         combined_text=combined_text,
         candidates=candidates,
         total_pages=info["total_pages"],
-        api_key=api_key,
+        api_key=actual_api_key,
         max_paginas=max_paginas,
         max_caracteres=max_caracteres,
+        classificador_modo=classificador_modo,
     )
 
     # Step 5: External API Enrichment
@@ -432,6 +437,7 @@ def run_interactive_validator(
     quarantine: bool = True,
     subpasta_markdown: Optional[str] = None,
     dry_run: bool = False,
+    classificador: Optional[str] = None,
     **kwargs,
 ):
     """Scan input folder and process all PDFs interactively."""
@@ -443,7 +449,7 @@ def run_interactive_validator(
                 DeprecationWarning,
                 stacklevel=2,
             )
-    config = Config.do_ambiente()
+    config = Config.do_ambiente(classificador=classificador)
     if verificar_online is None:
         verificar_online = config.verificar_online
     if max_paginas is None:
@@ -459,7 +465,7 @@ def run_interactive_validator(
     print(f"🎯 Pasta de Destino: {BOLD}{out_path}{RESET}")
     print(f"📦 Mover original  : {'Sim' if move_original else 'Não (Copiando)'}")
     print(f"📁 Estrutura       : {'Plana por categoria (<destino>/<tipo>/)' if estrutura == 'plana' else 'Hierárquica CNPq (<destino>/<Área>/<Subárea>/<Tipo>/)'}")
-    print(f"🧠 Classificador   : Jev System One (TypeSafe / Heurísticas Locais)")
+    print(f"🧠 Classificador   : Jev System One ({config.classificador})")
     print(f"🌐 APIs Externas   : {'Ativas (Crossref, Google Books, Brasil API, OpenAlex)' if verificar_online else 'Desativadas (ORGPDF_VERIFICAR_ONLINE=false)'}")
     print(f"📄 Amostragem      : até {max_paginas} páginas / {max_caracteres} caracteres")
     print(f"🤝 Modo Interativo : {'Habilitado (solicita confirmação)' if interactive else 'Desabilitado'}\n")
@@ -493,6 +499,7 @@ def run_interactive_validator(
             quarantine=quarantine,
             subpasta_markdown=subpasta_markdown,
             dry_run=dry_run,
+            classificador=classificador,
         )
 
     print(f"\n{BOLD}{GREEN}{'=' * 75}{RESET}")
@@ -542,6 +549,12 @@ def main():
         default=None,
         help="Teto de caracteres da amostra para análise (padrão: 30000).",
     )
+    parser.add_argument(
+        "--classificador",
+        type=str,
+        default=None,
+        help="Modo do classificador documental: 'auto', 'local' ou 'remoto' / 'jev_remoto'.",
+    )
 
     args = parser.parse_args()
 
@@ -552,6 +565,7 @@ def main():
         move_original=args.move,
         max_paginas=args.max_paginas,
         max_caracteres=args.max_caracteres,
+        classificador=args.classificador,
     )
 
 

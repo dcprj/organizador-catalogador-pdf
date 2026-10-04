@@ -1071,6 +1071,265 @@ def test_cli_rejects_directory_conflicts(tmp_path):
     assert "Conflito de diretórios" in res_nested.output
 
 
+# ==============================================================================
+# FASE 6: RECOMENDAÇÕES DO RELATÓRIO TÉCNICO (JEV REMOTO, DOI, CIP, TIPOS)
+# ==============================================================================
+
+
+def test_classificador_modo_remoto_missing_key_fails_fast(monkeypatch, tmp_path):
+    """Verifica que o modo jev_remoto falha rápido se a chave TYPESAFE_API_KEY estiver ausente."""
+    import pytest
+    from organizador_pdf.config import Config, ErroDeConfiguracao
+    from organizador_pdf.classifier_jev import JevClassifier
+
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.delenv("ORGPDF_TYPESAFE_API_KEY", raising=False)
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("", encoding="utf-8")
+
+    # Config.do_ambiente deve disparar ErroDeConfiguracao quando remoto sem chave
+    with pytest.raises(ErroDeConfiguracao, match="remoto"):
+        Config.do_ambiente(classificador="remoto", env_file=empty_env)
+
+    # Instanciação direta do JevClassifier em modo jev_remoto sem chave
+    with pytest.raises(ErroDeConfiguracao, match="remoto"):
+        JevClassifier(api_key=None, modo="jev_remoto")
+
+
+def test_classificador_modo_remoto_missing_sdk_or_api_error_no_silent_fallback(monkeypatch):
+    """Verifica que o modo jev_remoto NÃO faz fallback silencioso para heurísticas locais."""
+    import pytest
+    import sys
+    from organizador_pdf.classifier_jev import JevClassifier, ErroDeClassificacaoRemota
+
+    # Simula pacote typesafe_sdk ausente
+    monkeypatch.setitem(sys.modules, "typesafe_sdk", None)
+
+    classifier = JevClassifier(api_key="ts_test_key", modo="jev_remoto")
+
+    with pytest.raises(ErroDeClassificacaoRemota, match=r"typesafe-sdk.*instalado"):
+        classifier.classify_and_validate(
+            pdf_path="arquivo_inexistente.pdf",
+            texto_pre_extraido="Texto do documento para teste.",
+            total_paginas=5,
+        )
+
+
+def test_classificador_modo_remoto_api_call_failure_raises(monkeypatch):
+    """Verifica que falha de rede/API no modo jev_remoto levanta ErroDeClassificacaoRemota sem fallback local."""
+    import pytest
+    from unittest.mock import MagicMock
+    import sys
+    from organizador_pdf.classifier_jev import JevClassifier, ErroDeClassificacaoRemota
+
+    mock_sdk = MagicMock()
+    mock_client = MagicMock()
+    mock_client.__enter__.return_value = mock_client
+    mock_client.system_one.side_effect = ConnectionError("API TypeSafe AI indisponível (503 Service Unavailable)")
+    mock_sdk.TypeSafeClient.return_value = mock_client
+    monkeypatch.setitem(sys.modules, "typesafe_sdk", mock_sdk)
+
+    classifier = JevClassifier(api_key="ts_test_key", modo="jev_remoto")
+
+    with pytest.raises(ErroDeClassificacaoRemota, match="Falha na chamada ao serviço remoto TypeSafe AI"):
+        classifier.classify_and_validate(
+            pdf_path="doc.pdf",
+            texto_pre_extraido="Texto de teste para chamada remota.",
+            total_paginas=3,
+        )
+
+
+def test_jev_classifier_idempotent_caching(monkeypatch, tmp_path):
+    """Verifica que chamadas repetidas usam o cache por sha256 sem reexecutar chamada externa cobrada."""
+    from unittest.mock import MagicMock
+    import sys
+    from organizador_pdf.classifier_jev import JevClassifier
+
+    mock_choice = MagicMock()
+    mock_choice.choice = "artigo"
+    mock_choice.confidence = 0.98
+
+    mock_resp = MagicMock()
+    mock_resp.choices = {"classification": mock_choice}
+    mock_resp.nouls = {}
+
+    mock_client = MagicMock()
+    mock_client.__enter__.return_value = mock_client
+    mock_client.system_one.return_value = mock_resp
+
+    mock_sdk = MagicMock()
+    mock_sdk.TypeSafeClient.return_value = mock_client
+    monkeypatch.setitem(sys.modules, "typesafe_sdk", mock_sdk)
+
+    cache_file = tmp_path / "cache_jev.json"
+    classifier = JevClassifier(api_key="ts_test_key", modo="auto", cache_file=cache_file)
+
+    sample = "Texto de amostra com Abstract e Introdução científica para classificação."
+
+    # Primeira execução: chama a API remota e grava em cache
+    res1 = classifier.classify_and_validate(pdf_path="artigo.pdf", texto_pre_extraido=sample, total_paginas=8)
+    assert res1.classification == "artigo"
+    assert res1.provider == "typesafe"
+    assert mock_client.system_one.call_count == 1
+    assert cache_file.exists()
+
+    # Segunda execução com mesmo texto e total de páginas: DEVE vir do cache sem chamar o SDK
+    res2 = classifier.classify_and_validate(pdf_path="artigo.pdf", texto_pre_extraido=sample, total_paginas=8)
+    assert res2.classification == "artigo"
+    assert res2.provider == "typesafe"
+    assert res2.raw_jev_data.get("cached") is True
+    # Call count deve continuar exatamente 1!
+    assert mock_client.system_one.call_count == 1
+
+
+def test_doi_in_references_and_citations_rejected_ambrosio_case():
+    """Verifica que DOI localizado em referências ou citação não é atribuído a tese/dissertação."""
+    from organizador_pdf.classifier_jev import extract_candidate_metadata
+
+    # Simulação do caso Ambrosio: dissertação de mestrado citando artigo de terceiro com DOI nas referências
+    texto_dissertacao = (
+        "UNIVERSIDADE DE SÃO PAULO\n"
+        "FACULDADE DE FILOSOFIA, LETRAS E CIÊNCIAS HUMANAS\n"
+        "Dissertação apresentada ao Programa de Pós-Graduação em História Social\n"
+        "Autor: Carlos Ambrosio\n"
+        "Orientador: Prof. Dr. Silva\n\n"
+        "RESUMO\n"
+        "Este trabalho investiga os movimentos sociais do século XX.\n\n"
+        "REFERÊNCIAS\n"
+        "SILVA, J. Estudo sobre movimentos. Revista de História, v. 10, n. 2, 2015. DOI: 10.1590/0102-01882015000200008\n"
+        "SANTOS, M. História social. In: Anais do Simpósio, 2018. https://doi.org/10.1016/j.soc.2018.01.002\n"
+    )
+
+    candidates = extract_candidate_metadata(texto_dissertacao, total_pages=150)
+    # O DOI citado nas referências NÃO deve ser associado como DOI da dissertação!
+    assert candidates.doi is None
+
+
+def test_thematic_area_rejects_titulo_or_autor():
+    """Verifica que marcadores AACR2 como 'titulo' ou 'autor' não são aceitos como área temática."""
+    from organizador_pdf.classifier_jev import parse_page_cip
+    from organizador_pdf.metadata_api import MetadataEnricher
+    from organizador_pdf.models import PublicationMetadata, Identifiers
+
+    ficha_falsa = (
+        "Dados Internacionais de Catalogação na Publicação (CIP)\n"
+        "Silva, João\n"
+        "Psicologia Social / João Silva. - São Paulo: Editora X, 2020.\n"
+        "1. Titulo. 2. Autor.\n"
+        "CDD 150\n"
+    )
+    res = parse_page_cip(ficha_falsa)
+    assert res is not None
+    # "area" não deve ser "Titulo" ou "Autor"
+    assert res.get("area") is None
+
+    # Teste de fusão em MetadataEnricher._merge_metadata
+    enricher = MetadataEnricher(online=False)
+    meta = PublicationMetadata(
+        title="Psicologia Social",
+        identifiers=Identifiers(),
+    )
+    enricher._merge_metadata(meta, {"area": "1. Titulo."})
+    assert meta.area in (None, "Outros")
+    assert meta.area != "1. Titulo."
+
+    enricher._merge_metadata(meta, {"area": "Psicologia Social"})
+    assert meta.area == "Psicologia Social"
+
+
+def test_page_markers_in_title_cleaned_and_flagged_for_review():
+    """Verifica que marcadores de página são removidos e títulos contaminados ativam revisão manual."""
+    from organizador_pdf.classifier_jev import extract_candidate_metadata
+    from organizador_pdf.metadata_api import MetadataEnricher
+    from organizador_pdf.models import JevValidationResult, ExtractedCandidates
+
+    # Texto inicial contendo marcador de página
+    texto = (
+        "--- [Página 1] ---\n"
+        "[PAGE BREAK]\n"
+        "Teoria Geral da Neuropsicologia\n"
+        "Maria de Andrade\n"
+    )
+    candidates = extract_candidate_metadata(texto, total_pages=50)
+    assert candidates.raw_title is not None
+    assert "--- [Página 1] ---" not in candidates.raw_title
+    assert "[page break]" not in candidates.raw_title.lower()
+    assert candidates.raw_title == "Teoria Geral da Neuropsicologia"
+
+    # Se um título ainda contiver marcador de página, MetadataEnricher deve marcar needs_review
+    jev_res = JevValidationResult(
+        classification="livro",
+        classification_confidence=0.9,
+        candidates=ExtractedCandidates(raw_title="--- [Página 1] --- Teoria Geral", sample_text=texto),
+    )
+    enricher = MetadataEnricher(online=False)
+    enriched = enricher.enrich(jev_res)
+    assert enriched.needs_review is True
+    assert any("marcador de página" in r for r in enriched.review_reasons)
+
+
+def test_extended_publication_types_support():
+    """Verifica suporte aos novos tipos documentais: capitulo_livro, relatorio, trabalho_evento."""
+    from organizador_pdf.models import TipoPublicacao, PLURAL_POR_TIPO
+    from organizador_pdf.classifier_jev import JevClassifier
+
+    assert TipoPublicacao.CAPITULO_LIVRO.value == "Capítulo de Livro"
+    assert TipoPublicacao.RELATORIO.value == "Relatório"
+    assert TipoPublicacao.TRABALHO_EVENTO.value == "Trabalho em Evento"
+
+    assert "Capítulos de Livro" in PLURAL_POR_TIPO.values()
+    assert "Relatórios" in PLURAL_POR_TIPO.values()
+    assert "Trabalhos em Eventos" in PLURAL_POR_TIPO.values()
+
+    classifier = JevClassifier()
+    # Texto de relatório técnico
+    sample_relatorio = (
+        "MINISTÉRIO DA SAÚDE\n"
+        "RELATÓRIO TÉCNICO DE GESTÃO E VIGILÂNCIA EPIDEMIOLÓGICA\n"
+        "Relatório institucional anual de monitoramento\n"
+        "Brasília, DF, 2024\n"
+    )
+    res = classifier.classify_and_validate(pdf_path="relatorio.pdf", texto_pre_extraido=sample_relatorio, total_paginas=40)
+    assert res.classification in ("relatorio", "outros", "apostila")
+
+
+def test_pipeline_revisao_manual_sync_with_markdown(tmp_path: Path, sample_pdf_generator):
+    """Verifica que quando há divergência/aviso, o Markdown gerado contém needs_review e review_reasons."""
+    from organizador_pdf.pipeline import Pipeline, OpcoesDoPipeline
+    from organizador_pdf.config import Config
+
+    # Gera PDF onde título no documento diverge do nome do arquivo
+    pages = [
+        "Tratado de Filosofia da Mente Contemporânea\n"
+        "Autor: Epicteto de Hierápolis\n"
+        "Ano: 2021\n"
+    ]
+    # Nome do arquivo completamente divergente para forçar aviso de divergência
+    pdf_path = sample_pdf_generator("calculo_diferencial_avancado.pdf", "Calculo Diferencial", pages)
+
+    out_dir = tmp_path / "out_sync"
+    out_dir.mkdir()
+
+    cfg = Config(verificar_online=False, classificador="local")
+    pipeline = Pipeline(
+        config=cfg,
+        opcoes=OpcoesDoPipeline(destino=out_dir, mover=False, quarantine=True, enriquecimento_online=False),
+    )
+
+    resultado = pipeline.processar_arquivo(pdf_path)
+    assert resultado.ok is True
+    assert resultado.aviso is not None
+    assert resultado.metadados.needs_review is True
+
+    # O Markdown gravado DEVE ter needs_review: true e review_reasons preenchido
+    assert resultado.markdown_destino is not None
+    assert resultado.markdown_destino.exists()
+    conteudo_md = resultado.markdown_destino.read_text(encoding="utf-8")
+    assert "needs_review: true" in conteudo_md
+    assert "review_reasons:" in conteudo_md
+    assert "provedor_classificador:" in conteudo_md
+
+
 
 
 

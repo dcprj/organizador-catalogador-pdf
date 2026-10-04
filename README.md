@@ -4,8 +4,14 @@ Ferramenta de linha de comando de alta precisão que processa lotes de PDFs, ext
 
 A partir da versão **v0.4.0**, o projeto adota uma arquitetura determinística unificada:
 - **Classificador Bibliográfico Jev (Núcleo do Sistema)**:
-  - **Execução Local Padrão (*System One Heuristics*)**: 100% local, privado, ultra-rápido, sem custo de tokens e sem dependência de LLMs pesados externos. Opera com decodificação de Fichas Catalográficas (CIP/AACR2/ISBD) e regras probabilísticas calibradas.
-  - **Integração TypeSafe AI (Opcional)**: caso `TYPESAFE_API_KEY` esteja definida e o pacote opcional `typesafe-sdk` instalado (`pip install ".[typesafe]"`), realiza validação semântica profunda remota.
+  - **Modo 'auto' (Padrão)**: utiliza validação semântica TypeSafe AI se `TYPESAFE_API_KEY` estiver configurada e `typesafe-sdk` instalado; caso contrário, executa com heurísticas locais calibradas.
+  - **Modo 'local'**: garante operação 100% offline e privada, ultra-rápida, sem consumo de rede ou chaves externas.
+  - **Modo 'remoto' / 'jev_remoto'**: modo exclusivo TypeSafe AI remoto. Exige chave e SDK, falhando com erro explícito (`ErroDeConfiguracao` ou `ErroDeClassificacaoRemota`) sem fallback silencioso para heurísticas locais.
+  - **Cache Idempotente**: requisições remotas bem-sucedidas são salvas em cache local por fingerprint textual (SHA-256), evitando cobranças ou submissões externas duplicadas após falhas locais de escrita ou retomada.
+  - **Vocabulário Ampliado**: suporta Artigos Científicos, Livros, Capítulos de Livros, Teses/Dissertações, Revistas, Apostilas, Relatórios e Trabalhos em Eventos.
+- **Validação Rigorosa de Identificadores**:
+  - DOIs localizados em seções bibliográficas/referências ou em contextos de citação textual (`in:`, `apud`, etc.) são descartados e não são atribuídos à obra principal.
+  - Origem da evidência do DOI (`doi_source`) e do classificador (`provedor_classificador`) são persistidos no frontmatter do Markdown.
 - **Enriquecimento Bibliográfico em Bases Públicas (Configurável)**:
   - Consulta bases abertas e gratuitas (Brasil API / CBL para ISBN, Crossref para DOI, OpenAlex, Google Books, OpenLibrary) utilizando apenas identificadores ou título (o arquivo PDF e o texto completo **nunca** são transmitidos).
   - Pode ser completamente desativado definindo `ORGPDF_VERIFICAR_ONLINE=false` no arquivo `.env`.
@@ -100,6 +106,7 @@ organizador-pdf --resume
 | `--destino` / `--output` / `-o` | *obrigatório* | Diretório raiz de destino da biblioteca organizada |
 | `--estrutura` | `cnpq` | Modelo de diretórios: `cnpq` (árvore taxonômica) ou `plana` (apenas categoria) |
 | `--plana` | `False` | Atalho para organizar em estrutura plana (`--estrutura plana`) |
+| `--classificador` | `auto` | Modo do classificador: `auto`, `local`, ou `remoto` / `jev_remoto` |
 | `--dry-run` | `False` | Executa o pipeline sem realizar alterações em disco |
 | `--resume` | `False` | Retoma o lote pendente exatamente de onde parou |
 | `--recursive` / `-r` | `True` | Varredura recursiva em subpastas (`--no-recursive` desativa) |

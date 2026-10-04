@@ -147,6 +147,12 @@ Classificações Suportadas:
         default=False,
         help="Executa em modo interativo de validação passo a passo com confirmação de metadados em tempo real.",
     )
+    parser.add_argument(
+        "--classificador",
+        choices=["auto", "local", "remoto", "jev_remoto"],
+        default=None,
+        help="Modo de classificação: 'auto' (TypeSafe se disponível, senão local), 'local' (apenas heurísticas locais), ou 'remoto'/'jev_remoto' (exclusivo TypeSafe remoto, sem fallback silencioso).",
+    )
 
     return parser
 
@@ -180,7 +186,7 @@ def main() -> int:
         output_dir.mkdir(parents=True, exist_ok=True)
 
     mover_original = bool(args.mover)
-    config = Config.do_ambiente()
+    config = Config.do_ambiente(classificador=args.classificador)
 
     if args.interactive:
         from organizador_pdf.interactive_validator import run_interactive_validator
@@ -195,13 +201,10 @@ def main() -> int:
             estrutura=args.estrutura,
             quarantine=not args.no_quarantine,
             dry_run=args.dry_run,
+            classificador=config.classificador,
         )
 
-    tipo_class = (
-        "Jev System One (TypeSafe API + Heurísticas Locais)"
-        if os.getenv("TYPESAFE_API_KEY")
-        else "Jev System One (Heurísticas Locais Calibradas)"
-    )
+    tipo_class = f"Jev System One ({config.classificador})"
     print("\n" + "=" * 75)
     print("🚀 PIPELINE DE PROCESSAMENTO E CONVERSÃO DE PDF PARA MARKDOWN")
     print("=" * 75)
@@ -224,6 +227,8 @@ def main() -> int:
         max_caracteres=config.max_caracteres,
         enriquecimento_online=config.verificar_online,
         estrutura=args.estrutura,
+        typesafe_api_key=config.typesafe_api_key,
+        classificador_modo=config.classificador,
     )
     results = organizer.process_directory(
         input_dir=str(input_dir),

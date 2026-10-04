@@ -18,6 +18,7 @@ Enhanced with:
 import os
 import re
 import logging
+import unicodedata
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 import pymupdf
@@ -36,6 +37,10 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+
+class ErroDeClassificacaoRemota(RuntimeError):
+    """Falha irrecuperável na chamada à API remota de classificação TypeSafe AI."""
+
 # Regular expressions for candidate extraction
 DOI_REGEX = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Za-z0-9]+\b", re.IGNORECASE)
 ISBN_REGEX = re.compile(
@@ -50,9 +55,16 @@ ISSN_REGEX = re.compile(
 
 # Ignored lines that pollute title/author candidate extraction
 IGNORED_PATTERNS = [
-    r"^\[PAGE BREAK\]",
-    r"^-{3,}\s*\[PAGE BREAK\]\s*-{3,}",
-    r"^-{3,}$",
+    r"^\[page break\]",
+    r"^-{3,}\s*\[page break\]\s*-{3,}",
+    r"^-{3,}\s*\[p[aá]gina\s*\d+\]\s*-{3,}.*",
+    r"^-{3,}\s*\[page\s*\d+\]\s*-{3,}.*",
+    r"^\[p[aá]gina\s*\d+\]",
+    r"^\[page\s*\d+\]",
+    r"^-{3,}.*-{3,}$",
+    r"^[\d\s\.\-_/]+$",
+    r"^(?:artigo\s+original|original\s+article|artigo\s+de\s+revis[ãa]o|review\s+article|editorial|comunica[çc][ãa]o\s+breve|relato\s+de\s+caso)\b",
+    r"^(?:revista\s+|journal\s+of\s+|cadernos\s+de\s+|boletim\s+|anais\s+do|mem[óo]rias\s+do)\b.*?\b(?:v(?:ol)?\.?\s*\d+|n[ºoú]\.?\s*\d+|\d{4})",
     r"^p[aá]gina\s+\d+",
     r"^p\.?\s*\d+$",
     r"^\d+$",
@@ -374,10 +386,16 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
 
     # Extract subject area from first catalog entry e.g. '1. Neuropsicologia.' or '1. Psicologia clínica.'
     area = None
-    m_subject = re.search(r"\b1\.\s+([A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s-]+?)(?:\.|\s+2\.)", page_text)
+    m_subject = re.search(r"\b1\.\s+([A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s-]+?)(?:\.|\s+2\.|\s+I\.)", page_text)
     if m_subject:
         cand_subj = m_subject.group(1).strip()
-        if len(cand_subj) >= 3 and not any(w in cand_subj.lower() for w in ["título", "autor", "brasil", "recurso"]):
+        cand_subj_lower = unicodedata.normalize("NFKD", cand_subj).encode("ascii", "ignore").decode().lower()
+        invalid_areas = {
+            "titulo", "autor", "brasil", "recurso", "serie", "coautor", "orientador",
+            "orientadora", "universidade", "faculdade", "instituto", "edicao", "volume",
+            "cdd", "cdu", "ilustrado", "bibliografia", "isbn", "issn", "doi",
+        }
+        if len(cand_subj) >= 3 and cand_subj_lower not in invalid_areas and not any(cand_subj_lower.startswith(w) for w in ["titulo", "autor"]):
             area = cand_subj.title()
 
     return {
@@ -487,6 +505,7 @@ def extract_candidate_metadata(
 
     # 1. Document structural parsing (CIP card and Thesis Resumo) and front matter - HIGHEST PRIORITY
     head_text = ""
+    thesis_resumo_found = False
     if pdf_path and os.path.exists(pdf_path):
         try:
             with pymupdf.open(pdf_path) as doc:
@@ -520,6 +539,7 @@ def extract_candidate_metadata(
                 if not candidates.raw_title or not candidates.raw_authors:
                     thesis_resumo = parse_thesis_resumo_citation(doc)
                     if thesis_resumo:
+                        thesis_resumo_found = True
                         candidates.raw_title = thesis_resumo["title"]
                         candidates.raw_subtitle = thesis_resumo.get("subtitle")
                         if thesis_resumo.get("author"):
@@ -530,6 +550,10 @@ def extract_candidate_metadata(
                             candidates.raw_publisher = thesis_resumo["institution"]
                         if thesis_resumo.get("city") and not candidates.raw_city:
                             candidates.raw_city = thesis_resumo["city"]
+                else:
+                    thesis_resumo = parse_thesis_resumo_citation(doc)
+                    if thesis_resumo:
+                        thesis_resumo_found = True
 
                 # 2. Extract DOI and ISSN strictly from front pages (pages 1 to 5)
                 head_text = "\n".join(doc[i].get_text("text") or "" for i in range(min(5, total_p)))
@@ -580,15 +604,43 @@ def extract_candidate_metadata(
         ref_cut = re.split(r"\n\s*(?:refer[êe]ncias|references|bibliografia)\b", sample_text, flags=re.I)
         head_text = ref_cut[0] if ref_cut else sample_text
 
-    # Extract DOI from front matter
-    doi_match = DOI_REGEX.search(head_text)
-    if doi_match:
-        norm_d = normalizar_doi(doi_match.group(0).rstrip(".;,"))
-        if norm_d:
-            candidates.doi = norm_d
+    # Garante que head_text corte referências bibliográficas para não herdar DOIs de obras citadas
+    ref_split = re.split(r"\n\s*(?:refer[êe]ncias|references|bibliografia|obras\s+citadas)\b", head_text, flags=re.I)
+    clean_head_text = ref_split[0] if ref_split else head_text
+
+    # Identificação contextual de tese/dissertação para evitar associação indevida de DOIs de terceiros
+    thesis_in_progress = bool(parse_academic_thesis(sample_text) or thesis_resumo_found)
+
+    doi_candidates = []
+    for m in DOI_REGEX.finditer(clean_head_text):
+        raw_doi_match = m.group(0).rstrip(".;,")
+        norm_d = normalizar_doi(raw_doi_match)
+        if not norm_d:
+            continue
+        start_pos = max(0, m.start() - 150)
+        end_pos = min(len(clean_head_text), m.end() + 150)
+        context = clean_head_text[start_pos:end_pos].lower()
+        is_citation_context = any(
+            re.search(pat, context) for pat in [
+                r"\b(?:in:|em:|apud|citado\s+por|citado\s+em|p\.\s*\d+[-–]\d+|pp\.\s*\d+|v\.\s*\d+,\s*n\.\s*\d+)\b",
+                r"\b(?:recuperado\s+de|dispon[íi]vel\s+em|acesso\s+em)\b",
+                r"\bet\s+al\.\b",
+            ]
+        )
+        if is_citation_context:
+            logger.debug("Descartando DOI citado em referência ou citação textual: %s", norm_d)
+            continue
+        if thesis_in_progress and not any(lbl in context for lbl in ["doi da tese", "doi da disserta", "doi do trabalho", "handle", "reposit"]):
+            logger.debug("Descartando DOI em monografia/tese (provável artigo citado): %s", norm_d)
+            continue
+        doi_candidates.append(norm_d)
+
+    if doi_candidates:
+        candidates.doi = doi_candidates[0]
+        candidates.doi_source = "cabecalho"
 
     # Extract strict ISSN from front matter
-    issn_match = ISSN_REGEX.search(head_text)
+    issn_match = ISSN_REGEX.search(clean_head_text)
     if issn_match:
         issn_cand = issn_match.group(1).strip()
         if is_valid_issn(issn_cand, strict=False):
@@ -596,7 +648,7 @@ def extract_candidate_metadata(
 
     # Extract ISBN from front matter if not already found in CIP
     if not candidates.isbn:
-        isbn_match = re.search(r"\bISBN(?:-1[03])?[:\s]+([0-9Xx -]{10,17})\b", head_text, re.I)
+        isbn_match = re.search(r"\bISBN(?:-1[03])?[:\s]+([0-9Xx -]{10,17})\b", clean_head_text, re.I)
         if isbn_match:
             raw_val = isbn_match.group(1)
             cleaned_digits = re.sub(r"[^0-9X]", "", raw_val)
@@ -642,6 +694,13 @@ def extract_candidate_metadata(
     if not candidates.raw_title and meaningful_lines:
         candidates.raw_title = meaningful_lines[0]
 
+    # Limpeza de marcadores residuais de página e cabeçalhos no título
+    if candidates.raw_title:
+        clean_cand_t = re.sub(r"^-{3,}\s*\[.*?\]\s*-{3,}\s*", "", candidates.raw_title).strip()
+        clean_cand_t = re.sub(r"^\[.*?\]\s*", "", clean_cand_t).strip(" -—:\t\r\n")
+        if clean_cand_t and len(clean_cand_t) >= 4 and not clean_cand_t.startswith("---"):
+            candidates.raw_title = clean_cand_t
+
     if not candidates.raw_authors and len(meaningful_lines) > 1:
         for l in meaningful_lines[1:5]:
             if any(kw in l.lower() for kw in ["por:", "autor:", "autores:", "authors:"]):
@@ -676,6 +735,7 @@ def extract_candidate_metadata(
         if (
             not candidates.raw_title
             or candidates.raw_title.startswith("---")
+            or "página" in (candidates.raw_title or "").lower()
             or len(candidates.raw_title) < 4
             or any(b in (candidates.raw_title or "").lower() for b in ["elivros", "odinright", "presente obra", "disponibilizada", "compra futura", "fim exclusivo"])
             or (len(cand_words) <= 1 and len(fn_words) >= 2)
@@ -707,7 +767,14 @@ def extract_candidate_metadata(
 class JevClassifier:
     """Classifier and validator leveraging TypeSafe AI's Jev model with calibrated fallback."""
 
-    def __init__(self, api_key: Optional[str] = None, **kwargs):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        modo: str = "auto",
+        cache_path: Optional[Path] = None,
+        cache_file: Optional[Path] = None,
+        **kwargs,
+    ):
         if kwargs:
             import warnings
             for arg in kwargs:
@@ -717,6 +784,46 @@ class JevClassifier:
                     stacklevel=2,
                 )
         self.api_key = api_key or os.getenv("TYPESAFE_API_KEY")
+        self.modo = (modo or "auto").strip().lower()
+        if self.modo in ("remoto", "typesafe", "remote", "jev_remoto"):
+            self.modo = "jev_remoto"
+        elif self.modo in ("local", "deterministico", "heuristico"):
+            self.modo = "local"
+        else:
+            self.modo = "auto"
+
+        if self.modo == "jev_remoto" and not self.api_key:
+            from .config import ErroDeConfiguracao
+            raise ErroDeConfiguracao(
+                "Modo classificador remoto exclusivo ('jev_remoto') selecionado, mas TYPESAFE_API_KEY não foi configurada."
+            )
+
+        self._cache_path = cache_file or cache_path or Path.home() / ".cache" / "organizador_pdf" / "jev_cache.json"
+        self._cache: Dict[str, Any] = {}
+        self._load_cache()
+
+    def _load_cache(self) -> None:
+        try:
+            if self._cache_path.exists():
+                import json
+                self._cache = json.loads(self._cache_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.debug("Não foi possível carregar cache do Jev: %s", e)
+            self._cache = {}
+
+    def _save_cache(self) -> None:
+        try:
+            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+            import json
+            self._cache_path.write_text(json.dumps(self._cache, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.debug("Não foi possível persistir cache do Jev: %s", e)
+
+    @staticmethod
+    def _compute_fingerprint(text: str, total_pages: int) -> str:
+        import hashlib
+        data = f"{text[:3000]}|{total_pages}".encode("utf-8")
+        return hashlib.sha256(data).hexdigest()
 
     def classify_and_validate(
         self,
@@ -740,25 +847,104 @@ class JevClassifier:
             total_pages = total_paginas or 0
             candidates = extract_candidate_metadata(combined_text, pdf_path=pdf_path, total_pages=total_pages)
 
-        # Attempt to run through TypeSafe SDK if API key is present
-        if self.api_key:
+        # 1. Modo remoto exclusivo ('jev_remoto')
+        if self.modo == "jev_remoto":
+            if not self.api_key:
+                from .config import ErroDeConfiguracao
+                raise ErroDeConfiguracao(
+                    "Modo remoto exclusivo ('jev_remoto') selecionado, mas TYPESAFE_API_KEY não foi configurada."
+                )
             try:
                 import typesafe_sdk  # noqa: F401
             except ModuleNotFoundError:
-                logger.warning(
-                    "TYPESAFE_API_KEY configurada, mas o pacote 'typesafe-sdk' não está instalado "
-                    "(instale com: pip install '.[typesafe]'). Utilizando motor determinístico local."
+                raise ErroDeClassificacaoRemota(
+                    "Modo remoto exclusivo ('jev_remoto') selecionado, mas o pacote 'typesafe-sdk' "
+                    "não está instalado. Instale com: pip install '.[typesafe]'"
                 )
-                return self._run_calibrated_fallback(combined_text, candidates, total_pages)
+
+            # Idempotência: verifica cache local para evitar reenvio cobrado após erro de gravação
+            fingerprint = self._compute_fingerprint(combined_text, total_pages)
+            if fingerprint in self._cache:
+                logger.info("Reutilizando classificação Jev em cache para %s.", Path(pdf_path).name)
+                cached = self._cache[fingerprint]
+                raw_data = dict(cached.get("raw_jev_data", {}))
+                raw_data["cached"] = True
+                return JevValidationResult(
+                    classification=cached["classification"],
+                    classification_confidence=cached["confidence"],
+                    probabilities=cached["probabilities"],
+                    candidates=candidates,
+                    provider="typesafe",
+                    raw_jev_data=raw_data,
+                )
 
             try:
-                return self._run_jev_sdk(combined_text, candidates, total_pages)
+                res = self._run_jev_sdk(combined_text, candidates, total_pages)
+                self._cache[fingerprint] = {
+                    "classification": res.classification,
+                    "confidence": res.classification_confidence,
+                    "probabilities": res.probabilities,
+                    "raw_jev_data": res.raw_jev_data,
+                }
+                self._save_cache()
+                return res
             except Exception as e:
-                logger.warning("TypeSafe SDK call failed (%s). Falling back to calibrated rules.", e)
-                return self._run_calibrated_fallback(combined_text, candidates, total_pages)
+                logger.error("Falha irrecuperável na chamada remota TypeSafe AI em modo exclusivo: %s", e)
+                raise ErroDeClassificacaoRemota(f"Falha na chamada ao serviço remoto TypeSafe AI: {e}") from e
+
+        # 2. Modo estritamente local
+        elif self.modo == "local":
+            logger.info("Executando classificador local heurístico para %s (%d páginas).", Path(pdf_path).name, total_pages)
+            res = self._run_calibrated_fallback(combined_text, candidates, total_pages)
+            res.provider = "deterministico_local"
+            return res
+
+        # 3. Modo automático ('auto')
         else:
-            logger.info("Executing calibrated System One validator for %s (%d pages).", Path(pdf_path).name, total_pages)
-            return self._run_calibrated_fallback(combined_text, candidates, total_pages)
+            if self.api_key:
+                try:
+                    import typesafe_sdk  # noqa: F401
+                    sdk_ok = True
+                except ModuleNotFoundError:
+                    sdk_ok = False
+                    logger.warning(
+                        "TYPESAFE_API_KEY configurada, mas 'typesafe-sdk' não está instalado. "
+                        "Utilizando motor heurístico local."
+                    )
+
+                if sdk_ok:
+                    fingerprint = self._compute_fingerprint(combined_text, total_pages)
+                    if fingerprint in self._cache:
+                        cached = self._cache[fingerprint]
+                        raw_data = dict(cached.get("raw_jev_data", {}))
+                        raw_data["cached"] = True
+                        return JevValidationResult(
+                            classification=cached["classification"],
+                            classification_confidence=cached["confidence"],
+                            probabilities=cached["probabilities"],
+                            candidates=candidates,
+                            provider="typesafe",
+                            raw_jev_data=raw_data,
+                        )
+                    try:
+                        res = self._run_jev_sdk(combined_text, candidates, total_pages)
+                        self._cache[fingerprint] = {
+                            "classification": res.classification,
+                            "confidence": res.classification_confidence,
+                            "probabilities": res.probabilities,
+                            "raw_jev_data": res.raw_jev_data,
+                        }
+                        self._save_cache()
+                        return res
+                    except Exception as e:
+                        logger.warning("Falha na chamada TypeSafe SDK em modo auto (%s). Utilizando motor heurístico local.", e)
+                        res = self._run_calibrated_fallback(combined_text, candidates, total_pages)
+                        res.provider = "deterministico_local"
+                        return res
+
+            res = self._run_calibrated_fallback(combined_text, candidates, total_pages)
+            res.provider = "deterministico_local"
+            return res
 
     def _run_jev_sdk(self, text: str, candidates: ExtractedCandidates, total_pages: int = 0) -> JevValidationResult:
         """Call TypeSafe AI Jev System One model using Choice and Noul primitives."""
@@ -781,14 +967,17 @@ class JevClassifier:
             "classification": Choice(
                 instructions=(
                     "Classifique esta publicação em exatamente uma das categorias: "
-                    "artigo, livro, tese, revista, apostila, outros."
+                    "artigo, livro, tese, revista, apostila, capitulo_livro, relatorio, trabalho_evento, outros."
                 ),
                 criteria={
                     "artigo": "Artigo científico ou acadêmico com resumo/abstract, referências bibliográficas, DOI ou filiação institucional",
-                    "livro": "Livro comercial publicado com ISBN, editora comercial ou catálogo editorial",
+                    "livro": "Livro comercial completo publicado com ISBN, editora comercial ou catálogo editorial",
                     "tese": "Tese de doutorado, dissertação de mestrado ou trabalho de conclusão de curso acadêmico",
                     "revista": "Revista periódica, magazine informativo, colunas de variedades ou publicação seriada",
                     "apostila": "Apostila didática, material didático de curso/EAD, notas de aula para estudantes",
+                    "capitulo_livro": "Capítulo de livro, excerto, parte ou trecho de coletânea com obra organizadora ou paginação parcial",
+                    "relatorio": "Relatório técnico, de pesquisa, governamental ou institucional",
+                    "trabalho_evento": "Trabalho publicado em anais de evento científico, congresso, simpósio ou conferência",
                     "outros": "Documento não enquadrado nas categorias anteriores",
                 },
             ),
@@ -810,7 +999,7 @@ class JevClassifier:
             val = str(choice_obj.choice).lower().strip()
             if val == "artigo_cientifico":
                 val = "artigo"
-            if val in ("artigo", "livro", "tese", "revista", "apostila", "outros"):
+            if val in ("artigo", "livro", "tese", "revista", "apostila", "capitulo_livro", "relatorio", "trabalho_evento", "outros"):
                 chosen_class = val  # type: ignore
             chosen_confidence = float(getattr(choice_obj, "confidence", 0.95))
 
@@ -828,6 +1017,7 @@ class JevClassifier:
             classification_confidence=chosen_confidence,
             probabilities=probabilities,
             candidates=candidates,
+            provider="typesafe",
             raw_jev_data={"choice": chosen_class, "confidence": chosen_confidence, "nouls": probabilities},
         )
 
@@ -846,6 +1036,9 @@ class JevClassifier:
             "tese": 0.0,
             "revista": 0.0,
             "apostila": 0.0,
+            "capitulo_livro": 0.0,
+            "relatorio": 0.0,
+            "trabalho_evento": 0.0,
             "outros": 0.1,
         }
 
@@ -916,7 +1109,44 @@ class JevClassifier:
         if any(w in lower_text for w in ["revista", "magazine", "edição n", "ano i", "ano ii"]) and total_pages <= 60:
             scores["revista"] += 2.0
 
-        # 6. Scanned / Short / Image-only PDF Heuristics
+        # 6. Capítulo de Livro / Excerto de Obra Maior
+        capitulo_markers = [
+            r"\bcap[íi]tulo\s+\d+\b",
+            r"\bin:\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ\s,-]+?\((?:org|coord|ed)\.?\)",
+            r"\bcolet[âa]nea\b",
+            r"\bexcerto\b",
+        ]
+        if any(re.search(pat, lower_text) for pat in capitulo_markers) and total_pages <= 50:
+            scores["capitulo_livro"] += 12.0
+            scores["livro"] -= 4.0
+
+        # 7. Relatório Técnico / Institucional
+        relatorio_markers = [
+            r"relat[oó]rio\s+t[eé]cnico",
+            r"relat[oó]rio\s+de\s+pesquisa",
+            r"relat[oó]rio\s+final",
+            r"relat[oó]rio\s+anual",
+            r"technical\s+report",
+            r"working\s+paper",
+            r"documento\s+de\s+trabalho",
+        ]
+        if any(re.search(pat, lower_text) for pat in relatorio_markers) and total_pages <= 100:
+            scores["relatorio"] += 11.0
+            scores["artigo"] -= 5.0
+
+        # 8. Trabalho em Evento / Anais
+        evento_markers = [
+            r"anais\s+do\s+",
+            r"proceedings\s+of",
+            r"congresso\s+nacional",
+            r"simp[oó]sio\s+brasileiro",
+            r"encontro\s+nacional",
+            r"trabalho\s+apresentado\s+no",
+        ]
+        if any(re.search(pat, lower_text) for pat in evento_markers) and total_pages <= 30:
+            scores["trabalho_evento"] += 10.0
+
+        # 9. Scanned / Short / Image-only PDF Heuristics
         if len(text.strip()) < 300:
             if total_pages > 60:
                 scores["livro"] += 5.0
@@ -972,6 +1202,7 @@ class JevClassifier:
             classification_confidence=confidence,
             probabilities=probabilities,
             candidates=candidates,
+            provider="deterministico_local",
             raw_jev_data={
                 "calibrated_scores": scores,
                 "best_class": best_class,

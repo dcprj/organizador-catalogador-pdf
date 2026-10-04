@@ -35,21 +35,33 @@ class Config:
     #: Se ausente (None), o classificador Jev opera 100% localmente via regras
     #: probabilísticas calibradas (System One Heuristics).
     typesafe_api_key: Optional[str] = None
+    #: Modo do classificador: 'auto' (usa TypeSafe se chave presente, senão local),
+    #: 'local' (estritamente heurísticas locais), ou 'jev_remoto' (estritamente TypeSafe AI).
+    classificador: str = "auto"
 
     @property
     def modelo(self) -> str:
         """Identificador do modelo classificador em execução."""
+        if self.classificador in ("jev_remoto", "remoto", "typesafe"):
+            return "jev-typesafe"
+        if self.classificador == "local":
+            return "jev-system-one-local"
         return "jev-typesafe" if self.typesafe_api_key else "jev-system-one-local"
 
     @property
     def provedor(self) -> str:
         """Provedor do motor de classificação."""
+        if self.classificador in ("jev_remoto", "remoto", "typesafe"):
+            return "typesafe"
+        if self.classificador == "local":
+            return "deterministico_local"
         return "typesafe" if self.typesafe_api_key else "deterministico_local"
 
     @property
     def total_offline(self) -> bool:
         """Indica se a execução é 100% desconectada da rede (sem consultas bibliográficas e sem TypeSafe AI)."""
-        return (not self.verificar_online) and (not self.typesafe_api_key)
+        sem_typesafe = (not self.typesafe_api_key) or self.classificador == "local"
+        return (not self.verificar_online) and sem_typesafe
 
     @classmethod
     def do_ambiente(
@@ -60,6 +72,7 @@ class Config:
         max_paginas: Optional[int] = None,
         max_caracteres: Optional[int] = None,
         typesafe_api_key: Optional[str] = None,
+        classificador: Optional[str] = None,
         **kwargs: Any,
     ) -> "Config":
         """Carrega a configuração do `.env` e do ambiente.
@@ -80,13 +93,30 @@ class Config:
         if caminho_env:
             load_dotenv(dotenv_path=caminho_env, override=False)
 
-        key = (
-            typesafe_api_key
-            or os.getenv("TYPESAFE_API_KEY")
-            or os.getenv("ORGPDF_TYPESAFE_API_KEY")
-        )
+        key = typesafe_api_key or os.getenv("TYPESAFE_API_KEY")
+        if not key and os.getenv("ORGPDF_TYPESAFE_API_KEY"):
+            key = os.getenv("ORGPDF_TYPESAFE_API_KEY")
         if key:
             key = key.strip() or None
+
+        classif_bruto = (
+            classificador
+            or os.getenv("ORGPDF_CLASSIFICADOR")
+            or os.getenv("CLASSIFICADOR")
+            or "auto"
+        ).strip().lower()
+        if classif_bruto in ("remoto", "typesafe", "jev_remoto", "remote"):
+            classif = "jev_remoto"
+        elif classif_bruto in ("local", "deterministico", "heuristico"):
+            classif = "local"
+        else:
+            classif = "auto"
+
+        if classif == "jev_remoto" and not key:
+            raise ErroDeConfiguracao(
+                "Modo classificador remoto exclusivo ('jev_remoto') selecionado, "
+                "mas TYPESAFE_API_KEY não foi configurada no ambiente nem no arquivo .env."
+            )
 
         return cls(
             max_paginas=_inteiro_positivo("ORGPDF_MAX_PAGINAS", 10, cli=max_paginas),
@@ -99,6 +129,7 @@ class Config:
                 else _booleano("ORGPDF_VERIFICAR_ONLINE", True)
             ),
             typesafe_api_key=key,
+            classificador=classif,
         )
 
 

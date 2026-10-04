@@ -238,6 +238,8 @@ def gerar_markdown(
         "total_paginas": total_paginas,
         "catalogado_em": date.today().isoformat(),
         "provedor_extracao": provedor_extracao,
+        "provedor_classificador": getattr(metadados, "provedor_classificador", None),
+        "doi_source": getattr(metadados, "doi_source", None),
         "extraido_via_fallback": extraido_via_fallback,
         "confidence": metadados.confidence,
         "needs_review": metadados.needs_review,
@@ -358,6 +360,8 @@ class PipelineOrganizer:
         max_paginas: int = 10,
         max_caracteres: int = 30000,
         estrutura: str = "plana",
+        typesafe_api_key: Optional[str] = None,
+        classificador_modo: str = "auto",
         **kwargs,
     ):
         if kwargs:
@@ -372,7 +376,7 @@ class PipelineOrganizer:
         self.max_caracteres = max_caracteres
         self.estrutura = estrutura
         rede = enriquecimento_online if online is None else online
-        self.classifier = classifier or JevClassifier()
+        self.classifier = classifier or JevClassifier(api_key=typesafe_api_key, modo=classificador_modo)
         self.enricher = enricher or MetadataEnricher(online=rede)
 
     def process_pdf(

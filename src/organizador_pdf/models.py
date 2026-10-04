@@ -24,6 +24,8 @@ class TipoPublicacao(str, Enum):
     APOSTILA = "Apostila"
     REVISTA = "Revista"
     CAPITULO_LIVRO = "Capítulo de Livro"
+    RELATORIO = "Relatório"
+    TRABALHO_EVENTO = "Trabalho em Evento"
     OUTROS = "Outros"
 
     @classmethod
@@ -42,6 +44,10 @@ class TipoPublicacao(str, Enum):
             return cls.LIVRO
         if "capítulo" in v or "capitulo" in v:
             return cls.CAPITULO_LIVRO
+        if "relatorio" in v or "relatório" in v or "report" in v:
+            return cls.RELATORIO
+        if "evento" in v or "anais" in v or "congresso" in v or "simposio" in v or "simpósio" in v:
+            return cls.TRABALHO_EVENTO
         if "apostila" in v or "curso" in v or "didático" in v or "didatico" in v:
             return cls.APOSTILA
         if "revista" in v or "periodico" in v or "periódico" in v:
@@ -58,6 +64,8 @@ PLURAL_POR_TIPO: dict[TipoPublicacao, str] = {
     TipoPublicacao.APOSTILA: "Apostilas",
     TipoPublicacao.REVISTA: "Revistas",
     TipoPublicacao.CAPITULO_LIVRO: "Capítulos de Livro",
+    TipoPublicacao.RELATORIO: "Relatórios",
+    TipoPublicacao.TRABALHO_EVENTO: "Trabalhos em Eventos",
     TipoPublicacao.OUTROS: "Outros",
 }
 
@@ -67,9 +75,11 @@ PublicationType = Literal[
     "tese",
     "revista",
     "apostila",
+    "capitulo_livro",
+    "relatorio",
+    "trabalho_evento",
     "outros",
     "artigo_cientifico",
-    "capitulo_livro",
     "dissertacao_tese",
 ]
 
@@ -163,6 +173,7 @@ class ExtractedCandidates(BaseModel):
     raw_city: Optional[str] = None
     raw_area: Optional[str] = None
     doi: Optional[str] = None
+    doi_source: Optional[str] = None
     isbn: Optional[str] = None
     issn: Optional[str] = None
     sample_text: str = ""
@@ -184,6 +195,10 @@ class JevValidationResult(BaseModel):
         }
     )
     candidates: ExtractedCandidates = Field(default_factory=ExtractedCandidates)
+    provider: str = Field(
+        default="deterministico_local",
+        description="Motor que realizou a classificação ('typesafe' ou 'deterministico_local').",
+    )
     raw_jev_data: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -236,6 +251,8 @@ class Metadados(BaseModel):
     review_reasons: list[str] = Field(default_factory=list)
     source_apis: list[str] = Field(default_factory=list)
     confidence: float = 1.0
+    provedor_classificador: Optional[str] = None
+    doi_source: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod

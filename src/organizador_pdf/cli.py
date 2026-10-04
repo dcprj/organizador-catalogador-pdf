@@ -149,6 +149,11 @@ def processar(
         "--plana",
         help="Atalho para organização em pasta plana por categoria (<destino>/<tipo>/).",
     ),
+    classificador: Optional[str] = typer.Option(
+        None,
+        "--classificador",
+        help="Modo de classificação: 'auto' (TypeSafe se disponível, senão local), 'local' (apenas heurísticas locais), ou 'remoto'/'jev_remoto' (exclusivo TypeSafe remoto, sem fallback silencioso).",
+    ),
     version: Optional[bool] = typer.Option(
         None,
         "--version",
@@ -159,7 +164,7 @@ def processar(
 ) -> None:
     """Executa a catalogação e organização do lote de PDFs."""
     configurar_logs(arquivo_log=arquivo_log, verbose=verbose)
-    config = Config.do_ambiente()
+    config = Config.do_ambiente(classificador=classificador)
     enriquecimento_online = config.verificar_online
 
     if plana:
@@ -186,6 +191,7 @@ def processar(
             quarantine=quarantine,
             subpasta_markdown=subpasta_markdown,
             dry_run=dry_run,
+            classificador=config.classificador,
         )
         raise typer.Exit(code=cod)
 
@@ -556,10 +562,10 @@ def _relatorio(
         f"[red]{len(falhas)} falha(s)[/] · {len(resultados)} total"
     )
     if sucessos:
-        typesafe_count = sum(1 for r in sucessos if getattr(r, "provedor_usado", "") == "typesafe")
+        typesafe_count = sum(1 for r in sucessos if getattr(r, "provedor_usado", "") in ("typesafe", "jev_remoto"))
         locais = len(sucessos) - typesafe_count
         if typesafe_count > 0:
-            resumo += f"\n[dim]{locais} classificado(s) localmente (Jev System One) · {typesafe_count} via TypeSafe AI[/]"
+            resumo += f"\n[dim]{locais} classificado(s) localmente (Jev System One) · {typesafe_count} via TypeSafe AI (remoto)[/]"
         else:
             resumo += f"\n[dim]{len(sucessos)} classificado(s) pelo motor determinístico local (Jev System One)[/]"
     if avisos:

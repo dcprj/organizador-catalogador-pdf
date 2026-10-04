@@ -12,6 +12,7 @@ import os
 import re
 import logging
 import threading
+import unicodedata
 from typing import Optional, List, Dict, Any, Set, Tuple
 import urllib.parse
 import requests
@@ -229,6 +230,13 @@ class MetadataEnricher:
         doi_prob = probabilities.get("doi", 0.0)
         isbn_prob = probabilities.get("isbn", 0.0)
 
+        cand_area = candidates.raw_area
+        if cand_area:
+            norm_area = unicodedata.normalize("NFKD", cand_area).encode("ascii", "ignore").decode("ascii").lower()
+            clean_token = re.sub(r"[^a-z]", "", norm_area)
+            if clean_token in ("titulo", "autor", "serie", "assunto", "orientador"):
+                cand_area = None
+
         # Baseline metadata initialized with candidate extraction
         metadata = PublicationMetadata(
             title=title_candidate or "Publicação Sem Título",
@@ -238,9 +246,11 @@ class MetadataEnricher:
             edition=candidates.raw_edition,
             year=candidates.raw_year,
             city=candidates.raw_city,
-            area=candidates.raw_area,
+            area=cand_area,
             classification=jev_result.classification,
             identifiers=Identifiers(doi=doi, isbn=isbn, issn=issn),
+            provedor_classificador=getattr(jev_result, "provider", None),
+            doi_source=getattr(candidates, "doi_source", None),
         )
 
         if not self.online:
@@ -331,6 +341,13 @@ class MetadataEnricher:
         if metadata.title in ("Sem Título", "Publicação Sem Título") or len(metadata.title) < 4:
             metadata.needs_review = True
             metadata.review_reasons.append("Documento sem título bibliográfico identificável")
+        elif metadata.title and (
+            metadata.title.startswith("---")
+            or "page break" in metadata.title.lower()
+            or re.search(r"\bp[áa]gina\s*\d+\b", metadata.title, re.I)
+        ):
+            metadata.needs_review = True
+            metadata.review_reasons.append("Título contaminado com marcador de página ou cabeçalho")
 
     def _apply_title_fallback(
         self,
@@ -949,5 +966,9 @@ class MetadataEnricher:
             base.identifiers.issn = extra["issn"]
 
         # Thematic Area
-        if extra.get("area") and not base.area:
-            base.area = extra["area"]
+        if extra.get("area") and (not base.area or base.area == "Outros"):
+            cand_extra_area = str(extra["area"]).strip()
+            norm_ea = unicodedata.normalize("NFKD", cand_extra_area).encode("ascii", "ignore").decode("ascii").lower()
+            clean_token = re.sub(r"[^a-z]", "", norm_ea)
+            if clean_token not in ("titulo", "autor", "serie", "assunto", "orientador"):
+                base.area = cand_extra_area
