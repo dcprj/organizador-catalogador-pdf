@@ -70,8 +70,8 @@ organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --mover --subpasta-md M
 # Processamento concorrente para grandes lotes
 organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --paralelo 4
 
-# Modo 100% offline (bloqueia consultas a APIs externas)
-organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --offline
+# Desativa consultas externas a bases bibliográficas (enriquecimento)
+organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --sem-enriquecimento-online
 
 # Retomada automática após interrupção (Ctrl+C ou queda)
 organizador-pdf --resume
@@ -88,7 +88,7 @@ organizador-pdf --resume
 | `--recursive` / `-r` | `True` | Varredura recursiva em subpastas (`--no-recursive` desativa) |
 | `--mover` | `False` | Move o arquivo PDF original em vez de copiar |
 | `--subpasta-md` | `None` | Grava os arquivos `.md` em subpasta espelho |
-| `--offline` | `False` | Desativa consultas externas a APIs bibliográficas (`--online` reativa) |
+| `--sem-enriquecimento-online` | `False` | Desativa consultas a APIs bibliográficas (mantém metadados locais) |
 | `--paralelo` / `-j` | `1` | Número de workers concorrentes para processar o lote |
 | `--quarantine` | `True` | Roteia itens de baixa confiança para `revisao_manual/` |
 | `--limite` / `-n` | `None` | Limita o número máximo de arquivos processados |
@@ -144,7 +144,7 @@ Os testes são automatizados via `pytest` e não dependem de chamadas ativas de 
 pytest
 ```
 
-Resultado esperado: **179 testes passando com 100% de sucesso**.
+Resultado esperado: **181 testes passando com 100% de sucesso**.
 
 ---
 

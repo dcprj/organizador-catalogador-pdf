@@ -656,8 +656,9 @@ def extract_candidate_metadata(
 class JevClassifier:
     """Classifier and validator leveraging TypeSafe AI's Jev model with calibrated fallback."""
 
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("TYPESAFE_API_KEY")
+    def __init__(self, api_key: Optional[str] = None, permitir_rede: bool = True):
+        self.permitir_rede = permitir_rede
+        self.api_key = (api_key or os.getenv("TYPESAFE_API_KEY")) if permitir_rede else None
 
     def classify_and_validate(self, pdf_path: str) -> JevValidationResult:
         """Analyze PDF structure, sample text, and candidate metadata."""

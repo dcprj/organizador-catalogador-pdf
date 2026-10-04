@@ -256,7 +256,7 @@ def test_cli_new_flags_help():
     assert "--resume" in proc.stdout
     assert "--recursive" in proc.stdout
     assert "--no-quarantine" in proc.stdout
-    assert "--offline" in proc.stdout
+    assert "--sem-enriquecimento-online" in proc.stdout
 
 
 def test_metadata_enricher_offline_mode():
@@ -287,13 +287,41 @@ def test_metadata_enricher_offline_mode():
 
 
 def test_cli_typer_flags_help():
-    """Verify that organizador-pdf CLI Typer includes --offline and --input/--output."""
+    """Verify that organizador-pdf CLI Typer includes --sem-enriquecimento-online and --input/--output."""
     from typer.testing import CliRunner
     from src.organizador_pdf.cli import app
 
     runner = CliRunner(env={"COLUMNS": "160"})
     res = runner.invoke(app, ["--help"])
     assert res.exit_code == 0
-    assert "--offline" in res.output
+    assert "--sem-enriquecimento-online" in res.output
     assert "--input" in res.output
     assert "--output" in res.output
+
+
+def test_resume_preserva_quarantine_e_enriquecimento(tmp_path: Path):
+    """Verify that EstadoDeExecucao saves and restores quarantine and enriquecimento_online."""
+    from src.organizador_pdf.estado import EstadoDeExecucao, ParametrosSalvos
+
+    params = ParametrosSalvos(
+        origem=str(tmp_path / "origem"),
+        destino=str(tmp_path / "destino"),
+        quarantine=False,
+        enriquecimento_online=False,
+    )
+    estado = EstadoDeExecucao(parametros=params)
+    estado.salvar()
+
+    recarregado = EstadoDeExecucao.carregar()
+    assert recarregado is not None
+    assert recarregado.parametros.quarantine is False
+    assert recarregado.parametros.enriquecimento_online is False
+
+
+def test_jev_classifier_blocks_network_when_permitir_rede_false(monkeypatch):
+    """Verify that JevClassifier zeroes API key when permitir_rede is False."""
+    from src.organizador_pdf.classifier_jev import JevClassifier
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "dummy-secret-key")
+    classifier = JevClassifier(permitir_rede=False)
+    assert classifier.api_key is None

@@ -235,6 +235,7 @@ def validate_and_process_pdf(
     interactive: bool = True,
     move_original: bool = False,
     api_key: Optional[str] = None,
+    sem_enriquecimento_online: bool = False,
 ) -> bool:
     """Process a single PDF through the complete interactive validation pipeline."""
     pdf_file = Path(pdf_path).resolve()
@@ -273,22 +274,29 @@ def validate_and_process_pdf(
 
     # Step 4: Classification
     print_step(4, "Processando a classificação com Jev (System One)")
+    actual_key = None if sem_enriquecimento_online else api_key
     jev_result = explain_jev_classification(
         pdf_path=str(pdf_file),
         combined_text=combined_text,
         candidates=candidates,
         total_pages=info["total_pages"],
-        api_key=api_key,
+        api_key=actual_key,
     )
 
     # Step 5: External API Enrichment
-    print_step(5, "Enriquecendo metadados via APIs Públicas (Crossref, Google Books, OpenLibrary, OpenAlex)")
-    enricher = MetadataEnricher()
-    metadata = enricher.enrich(jev_result)
-    if metadata.source_apis:
-        print(f"  {GREEN}✓ APIs consultadas com sucesso:{RESET} {', '.join(metadata.source_apis)}")
+    if sem_enriquecimento_online:
+        print_step(5, "Enriquecimento externo desativado (--sem-enriquecimento-online)")
+        enricher = MetadataEnricher(online=False)
+        metadata = enricher.enrich(jev_result)
+        print(f"  {YELLOW}ℹ Consultas a APIs externas desativadas pelo usuário.{RESET}")
     else:
-        print(f"  {YELLOW}ℹ Nenhuma API externa retornou novos dados adicionais (mantidos os dados do documento).{RESET}")
+        print_step(5, "Enriquecendo metadados via APIs Públicas (Crossref, Google Books, OpenLibrary, OpenAlex)")
+        enricher = MetadataEnricher(online=True)
+        metadata = enricher.enrich(jev_result)
+        if metadata.source_apis:
+            print(f"  {GREEN}✓ APIs consultadas com sucesso:{RESET} {', '.join(metadata.source_apis)}")
+        else:
+            print(f"  {YELLOW}ℹ Nenhuma API externa retornou novos dados adicionais (mantidos os dados do documento).{RESET}")
 
     # Format ABNT
     abnt_ref = ABNTFormatter.format(metadata)
@@ -349,6 +357,7 @@ def run_interactive_validator(
     output_dir: str = "/Users/dario/Desktop/destino",
     interactive: bool = True,
     move_original: bool = False,
+    sem_enriquecimento_online: bool = False,
 ):
     """Scan input folder and process all PDFs interactively."""
     print_banner()
@@ -358,6 +367,7 @@ def run_interactive_validator(
     print(f"📁 Pasta de Origem : {BOLD}{in_path}{RESET}")
     print(f"🎯 Pasta de Destino: {BOLD}{out_path}{RESET}")
     print(f"📦 Mover original  : {'Sim' if move_original else 'Não (Copiando)'}")
+    print(f"🌐 APIs Externas   : {'Desativadas (--sem-enriquecimento-online)' if sem_enriquecimento_online else 'Ativas'}")
     print(f"🤝 Modo Interativo : {'Habilitado (solicita confirmação)' if interactive else 'Desabilitado'}\n")
 
     if not in_path.exists() or not in_path.is_dir():
@@ -382,6 +392,7 @@ def run_interactive_validator(
             output_base_dir=str(out_path),
             interactive=interactive,
             move_original=move_original,
+            sem_enriquecimento_online=sem_enriquecimento_online,
         )
 
     print(f"\n{BOLD}{GREEN}{'=' * 75}{RESET}")

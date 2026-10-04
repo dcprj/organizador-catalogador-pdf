@@ -106,10 +106,11 @@ def processar(
         "--quarantine/--no-quarantine",
         help="Direciona arquivos com avisos de divergência ou baixa confiança para revisao_manual/ (padrão: ligado).",
     ),
-    online: bool = typer.Option(
-        True,
-        "--online/--offline",
-        help="Permite ou desativa consultas a APIs públicas (Crossref, Google Books, Brasil API) para enriquecimento bibliográfico (padrão: online).",
+    sem_enriquecimento_online: bool = typer.Option(
+        False,
+        "--sem-enriquecimento-online",
+        "--no-enrichment",
+        help="Desativa consultas a APIs públicas (Crossref, Google Books, Brasil API), mantendo apenas metadados locais.",
     ),
     paralelo: int = typer.Option(
         1,
@@ -153,6 +154,8 @@ def processar(
 ) -> None:
     """Executa a catalogação e organização do lote de PDFs."""
     configurar_logs(arquivo_log=arquivo_log, verbose=verbose)
+    config = Config.do_ambiente()
+    enriquecimento_online = (not sem_enriquecimento_online) and config.verificar_online
 
     if interactive:
         if origem is None or destino is None:
@@ -164,6 +167,7 @@ def processar(
             output_dir=str(destino.resolve()),
             interactive=True,
             move_original=mover,
+            sem_enriquecimento_online=not enriquecimento_online,
         )
         raise typer.Exit(code=cod)
 
@@ -181,6 +185,8 @@ def processar(
         mover = estado.parametros.mover
         subpasta_markdown = estado.parametros.subpasta_markdown
         paralelo = estado.parametros.paralelo or paralelo
+        quarantine = getattr(estado.parametros, "quarantine", quarantine)
+        enriquecimento_online = getattr(estado.parametros, "enriquecimento_online", enriquecimento_online)
     else:
         if origem is None or destino is None:
             saida.print("[bold red]--origem e --destino são obrigatórios (ou use --resume).[/]")
@@ -195,6 +201,8 @@ def processar(
                     mover=mover,
                     subpasta_markdown=subpasta_markdown,
                     paralelo=paralelo,
+                    quarantine=quarantine,
+                    enriquecimento_online=enriquecimento_online,
                 )
             )
 
@@ -235,7 +243,7 @@ def processar(
         dry_run=dry_run,
         mover=mover,
         paralelo=paralelo,
-        online=online,
+        enriquecimento_online=enriquecimento_online,
     )
 
     opcoes = OpcoesDoPipeline(
@@ -244,9 +252,9 @@ def processar(
         mover=mover,
         subpasta_markdown=subpasta_markdown,
         quarantine=quarantine,
-        online=online,
+        enriquecimento_online=enriquecimento_online,
     )
-    pipeline = Pipeline(opcoes=opcoes)
+    pipeline = Pipeline(config=config, opcoes=opcoes)
 
     # 4. Processamento com barra de progresso
     resultados_dict, interrompido = _executar_lote(
@@ -351,16 +359,21 @@ def _cabecalho(
     dry_run: bool,
     mover: bool,
     paralelo: int = 1,
-    online: bool = True,
+    enriquecimento_online: bool = True,
 ) -> None:
+    status_enriquecimento = (
+        "[green]Ativo[/] (Brasil API, Google Books, Crossref)"
+        if enriquecimento_online
+        else "[yellow]Desativado[/] (--sem-enriquecimento-online)"
+    )
     linhas = [
-        f"[bold]Origem:[/]  {origem.resolve()}",
-        f"[bold]Destino:[/] {destino.resolve()}",
-        f"[bold]PDFs:[/]    {len(pdfs)}",
-        "[bold]Motor:[/]   Determinístico Local (CIP, ABNT NBR 6023)",
-        f"[bold]Rede:[/]    " + ("[green]Online[/] (consultas a APIs públicas ativas)" if online else "[yellow]100% Offline[/] (consultas externas desativadas)"),
-        "[bold]Análise:[/] 10 primeiras + 10 últimas páginas (sem converter miolo)",
-        f"[bold]Modo:[/]    " + ("mover" if mover else "copiar"),
+        f"[bold]Origem:[/]         {origem.resolve()}",
+        f"[bold]Destino:[/]        {destino.resolve()}",
+        f"[bold]PDFs:[/]           {len(pdfs)}",
+        "[bold]Motor:[/]          Determinístico Local (CIP, ABNT NBR 6023)",
+        f"[bold]Enriquecimento:[/] {status_enriquecimento}",
+        "[bold]Análise:[/]        10 primeiras + 10 últimas páginas",
+        f"[bold]Modo:[/]           " + ("mover" if mover else "copiar"),
     ]
     if paralelo > 1:
         linhas.append(f"[bold]Paralelo:[/] até {paralelo} arquivo(s) simultâneos")

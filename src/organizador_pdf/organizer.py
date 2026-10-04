@@ -319,10 +319,12 @@ class PipelineOrganizer:
         self,
         classifier: Optional[JevClassifier] = None,
         enricher: Optional[MetadataEnricher] = None,
-        online: bool = True,
+        enriquecimento_online: bool = True,
+        online: Optional[bool] = None,
     ):
-        self.classifier = classifier or JevClassifier()
-        self.enricher = enricher or MetadataEnricher(online=online)
+        rede = enriquecimento_online if online is None else online
+        self.classifier = classifier or JevClassifier(permitir_rede=rede)
+        self.enricher = enricher or MetadataEnricher(online=rede)
 
     def process_pdf(
         self,

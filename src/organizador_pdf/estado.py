@@ -31,6 +31,8 @@ class ParametrosSalvos:
     mover: bool = False
     subpasta_markdown: Optional[str] = None
     paralelo: int = 1
+    quarantine: bool = True
+    enriquecimento_online: bool = True
     modelo: Optional[str] = None
     ollama_url: Optional[str] = None
     provedor: Optional[str] = None

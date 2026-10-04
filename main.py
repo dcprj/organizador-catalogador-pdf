@@ -75,10 +75,18 @@ Classificações Suportadas:
         help="Caminho da pasta de destino onde os arquivos serão organizados por classificação.",
     )
     parser.add_argument(
-        "--keep-original",
+        "--mover",
+        "--move-original",
+        dest="mover",
         action="store_true",
         default=False,
-        help="Se informado, copia os PDFs em vez de movê-los da pasta de origem.",
+        help="Move os PDFs originais para o destino em vez de copiá-los (padrão: copiar).",
+    )
+    parser.add_argument(
+        "--keep-original",
+        action="store_true",
+        default=True,
+        help="Mantém os PDFs originais na pasta de origem (padrão do aplicativo).",
     )
     parser.add_argument(
         "--dry-run",
@@ -95,9 +103,9 @@ Classificações Suportadas:
     parser.add_argument(
         "--recursive",
         "-r",
-        action="store_true",
-        default=False,
-        help="Busca recursivamente arquivos PDF em subpastas da pasta de origem.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Busca recursivamente arquivos PDF em subpastas da pasta de origem (padrão: ligado).",
     )
     parser.add_argument(
         "--no-quarantine",
@@ -106,12 +114,12 @@ Classificações Suportadas:
         help="Desativa o direcionamento para revisao_manual/ para documentos com baixa confiança ou metadados incertos.",
     )
     parser.add_argument(
-        "--offline",
-        "--no-online",
-        dest="offline",
+        "--sem-enriquecimento-online",
+        "--no-enrichment",
+        dest="sem_enriquecimento_online",
         action="store_true",
         default=False,
-        help="Desativa consultas externas a APIs públicas (Crossref, Google Books, Brasil API), rodando 100%% offline.",
+        help="Desativa consultas a APIs públicas (Crossref, Google Books, Brasil API), mantendo apenas metadados locais.",
     )
     parser.add_argument(
         "--verbose",
@@ -151,34 +159,37 @@ def main() -> int:
     if not args.dry_run:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    mover_original = bool(args.mover)
+
     if args.interactive:
         from scripts.interactive_validator import run_interactive_validator
         return run_interactive_validator(
             input_dir=str(input_dir),
             output_dir=str(output_dir),
             interactive=True,
-            move_original=not args.keep_original,
+            move_original=mover_original,
+            sem_enriquecimento_online=args.sem_enriquecimento_online,
         )
 
     print("\n" + "=" * 75)
     print("🚀 PIPELINE DE PROCESSAMENTO E CONVERSÃO DE PDF PARA MARKDOWN")
     print("=" * 75)
-    print(f"📂 Origem     : {input_dir}")
-    print(f"🎯 Destino    : {output_dir}")
-    print(f"📦 Mover      : {'Não (copiando)' if args.keep_original else 'Sim (movendo original)'}")
-    print(f"🔍 Recursivo  : {'Sim (--recursive)' if args.recursive else 'Não (somente raiz)'}")
-    print(f"🔄 Retomada   : {'Ativa (--resume)' if args.resume else 'Padrão'}")
-    print(f"🛡️  Quarentena : {'Desativada (--no-quarantine)' if args.no_quarantine else 'Ativa (revisao_manual/)'}")
-    print(f"🌐 Rede        : {'100% Offline (--offline)' if args.offline else 'Online (APIs públicas ativas)'}")
+    print(f"📂 Origem         : {input_dir}")
+    print(f"🎯 Destino        : {output_dir}")
+    print(f"📦 Mover          : {'Sim (movendo original)' if mover_original else 'Não (copiando)'}")
+    print(f"🔍 Recursivo      : {'Sim' if args.recursive else 'Não (somente raiz)'}")
+    print(f"🔄 Retomada       : {'Ativa (--resume)' if args.resume else 'Padrão'}")
+    print(f"🛡️  Quarentena     : {'Desativada (--no-quarantine)' if args.no_quarantine else 'Ativa (revisao_manual/)'}")
+    print(f"🌐 Enriquecimento : {'Desativado (--sem-enriquecimento-online)' if args.sem_enriquecimento_online else 'Ativo (APIs públicas)'}")
     if args.dry_run:
-        print(f"⚠️  MODO      : SIMULAÇÃO / DRY-RUN (Nenhum arquivo será gravado ou movido)")
+        print(f"⚠️  MODO          : SIMULAÇÃO / DRY-RUN (Nenhum arquivo será gravado ou movido)")
     print("=" * 75 + "\n")
 
-    organizer = PipelineOrganizer(online=not args.offline)
+    organizer = PipelineOrganizer(enriquecimento_online=not args.sem_enriquecimento_online)
     results = organizer.process_directory(
         input_dir=str(input_dir),
         output_dir=str(output_dir),
-        move_original=not args.keep_original,
+        move_original=mover_original,
         dry_run=args.dry_run,
         recursive=args.recursive,
         resume=args.resume,
