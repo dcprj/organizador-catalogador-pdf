@@ -466,6 +466,7 @@ def test_classify_and_validate_receives_limits_from_interactive_validator(tmp_pa
         pdf_path=str(pdf_path),
         output_base_dir=str(out_dir),
         interactive=False,
+        verificar_online=False,
         max_paginas=4,
         max_caracteres=2500,
     )
@@ -492,6 +493,7 @@ def test_classify_and_validate_receives_limits_from_cli_pipeline(tmp_path: Path,
 
     monkeypatch.setenv("ORGPDF_MAX_PAGINAS", "5")
     monkeypatch.setenv("ORGPDF_MAX_CARACTERES", "10000")
+    monkeypatch.setenv("ORGPDF_VERIFICAR_ONLINE", "false")
 
     calls = []
     orig = cj.JevClassifier.classify_and_validate
@@ -526,6 +528,7 @@ def test_classify_and_validate_receives_limits_from_main(tmp_path: Path, sample_
 
     monkeypatch.setenv("ORGPDF_MAX_PAGINAS", "7")
     monkeypatch.setenv("ORGPDF_MAX_CARACTERES", "14000")
+    monkeypatch.setenv("ORGPDF_VERIFICAR_ONLINE", "false")
     monkeypatch.setattr(
         "sys.argv",
         ["main.py", "--input", str(in_dir), "--output", str(out_dir), "--dry-run"],
@@ -589,6 +592,7 @@ def test_interactive_validator_supports_estrutura_cnpq_and_plana(tmp_path: Path,
         interactive=False,
         estrutura="cnpq",
         quarantine=False,
+        verificar_online=False,
     )
     assert ok_cnpq is True
     # Deve conter estrutura hierárquica (subpastas além de apenas tipo)
@@ -603,6 +607,7 @@ def test_interactive_validator_supports_estrutura_cnpq_and_plana(tmp_path: Path,
         interactive=False,
         estrutura="plana",
         quarantine=False,
+        verificar_online=False,
     )
     assert ok_plana is True
     # Estrutura plana: <out_plana>/<tipo>/arquivo.pdf
@@ -626,6 +631,7 @@ def test_interactive_validator_collision_avoidance(tmp_path: Path, sample_pdf_ge
         interactive=False,
         estrutura="plana",
         quarantine=False,
+        verificar_online=False,
     )
 
     # Segunda execução do mesmo arquivo
@@ -635,6 +641,7 @@ def test_interactive_validator_collision_avoidance(tmp_path: Path, sample_pdf_ge
         interactive=False,
         estrutura="plana",
         quarantine=False,
+        verificar_online=False,
     )
 
     # Devem existir dois PDFs: o original e a versão com sufixo (2)
@@ -673,7 +680,11 @@ def test_low_confidence_and_quarantine_policy(tmp_path: Path, sample_pdf_generat
     # Test via pipeline quarantine
     out_dir = tmp_path / "out_quarantine"
     out_dir.mkdir()
-    pipeline = Pipeline(opcoes=OpcoesDoPipeline(destino=out_dir, mover=False, quarantine=True))
+    pipeline = Pipeline(
+        opcoes=OpcoesDoPipeline(
+            destino=out_dir, mover=False, quarantine=True, enriquecimento_online=False
+        )
+    )
     result = pipeline.processar_arquivo(pdf_path)
     assert result.ok is True
     assert result.metadados.needs_review is True
@@ -726,6 +737,150 @@ def test_extract_native_sample_text_with_count_head_and_tail(sample_pdf_generato
     assert "Página de teste número 5" in combined_text
     assert "Página de teste número 25" in combined_text
     assert "Página de teste número 12" not in combined_text
+
+
+def test_metadata_enricher_thread_local_sessions():
+    """Verify that worker threads get isolated requests.Session objects with retry adapters."""
+    import threading
+    from organizador_pdf.metadata_api import MetadataEnricher
+
+    enricher = MetadataEnricher()
+    sessions = []
+
+    def worker():
+        sessions.append(enricher.session)
+
+    t1 = threading.Thread(target=worker)
+    t2 = threading.Thread(target=worker)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    # Different threads must have distinct session instances
+    assert len(sessions) == 2
+    assert sessions[0] is not sessions[1]
+    assert enricher.session is not sessions[0]
+    assert enricher.session is not sessions[1]
+
+    # Main thread session also exists and has retry adapters mounted
+    main_session = enricher.session
+    assert "https://" in main_session.adapters
+    assert "http://" in main_session.adapters
+
+
+def test_metadata_enricher_in_memory_cache():
+    """Verify that in-memory cache avoids duplicate network requests for identical queries."""
+    from unittest.mock import MagicMock
+    from organizador_pdf.metadata_api import MetadataEnricher
+
+    enricher = MetadataEnricher()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "message": {
+            "title": ["Paper Title"],
+            "DOI": "10.1016/j.test.2024",
+        }
+    }
+    enricher.session = MagicMock()
+    enricher.session.get.return_value = mock_resp
+
+    # First call - queries API and stores in cache
+    res1 = enricher.fetch_crossref_by_doi("10.1016/j.test.2024")
+    assert res1 is not None
+    assert res1["title"] == "Paper Title"
+    assert enricher.session.get.call_count == 1
+
+    # Second call for the same DOI - must return cached result without calling .get
+    res2 = enricher.fetch_crossref_by_doi("10.1016/j.test.2024")
+    assert res2 is not None
+    assert res2["title"] == "Paper Title"
+    assert enricher.session.get.call_count == 1
+
+    # After clearing cache, next call must query again
+    enricher.clear_cache()
+    res3 = enricher.fetch_crossref_by_doi("10.1016/j.test.2024")
+    assert res3 is not None
+    assert enricher.session.get.call_count == 2
+
+
+def test_metadata_enricher_timeout_tuple():
+    """Verify that separate connect and read timeouts are configured."""
+    from organizador_pdf.metadata_api import MetadataEnricher
+
+    enricher = MetadataEnricher(timeout=8.0)
+    assert enricher._get_timeout() == (3.0, 8.0)
+
+    enricher_custom = MetadataEnricher(timeout=(1.5, 4.0))
+    assert enricher_custom._get_timeout() == (1.5, 4.0)
+
+
+def test_verificar_identificadores_skips_when_source_apis_already_verified():
+    """Verify that verificar_identificadores skips external network calls when source_apis already verified the ID."""
+    from unittest.mock import MagicMock
+    from organizador_pdf.models import Metadados, Identificadores
+    from organizador_pdf.verificacao import verificar_identificadores
+
+    mock_client = MagicMock()
+
+    # Case 1: DOI already enriched from Crossref
+    meta_verified = Metadados(
+        titulo="Deep Learning",
+        identificadores=Identificadores(doi="10.1000/182"),
+        source_apis=["Crossref (DOI)"],
+    )
+    res, aviso = verificar_identificadores(meta_verified, cliente=mock_client)
+    assert aviso is None
+    # Client must NOT be called
+    assert mock_client.get.call_count == 0
+
+    # Case 2: ISBN already enriched from CBL
+    meta_verified_isbn = Metadados(
+        titulo="Clean Code",
+        identificadores=Identificadores(isbn="9780132350884"),
+        source_apis=["Brasil API / CBL (ISBN)"],
+    )
+    res, aviso = verificar_identificadores(meta_verified_isbn, cliente=mock_client)
+    assert aviso is None
+    assert mock_client.get.call_count == 0
+
+    # Case 3: Identifier present but NOT in source_apis -> must query client
+    meta_unverified = Metadados(
+        titulo="Deep Learning",
+        identificadores=Identificadores(doi="10.1000/182"),
+        source_apis=[],
+    )
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "message": {"title": ["Deep Learning"], "author": []}
+    }
+    mock_client.get.return_value = mock_resp
+    res, aviso = verificar_identificadores(meta_unverified, cliente=mock_client)
+    assert aviso is None
+    assert mock_client.get.call_count == 1
+
+
+def test_cli_cabecalho_dynamic_banner():
+    """Verify that _cabecalho produces dynamic, truthful output for online/offline and quarantine."""
+    from pathlib import Path
+    from organizador_pdf.cli import _cabecalho
+
+    _cabecalho(
+        origem=Path("/fake/origem"),
+        destino=Path("/fake/destino"),
+        pdfs=[Path("doc.pdf")],
+        dry_run=True,
+        mover=False,
+        paralelo=2,
+        estrutura="plana",
+        quarantine=False,
+        enriquecimento_online=False,
+        max_paginas=5,
+        max_caracteres=15000,
+    )
+
 
 
 

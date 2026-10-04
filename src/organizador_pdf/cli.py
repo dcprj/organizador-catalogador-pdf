@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -268,6 +269,10 @@ def processar(
         mover=mover,
         paralelo=paralelo,
         estrutura=estrutura,
+        quarantine=quarantine,
+        enriquecimento_online=enriquecimento_online,
+        max_paginas=getattr(config, "max_paginas", 10),
+        max_caracteres=getattr(config, "max_caracteres", 30000),
     )
 
     opcoes = OpcoesDoPipeline(
@@ -396,19 +401,40 @@ def _cabecalho(
     mover: bool,
     paralelo: int = 1,
     estrutura: str = "cnpq",
+    quarantine: bool = True,
+    enriquecimento_online: bool = True,
+    max_paginas: int = 10,
+    max_caracteres: int = 30000,
 ) -> None:
+    has_typesafe = bool(os.getenv("TYPESAFE_API_KEY"))
+    classificador_desc = (
+        "Jev System One (TypeSafe API + Heurísticas Locais)"
+        if has_typesafe
+        else "Jev System One (Heurísticas Locais Calibradas)"
+    )
+    enriquecimento_desc = (
+        "Ativo (Brasil API, Google Books, Crossref, OpenAlex)"
+        if enriquecimento_online
+        else "Desativado (Modo Offline)"
+    )
+    quarentena_desc = (
+        "Ativa (documentos de baixa confiança ou divergência vão para revisao_manual/)"
+        if quarantine
+        else "Desativada"
+    )
     linhas = [
         f"[bold]Origem:[/]         {origem.resolve()}",
         f"[bold]Destino:[/]        {destino.resolve()}",
         f"[bold]PDFs:[/]           {len(pdfs)}",
-        "[bold]Classificador:[/]  Jev System One (TypeSafe / Heurísticas Calibradas)",
-        "[bold]Enriquecimento:[/] Ativo (Brasil API, Google Books, Crossref, OpenAlex)",
-        "[bold]Análise:[/]        10 primeiras + 10 últimas páginas",
+        f"[bold]Classificador:[/]  {classificador_desc}",
+        f"[bold]Enriquecimento:[/] {enriquecimento_desc}",
+        f"[bold]Análise:[/]        {max_paginas} primeiras + {max_paginas} últimas páginas (até {max_caracteres:,} caracteres)",
+        f"[bold]Quarentena:[/]     {quarentena_desc}",
         f"[bold]Estrutura:[/]      " + ("Plana por categoria (<destino>/<tipo>/)" if estrutura == "plana" else "Hierárquica CNPq (<destino>/<Área>/<Subárea>/<Tipo>/)"),
         f"[bold]Modo:[/]           " + ("mover" if mover else "copiar"),
     ]
     if paralelo > 1:
-        linhas.append(f"[bold]Paralelo:[/] até {paralelo} arquivo(s) simultâneos")
+        linhas.append(f"[bold]Paralelo:[/]       até {paralelo} arquivo(s) simultâneos")
     if dry_run:
         linhas.append("[bold yellow]DRY-RUN — nenhum arquivo será gravado.[/]")
     saida.print(Panel("\n".join(linhas), title="Organizador de PDF", expand=False))

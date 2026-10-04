@@ -7,11 +7,15 @@ Includes fallback logic: If Jev does not find identifiers or yields probability 
 executes fallback search by title across the APIs with strict relevance and author filtering.
 """
 
+import copy
 import os
 import re
 import logging
-from typing import Optional, List, Dict, Any, Set
+import threading
+from typing import Optional, List, Dict, Any, Set, Tuple
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 from dotenv import load_dotenv
 
 from .models import (
@@ -137,9 +141,67 @@ class MetadataEnricher:
     def __init__(self, timeout: float = DEFAULT_TIMEOUT, online: bool = True):
         self.timeout = timeout
         self.online = online
-        self.session = requests.Session()
-        self.session.headers.update({"User-Agent": USER_AGENT})
+        self._local = threading.local()
+        self._custom_session: Optional[Any] = None
         self.google_books_api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
+        self._cache: Dict[str, Any] = {}
+        self._cache_lock = threading.Lock()
+
+    def _create_session(self) -> requests.Session:
+        """Create a new requests.Session with connection pooling and retry adapter."""
+        s = requests.Session()
+        s.headers.update({"User-Agent": USER_AGENT})
+        retries = Retry(
+            total=2,
+            connect=0,
+            read=0,
+            status=2,
+            backoff_factor=0.3,
+            status_forcelist=[500, 502, 503, 504],
+            raise_on_status=False,
+            respect_retry_after_header=False,
+        )
+        adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=20)
+        s.mount("https://", adapter)
+        s.mount("http://", adapter)
+        return s
+
+    @property
+    def session(self) -> requests.Session:
+        if self._custom_session is not None:
+            return self._custom_session
+        if not hasattr(self._local, "session") or self._local.session is None:
+            self._local.session = self._create_session()
+        return self._local.session
+
+    @session.setter
+    def session(self, s: Any) -> None:
+        self._custom_session = s
+        self._local.session = s
+
+    def _get_timeout(self) -> Tuple[float, float] | float:
+        """Return connect and read timeouts (defaulting to 3.0s connect)."""
+        if isinstance(self.timeout, (tuple, list)):
+            return tuple(self.timeout)
+        return (3.0, float(self.timeout))
+
+    def _get_from_cache(self, key: str) -> Tuple[bool, Any]:
+        """Check cache for key and return (hit, deepcopy(val))."""
+        with self._cache_lock:
+            if key in self._cache:
+                val = self._cache[key]
+                return True, copy.deepcopy(val) if val is not None else None
+        return False, None
+
+    def _set_cache(self, key: str, value: Any) -> None:
+        """Save a deepcopy of value into cache."""
+        with self._cache_lock:
+            self._cache[key] = copy.deepcopy(value) if value is not None else None
+
+    def clear_cache(self) -> None:
+        """Clear the in-memory query cache."""
+        with self._cache_lock:
+            self._cache.clear()
 
     def enrich(self, jev_result: JevValidationResult) -> PublicationMetadata:
         """Enrich metadata from Jev validation result via public APIs.
@@ -387,13 +449,20 @@ class MetadataEnricher:
     def fetch_brasil_api_isbn(self, isbn: str) -> Optional[Dict[str, Any]]:
         """Fetch official Brazilian ISBN registration data from Brasil API (CBL / Mercado Editorial)."""
         clean_isbn = re.sub(r"[^0-9X]", "", isbn)
+        cache_key = f"brasilapi:isbn:{clean_isbn}"
+        hit, val = self._get_from_cache(cache_key)
+        if hit:
+            return val
+
         url = f"https://brasilapi.com.br/api/isbn/v1/{clean_isbn}"
+        result = None
         try:
-            resp = self.session.get(url, timeout=self.timeout)
+            resp = self.session.get(url, timeout=self._get_timeout())
             if resp.status_code == 200:
                 data = resp.json()
                 raw_title = data.get("title")
                 if not raw_title:
+                    self._set_cache(cache_key, None)
                     return None
 
                 # Clean prefix like '(ED) ' often returned by CBL
@@ -414,7 +483,7 @@ class MetadataEnricher:
                 elif location:
                     city = location.strip()
 
-                return {
+                result = {
                     "title": clean_title,
                     "subtitle": subtitle,
                     "authors": authors,
@@ -425,36 +494,57 @@ class MetadataEnricher:
                 }
         except requests.RequestException as e:
             logger.debug("Brasil API ISBN error: %s", e)
-        return None
+
+        self._set_cache(cache_key, result)
+        return result
 
     # ----------------- CROSSREF API -----------------
     def fetch_crossref_by_doi(self, doi: str) -> Optional[Dict[str, Any]]:
         """Fetch metadata from Crossref API by DOI."""
+        norm_doi = doi.strip().lower()
+        cache_key = f"crossref:doi:{norm_doi}"
+        hit, val = self._get_from_cache(cache_key)
+        if hit:
+            return val
+
         url = f"https://api.crossref.org/works/{doi}"
+        result = None
         try:
-            resp = self.session.get(url, timeout=self.timeout)
+            resp = self.session.get(url, timeout=self._get_timeout())
             if resp.status_code == 200:
                 item = resp.json().get("message", {})
-                return self._parse_crossref_item(item)
+                result = self._parse_crossref_item(item)
         except requests.RequestException as e:
             logger.debug("Crossref DOI lookup error: %s", e)
-        return None
+
+        self._set_cache(cache_key, result)
+        return result
 
     def fetch_crossref_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Search Crossref API by title."""
+        norm_title = title.strip().lower()
+        cache_key = f"crossref:title:{norm_title}"
+        hit, val = self._get_from_cache(cache_key)
+        if hit:
+            return val
+
         url = "https://api.crossref.org/works"
         params = {"query.title": title, "rows": 3}
+        result = None
         try:
-            resp = self.session.get(url, params=params, timeout=self.timeout)
+            resp = self.session.get(url, params=params, timeout=self._get_timeout())
             if resp.status_code == 200:
                 items = resp.json().get("message", {}).get("items", [])
                 for item in items:
                     parsed = self._parse_crossref_item(item)
                     if is_title_relevant(title, parsed.get("title")):
-                        return parsed
+                        result = parsed
+                        break
         except requests.RequestException as e:
             logger.debug("Crossref title search error: %s", e)
-        return None
+
+        self._set_cache(cache_key, result)
+        return result
 
     def _parse_crossref_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """Convert Crossref item to standardized dictionary."""
@@ -514,22 +604,38 @@ class MetadataEnricher:
     # ----------------- GOOGLE BOOKS API -----------------
     def fetch_google_books_by_isbn(self, isbn: str) -> Optional[Dict[str, Any]]:
         """Fetch metadata from Google Books API by ISBN."""
+        clean_isbn = re.sub(r"[^0-9X]", "", isbn)
+        cache_key = f"gbooks:isbn:{clean_isbn}"
+        hit, val = self._get_from_cache(cache_key)
+        if hit:
+            return val
+
         url = "https://www.googleapis.com/books/v1/volumes"
         params = {"q": f"isbn:{isbn}"}
-        return self._query_google_books(url, params)
+        result = self._query_google_books(url, params)
+        self._set_cache(cache_key, result)
+        return result
 
     def fetch_google_books_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Search Google Books API by title."""
+        norm_title = title.strip().lower()
+        cache_key = f"gbooks:title:{norm_title}"
+        hit, val = self._get_from_cache(cache_key)
+        if hit:
+            return val
+
         url = "https://www.googleapis.com/books/v1/volumes"
         params = {"q": f"intitle:{title}", "maxResults": 3}
-        return self._query_google_books(url, params)
+        result = self._query_google_books(url, params)
+        self._set_cache(cache_key, result)
+        return result
 
     def _query_google_books(self, url: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         try:
             req_params = dict(params)
             if self.google_books_api_key:
                 req_params["key"] = self.google_books_api_key
-            resp = self.session.get(url, params=req_params, timeout=self.timeout)
+            resp = self.session.get(url, params=req_params, timeout=self._get_timeout())
             if resp.status_code == 200:
                 data = resp.json()
                 items = data.get("items", [])
@@ -614,12 +720,19 @@ class MetadataEnricher:
     # ----------------- OPENLIBRARY API -----------------
     def fetch_openlibrary_by_isbn(self, isbn: str) -> Optional[Dict[str, Any]]:
         """Fetch metadata from OpenLibrary API by ISBN."""
+        clean_isbn = re.sub(r"[^0-9X]", "", isbn)
+        cache_key = f"openlib:isbn:{clean_isbn}"
+        hit, val = self._get_from_cache(cache_key)
+        if hit:
+            return val
+
         url = f"https://openlibrary.org/isbn/{isbn}.json"
+        result = None
         try:
-            resp = self.session.get(url, timeout=self.timeout)
+            resp = self.session.get(url, timeout=self._get_timeout())
             if resp.status_code == 200:
                 data = resp.json()
-                return {
+                result = {
                     "title": data.get("title"),
                     "subtitle": data.get("subtitle"),
                     "publisher": data.get("publishers", [None])[0] if data.get("publishers") else None,
@@ -628,58 +741,89 @@ class MetadataEnricher:
                 }
         except requests.RequestException as e:
             logger.debug("OpenLibrary ISBN error: %s", e)
-        return None
+
+        self._set_cache(cache_key, result)
+        return result
 
     def fetch_openlibrary_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Search OpenLibrary API by title."""
+        norm_title = title.strip().lower()
+        cache_key = f"openlib:title:{norm_title}"
+        hit, val = self._get_from_cache(cache_key)
+        if hit:
+            return val
+
         url = "https://openlibrary.org/search.json"
         params = {"q": title, "limit": 5}
+        result = None
         try:
-            resp = self.session.get(url, params=params, timeout=self.timeout)
+            resp = self.session.get(url, params=params, timeout=self._get_timeout())
             if resp.status_code == 200:
                 docs = resp.json().get("docs", [])
                 for doc in docs:
                     doc_title = doc.get("title")
                     if is_title_relevant(title, doc_title):
                         isbns = doc.get("isbn", [])
-                        return {
+                        result = {
                             "title": doc_title,
                             "authors": doc.get("author_name", []),
                             "publisher": doc.get("publisher", [None])[0] if doc.get("publisher") else None,
                             "year": doc.get("first_publish_year"),
                             "isbn": isbns[0] if isbns else None,
                         }
+                        break
         except requests.RequestException as e:
             logger.debug("OpenLibrary title search error: %s", e)
-        return None
+
+        self._set_cache(cache_key, result)
+        return result
 
     # ----------------- OPENALEX API -----------------
     def fetch_openalex_by_doi(self, doi: str) -> Optional[Dict[str, Any]]:
         """Fetch publication metadata from OpenAlex by DOI."""
+        norm_doi = doi.strip().lower()
+        cache_key = f"openalex:doi:{norm_doi}"
+        hit, val = self._get_from_cache(cache_key)
+        if hit:
+            return val
+
         url = f"https://api.openalex.org/works/https://doi.org/{doi}"
+        result = None
         try:
-            resp = self.session.get(url, timeout=self.timeout)
+            resp = self.session.get(url, timeout=self._get_timeout())
             if resp.status_code == 200:
-                return self._parse_openalex_item(resp.json())
+                result = self._parse_openalex_item(resp.json())
         except requests.RequestException as e:
             logger.debug("OpenAlex DOI lookup error: %s", e)
-        return None
+
+        self._set_cache(cache_key, result)
+        return result
 
     def fetch_openalex_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Search OpenAlex by title."""
+        norm_title = title.strip().lower()
+        cache_key = f"openalex:title:{norm_title}"
+        hit, val = self._get_from_cache(cache_key)
+        if hit:
+            return val
+
         url = "https://api.openalex.org/works"
         params = {"search": title, "per-page": 3}
+        result = None
         try:
-            resp = self.session.get(url, params=params, timeout=self.timeout)
+            resp = self.session.get(url, params=params, timeout=self._get_timeout())
             if resp.status_code == 200:
                 results = resp.json().get("results", [])
                 for item in results:
                     parsed = self._parse_openalex_item(item)
                     if is_title_relevant(title, parsed.get("title")):
-                        return parsed
+                        result = parsed
+                        break
         except requests.RequestException as e:
             logger.debug("OpenAlex title search error: %s", e)
-        return None
+
+        self._set_cache(cache_key, result)
+        return result
 
     def _parse_openalex_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """Convert OpenAlex work object to standardized dictionary."""

@@ -82,18 +82,32 @@ def verificar_identificadores(
     batem, `metadados` pode vir com `editora_ou_periodico`/`ano`/`local`
     preenchidos a partir da API, se estavam nulos (nunca sobrescreve valor
     já existente).
+
+    Pula re-verificações redundantes se `metadados.source_apis` já contiver confirmação
+    autoritativa de APIs para o identificador correspondente.
     """
+    fontes = getattr(metadados, "source_apis", [])
+    ja_verificou_doi = any("(DOI)" in s for s in fontes)
+    ja_verificou_isbn = any("(ISBN)" in s for s in fontes)
+
+    doi = metadados.identificadores.doi
+    isbn = metadados.identificadores.isbn
+
+    precisa_verificar_doi = bool(doi and not ja_verificou_doi)
+    precisa_verificar_isbn = bool(isbn and not ja_verificou_isbn)
+
+    if not precisa_verificar_doi and not precisa_verificar_isbn:
+        return metadados, None
+
     fechar = cliente is None
     cliente = cliente or httpx.Client(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT})
     try:
-        doi = metadados.identificadores.doi
-        if doi:
+        if precisa_verificar_doi and doi:
             metadados, aviso = _verificar_doi(cliente, doi, metadados)
             if aviso:
                 return metadados, aviso
 
-        isbn = metadados.identificadores.isbn
-        if isbn:
+        if precisa_verificar_isbn and isbn:
             metadados, aviso = _verificar_isbn(cliente, isbn, metadados)
             if aviso:
                 return metadados, aviso

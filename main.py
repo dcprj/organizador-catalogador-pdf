@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """CLI Entrypoint for the PDF Extraction, Classification, and Markdown Conversion Pipeline."""
 
+import os
 import sys
 import argparse
 import logging
@@ -186,6 +187,11 @@ def main() -> int:
             dry_run=args.dry_run,
         )
 
+    tipo_class = (
+        "Jev System One (TypeSafe API + Heurísticas Locais)"
+        if os.getenv("TYPESAFE_API_KEY")
+        else "Jev System One (Heurísticas Locais Calibradas)"
+    )
     print("\n" + "=" * 75)
     print("🚀 PIPELINE DE PROCESSAMENTO E CONVERSÃO DE PDF PARA MARKDOWN")
     print("=" * 75)
@@ -196,7 +202,8 @@ def main() -> int:
     print(f"🔍 Recursivo      : {'Sim' if args.recursive else 'Não (somente raiz)'}")
     print(f"🔄 Retomada       : {'Ativa (--resume)' if args.resume else 'Padrão'}")
     print(f"🛡️  Quarentena     : {'Desativada (--no-quarantine)' if args.no_quarantine else 'Ativa (revisao_manual/)'}")
-    print(f"🧠 Classificador  : Jev System One (TypeSafe / Heurísticas Locais)")
+    print(f"🧠 Classificador  : {tipo_class}")
+    print(f"📄 Amostragem     : {config.max_paginas} primeiras + {config.max_paginas} últimas páginas (até {config.max_caracteres:,} caracteres)")
     print(f"🌐 Enriquecimento : {'Ativo (Crossref, Google Books, Brasil API, OpenAlex)' if config.verificar_online else 'Desativado (ORGPDF_VERIFICAR_ONLINE=false)'}")
     if args.dry_run:
         print(f"⚠️  MODO          : SIMULAÇÃO / DRY-RUN (Nenhum arquivo será gravado ou movido)")
