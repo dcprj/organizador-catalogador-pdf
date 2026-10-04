@@ -666,7 +666,7 @@ def test_low_confidence_and_quarantine_policy(tmp_path: Path, sample_pdf_generat
     pages = ["Texto sem marcadores bibliográficos claros ou identificadores públicos."]
     pdf_path = sample_pdf_generator("ambiguo.pdf", "Ambiguo Test", pages)
 
-    classifier = JevClassifier()
+    classifier = JevClassifier(modo="local")
     res = classifier.classify_and_validate(str(pdf_path))
     assert res.classification_confidence < 0.50
     assert "calibrated_scores" in res.raw_jev_data
@@ -678,12 +678,14 @@ def test_low_confidence_and_quarantine_policy(tmp_path: Path, sample_pdf_generat
     assert meta.confidence < 0.50
 
     # Test via pipeline quarantine
+    from organizador_pdf.config import Config
     out_dir = tmp_path / "out_quarantine"
     out_dir.mkdir()
     pipeline = Pipeline(
+        config=Config(classificador="local"),
         opcoes=OpcoesDoPipeline(
             destino=out_dir, mover=False, quarantine=True, enriquecimento_online=False
-        )
+        ),
     )
     result = pipeline.processar_arquivo(pdf_path)
     assert result.ok is True

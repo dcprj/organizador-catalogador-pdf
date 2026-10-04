@@ -150,8 +150,8 @@ Classificações Suportadas:
     parser.add_argument(
         "--classificador",
         choices=["auto", "local", "remoto", "jev_remoto"],
-        default=None,
-        help="Modo de classificação: 'auto' (TypeSafe se disponível, senão local), 'local' (apenas heurísticas locais), ou 'remoto'/'jev_remoto' (exclusivo TypeSafe remoto, sem fallback silencioso).",
+        default="remoto",
+        help="Modo de classificação: 'remoto'/'jev_remoto' (padrão: exclusivo TypeSafe remoto JEV), 'auto' (TypeSafe com fallback local), ou 'local' (apenas heurísticas locais).",
     )
 
     return parser

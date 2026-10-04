@@ -28,6 +28,8 @@ def ambiente_limpo(monkeypatch, tmp_path):
         "ORGPDF_GROK_API_KEY",
         "ORGPDF_PROVEDOR_FALLBACK",
         "ORGPDF_MODELO_FALLBACK",
+        "CLASSIFICADOR",
+        "ORGPDF_CLASSIFICADOR",
     ):
         monkeypatch.delenv(variavel, raising=False)
     monkeypatch.chdir(tmp_path)

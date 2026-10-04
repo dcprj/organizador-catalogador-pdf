@@ -103,7 +103,7 @@ class Config:
             classificador
             or os.getenv("ORGPDF_CLASSIFICADOR")
             or os.getenv("CLASSIFICADOR")
-            or "auto"
+            or ("remoto" if key else "auto")
         ).strip().lower()
         if classif_bruto in ("remoto", "typesafe", "jev_remoto", "remote"):
             classif = "jev_remoto"

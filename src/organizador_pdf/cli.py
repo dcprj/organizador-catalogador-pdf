@@ -150,9 +150,9 @@ def processar(
         help="Atalho para organização em pasta plana por categoria (<destino>/<tipo>/).",
     ),
     classificador: Optional[str] = typer.Option(
-        None,
+        "remoto",
         "--classificador",
-        help="Modo de classificação: 'auto' (TypeSafe se disponível, senão local), 'local' (apenas heurísticas locais), ou 'remoto'/'jev_remoto' (exclusivo TypeSafe remoto, sem fallback silencioso).",
+        help="Modo de classificação: 'remoto'/'jev_remoto' (padrão: exclusivo TypeSafe remoto JEV), 'auto' (TypeSafe com fallback local), ou 'local' (apenas heurísticas locais).",
     ),
     version: Optional[bool] = typer.Option(
         None,
