@@ -251,11 +251,15 @@ class MetadataEnricher:
             identifiers=Identifiers(doi=doi, isbn=isbn, issn=issn),
             provedor_classificador=getattr(jev_result, "provider", None),
             doi_source=getattr(candidates, "doi_source", None),
+            title_source=getattr(candidates, "title_source", None),
+            author_source=getattr(candidates, "author_source", None),
+            isbn_source=getattr(candidates, "isbn_source", None),
+            issn_source=getattr(candidates, "issn_source", None),
         )
 
         if not self.online:
             logger.info("Enriquecimento online desativado (modo offline). Mantendo metadados candidatos.")
-            metadata.confidence = jev_result.classification_confidence
+            metadata.confidence_classification = jev_result.classification_confidence
             self._evaluate_needs_review(metadata, jev_result, sources_consulted=[])
             return metadata
 
@@ -268,11 +272,16 @@ class MetadataEnricher:
             if cr_meta:
                 self._merge_metadata(metadata, cr_meta, authoritative=True)
                 sources_consulted.append("Crossref (DOI)")
+                metadata.doi_source = "api_crossref"
+                if cr_meta.get("title"):
+                    metadata.title_source = "api_crossref"
 
             oa_meta = self.fetch_openalex_by_doi(doi)
             if oa_meta:
                 self._merge_metadata(metadata, oa_meta, authoritative=True)
                 sources_consulted.append("OpenAlex (DOI)")
+                if not metadata.doi_source:
+                    metadata.doi_source = "api_openalex"
 
         # 2. Query by ISBN if present (direct authoritative identifier lookup)
         if isbn and is_valid_isbn(isbn, strict=False):
@@ -281,16 +290,25 @@ class MetadataEnricher:
             if br_meta:
                 self._merge_metadata(metadata, br_meta, authoritative=True)
                 sources_consulted.append("Brasil API / CBL (ISBN)")
+                metadata.isbn_source = "api_brasilapi"
+                if br_meta.get("title"):
+                    metadata.title_source = "api_brasilapi"
 
             gb_meta = self.fetch_google_books_by_isbn(isbn)
             if gb_meta:
                 self._merge_metadata(metadata, gb_meta, authoritative=not bool(br_meta))
                 sources_consulted.append("Google Books (ISBN)")
+                if not metadata.isbn_source:
+                    metadata.isbn_source = "api_google_books"
+                if gb_meta.get("title") and not br_meta:
+                    metadata.title_source = "api_google_books"
 
             ol_meta = self.fetch_openlibrary_by_isbn(isbn)
             if ol_meta:
                 self._merge_metadata(metadata, ol_meta, authoritative=not bool(br_meta or gb_meta))
                 sources_consulted.append("OpenLibrary (ISBN)")
+                if not metadata.isbn_source:
+                    metadata.isbn_source = "api_openlibrary"
 
         # 3. Fallback: Search by title if no identifier succeeded
         should_fallback_title = not sources_consulted
@@ -308,7 +326,7 @@ class MetadataEnricher:
             self._apply_title_fallback(clean_title, jev_result.classification, metadata, sources_consulted)
 
         metadata.source_apis = sources_consulted
-        metadata.confidence = jev_result.classification_confidence
+        metadata.confidence_classification = jev_result.classification_confidence
         self._evaluate_needs_review(metadata, jev_result, sources_consulted=sources_consulted)
         return metadata
 
@@ -318,10 +336,74 @@ class MetadataEnricher:
         jev_result: JevValidationResult,
         sources_consulted: List[str],
     ) -> None:
-        """Evaluate quarantine and manual review criteria."""
-        margin = jev_result.raw_jev_data.get("margin") if isinstance(jev_result.raw_jev_data, dict) else None
+        """Evaluate quarantine and manual review criteria, keeping classification and metadata confidences separate."""
+        from .classifier_jev import is_invalid_or_disclaimer_title, GENERIC_SINGLE_WORD_TITLES
+
+        metadata.confidence_classification = jev_result.classification_confidence
+        meta_conf = 1.0
+        t = (metadata.title or "").strip()
+        t_lower = t.lower()
         has_verified_id = bool(metadata.identifiers.isbn or metadata.identifiers.doi or metadata.identifiers.issn)
 
+        # 1. Validações estritas de título
+        if t in ("Sem Título", "Publicação Sem Título") or len(t) < 4:
+            meta_conf = 0.1
+            metadata.needs_review = True
+            if "Documento sem título bibliográfico identificável" not in metadata.review_reasons:
+                metadata.review_reasons.append("Documento sem título bibliográfico identificável")
+        elif is_invalid_or_disclaimer_title(t):
+            meta_conf = 0.15
+            metadata.needs_review = True
+            msg = f"Título inválido, identificador ou disclaimer legal detectado ('{t}')"
+            if msg not in metadata.review_reasons:
+                metadata.review_reasons.append(msg)
+        elif (
+            t.startswith("---")
+            or "page break" in t_lower
+            or re.search(r"\bp[áa]gina\s*\d+\b", t, re.I)
+        ):
+            meta_conf = 0.3
+            metadata.needs_review = True
+            if "Título contaminado com marcador de página ou cabeçalho" not in metadata.review_reasons:
+                metadata.review_reasons.append("Título contaminado com marcador de página ou cabeçalho")
+        elif len(t.split()) <= 1 and t_lower in GENERIC_SINGLE_WORD_TITLES:
+            meta_conf = 0.35
+            metadata.needs_review = True
+            msg = f"Título unipalavra ou fragmento genérico ('{t}')"
+            if msg not in metadata.review_reasons:
+                metadata.review_reasons.append(msg)
+        elif len(t.split()) == 1 and not sources_consulted and not has_verified_id:
+            meta_conf = 0.45
+            metadata.needs_review = True
+            msg = f"Título com palavra única ('{t}') sem confirmação bibliográfica"
+            if msg not in metadata.review_reasons:
+                metadata.review_reasons.append(msg)
+
+        # 2. Validações de autoria
+        if not metadata.authors:
+            meta_conf -= 0.2
+            if (
+                metadata.classification in ("livro", "artigo", "tese", "dissertacao", "capitulo_livro")
+                and not sources_consulted
+                and not has_verified_id
+            ):
+                metadata.needs_review = True
+                if "Obra acadêmica ou editorial sem autoria identificada" not in metadata.review_reasons:
+                    metadata.review_reasons.append("Obra acadêmica ou editorial sem autoria identificada")
+
+        # 3. Validações de identificadores e fontes
+        if not has_verified_id and not sources_consulted:
+            meta_conf -= 0.15
+
+        # 4. Classificação 'Outros' deve sempre ser sinalizada para revisão acompanhada de justificativa
+        if metadata.classification == "outros":
+            meta_conf -= 0.15
+            metadata.needs_review = True
+            msg_outros = "Tipo documental não determinado categoricamente ('Outros')"
+            if not any("outros" in r.lower() for r in metadata.review_reasons):
+                metadata.review_reasons.append(msg_outros)
+
+        margin = jev_result.raw_jev_data.get("margin") if isinstance(jev_result.raw_jev_data, dict) else None
         if jev_result.classification_confidence < 0.50 and not sources_consulted and not has_verified_id:
             metadata.needs_review = True
             metadata.review_reasons.append(
@@ -333,21 +415,11 @@ class MetadataEnricher:
                 f"Margem estreita entre categorias candidatas ({margin:.1f} pts) sem identificador público"
             )
 
-        if metadata.classification == "outros" and not sources_consulted and not has_verified_id:
-            if not metadata.needs_review:
-                metadata.needs_review = True
-                metadata.review_reasons.append("Documento classificado como 'outros' sem confirmação bibliográfica")
+        if sources_consulted:
+            meta_conf = max(meta_conf, 0.85 if "Title Search" in str(sources_consulted) else 0.95)
 
-        if metadata.title in ("Sem Título", "Publicação Sem Título") or len(metadata.title) < 4:
-            metadata.needs_review = True
-            metadata.review_reasons.append("Documento sem título bibliográfico identificável")
-        elif metadata.title and (
-            metadata.title.startswith("---")
-            or "page break" in metadata.title.lower()
-            or re.search(r"\bp[áa]gina\s*\d+\b", metadata.title, re.I)
-        ):
-            metadata.needs_review = True
-            metadata.review_reasons.append("Título contaminado com marcador de página ou cabeçalho")
+        metadata.confidence_metadata = max(0.1, min(1.0, round(meta_conf, 2)))
+        metadata.confidence = min(metadata.confidence_classification, metadata.confidence_metadata)
 
     def _apply_title_fallback(
         self,

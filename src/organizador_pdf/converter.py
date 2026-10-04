@@ -298,6 +298,18 @@ class MarkdownConverter:
                 frontmatter_dict["review_reasons"] = metadata.review_reasons
 
         frontmatter_dict["confidence"] = metadata.confidence
+        frontmatter_dict["confidence_classification"] = getattr(metadata, "confidence_classification", metadata.confidence)
+        frontmatter_dict["confidence_metadata"] = getattr(metadata, "confidence_metadata", metadata.confidence)
+        if getattr(metadata, "title_source", None):
+            frontmatter_dict["title_source"] = metadata.title_source
+        if getattr(metadata, "author_source", None):
+            frontmatter_dict["author_source"] = metadata.author_source
+        if getattr(metadata, "isbn_source", None):
+            frontmatter_dict["isbn_source"] = metadata.isbn_source
+        if getattr(metadata, "doi_source", None):
+            frontmatter_dict["doi_source"] = metadata.doi_source
+        if getattr(metadata, "provedor_classificador", None):
+            frontmatter_dict["provedor_classificador"] = metadata.provedor_classificador
 
         if tags:
             frontmatter_dict["tags"] = tags

@@ -13,7 +13,7 @@ from typing import Any, Callable, Iterable, Optional
 from .abnt_formatter import ABNTFormatter
 from .classifier_jev import JevClassifier
 from .config import Config
-from .converter import DocumentoConvertido, ErroDeConversao, converter_pdf
+from .converter import DocumentoConvertido, ErroDeConversao, ErroPdfEscaneado, converter_pdf
 from .extractor import ErroDeExtracao, ErroFatalDeAPI
 from .metadata_api import MetadataEnricher
 from .models import Metadados, ResultadoDoArquivo, Situacao
@@ -181,6 +181,15 @@ class Pipeline:
 
         except ErroFatalDeAPI:
             raise
+        except ErroPdfEscaneado as exc:
+            logger.info("[%s] PDF digitalizado sem camada de texto nativa: %s", caminho.name, exc)
+            return ResultadoDoArquivo(
+                origem=caminho,
+                situacao=Situacao.PENDENTE_OCR,
+                aviso="PDF digitalizado sem camada de texto nativa (requer OCR prévio)",
+                erro=str(exc),
+                etapa="conversão",
+            )
         except (ErroDeConversao, ErroDeExtracao, ErroDeOrganizacao) as exc:
             return self._falha(caminho, etapa, str(exc))
         except Exception as exc:

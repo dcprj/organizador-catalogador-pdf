@@ -242,6 +242,11 @@ def gerar_markdown(
         "doi_source": getattr(metadados, "doi_source", None),
         "extraido_via_fallback": extraido_via_fallback,
         "confidence": metadados.confidence,
+        "confidence_classification": getattr(metadados, "confidence_classification", metadados.confidence),
+        "confidence_metadata": getattr(metadados, "confidence_metadata", metadados.confidence),
+        "title_source": getattr(metadados, "title_source", None),
+        "author_source": getattr(metadados, "author_source", None),
+        "isbn_source": getattr(metadados, "isbn_source", None),
         "needs_review": metadados.needs_review,
         "review_reasons": metadados.review_reasons,
         "source_apis": metadados.source_apis,
@@ -452,6 +457,27 @@ class PipelineOrganizer:
                 needs_review=meta.needs_review,
             )
         except Exception as e:
+            from .converter import ErroPdfEscaneado
+            is_scanned = isinstance(e, ErroPdfEscaneado) or "digitalizado/escaneado" in str(e).lower() or "ocr" in str(e).lower()
+            if is_scanned:
+                logger.info("PDF sem camada de texto nativa: %s (%s)", orig_p.name, e)
+                return PipelineResult(
+                    original_pdf=str(orig_p),
+                    target_pdf="",
+                    output_markdown="",
+                    classification="outros",
+                    metadata=PublicationMetadata(
+                        title=orig_p.stem,
+                        needs_review=True,
+                        review_reasons=["PDF digitalizado sem texto nativo (requer OCR prévio)"],
+                    ),
+                    abnt_reference="",
+                    success=False,
+                    is_dry_run=dry_run,
+                    needs_review=True,
+                    requires_ocr=True,
+                    error_message=str(e),
+                )
             logger.error("Erro ao processar %s: %s", orig_p.name, e, exc_info=True)
             return PipelineResult(
                 original_pdf=str(orig_p),

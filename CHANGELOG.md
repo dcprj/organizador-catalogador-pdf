@@ -7,6 +7,20 @@ projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
 ## [Não Lançado]
 
+### Adicionado
+- **Separação de Confiança de Classificação e Metadados**: Criação dos campos `confidence_classification` e `confidence_metadata` (além da persistência no Markdown companion). Documentos com alta certeza de tipo ainda são roteados para revisão manual se título, autoria ou identificadores apresentarem anomalias.
+- **Rastreabilidade de Fontes por Campo (Provenance)**: Registro explícito das fontes de evidência (`title_source`, `author_source`, `isbn_source`, `issn_source`, `doi_source`) no modelo e no frontmatter YAML do Markdown (`texto_nativo`, `cip`, `nome_arquivo`, `api_crossref`, etc.).
+- **Tratamento Especializado de PDFs Digitalizados**: Detecção de arquivos sem texto nativo como `Situacao.PENDENTE_OCR` e `requer_ocr=True`, exibidos em tabela separada das falhas técnicas de execução.
+- **Suporte Oficial à Instalação TypeSafe**: Suporte formal via extra `pip install -e ".[typesafe]"` e validação estrita sem fallback silencioso no modo remoto.
+- **Higienização e Filtragem Estrita de Títulos**:
+  - Rejeição completa de identificadores (ISSN, ISBN, DOI) como títulos de documentos.
+  - Descarte de disclaimers de direitos autorais / domínio público (caso Cida Bento).
+  - Truncamento e limpeza de blocos de créditos editoriais (caso Angela Ales Bello).
+  - Limpeza de numeração de páginas residuais e códigos de classificação CDD/CDU/Cutter (caso Neuropsicologia).
+  - Quarentena obrigatória para unipalavras/verbos genéricos (caso bell hooks) e categoria "Outros".
+- **Transparência de Rede na Interface**: Separação clara entre a transmissão do classificador remoto (JEV/TypeSafe) e as consultas bibliográficas públicas, eliminando a exibição ambígua de "Modo Offline" quando há tráfego de rede ativo.
+- **Teste de Retomada Idempotente pós-Falha de Persistência**: Garantia de reutilização do cache remoto sem cobrança duplicada caso ocorra falha de escrita local.
+
 ## [0.4.0] - 2026-10-03
 
 ### Adicionado

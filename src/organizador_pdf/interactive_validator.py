@@ -465,9 +465,17 @@ def run_interactive_validator(
     print(f"🎯 Pasta de Destino: {BOLD}{out_path}{RESET}")
     print(f"📦 Mover original  : {'Sim' if move_original else 'Não (Copiando)'}")
     print(f"📁 Estrutura       : {'Plana por categoria (<destino>/<tipo>/)' if estrutura == 'plana' else 'Hierárquica CNPq (<destino>/<Área>/<Subárea>/<Tipo>/)'}")
-    print(f"🧠 Classificador   : Jev System One ({config.classificador})")
-    print(f"🌐 APIs Externas   : {'Ativas (Crossref, Google Books, Brasil API, OpenAlex)' if verificar_online else 'Desativadas (ORGPDF_VERIFICAR_ONLINE=false)'}")
-    print(f"📄 Amostragem      : até {max_paginas} páginas / {max_caracteres} caracteres")
+    modo_cls = (config.classificador or "auto").strip().lower()
+    if modo_cls in ("remoto", "jev_remoto"):
+        cls_label = "JEV remoto — TypeSafe AI (modo exclusivo; fallback local desativado)"
+    elif modo_cls == "local":
+        cls_label = "JEV local — Heurísticas determinísticas calibradas (zero rede)"
+    else:
+        cls_label = f"JEV híbrido ({config.classificador})"
+
+    print(f"🧠 Classificador   : {cls_label}")
+    print(f"🌐 APIs Externas   : {'Ativas (Crossref, Google Books, Brasil API, OpenAlex)' if verificar_online else 'Desativadas (zero consultas externas)'}")
+    print(f"📄 Amostragem      : até {max_paginas} primeiras + {max_paginas} últimas páginas (até {max_caracteres} caracteres)")
     print(f"🤝 Modo Interativo : {'Habilitado (solicita confirmação)' if interactive else 'Desabilitado'}\n")
 
     if not in_path.exists() or not in_path.is_dir():

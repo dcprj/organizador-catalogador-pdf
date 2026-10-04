@@ -1330,6 +1330,234 @@ def test_pipeline_revisao_manual_sync_with_markdown(tmp_path: Path, sample_pdf_g
     assert "provedor_classificador:" in conteudo_md
 
 
+# ==============================================================================
+# FASE 7: CRITÉRIOS DE ACEITE DO RELATÓRIO DE RETESTE (4 OUT 2026, 15h27 BRT)
+# ==============================================================================
+
+
+def test_cida_bento_disclaimer_rejected_as_title(sample_pdf_generator):
+    """Verifica que 'dominio publico e propriedade intelectual...' é rejeitado como título."""
+    from organizador_pdf.classifier_jev import extract_candidate_metadata
+
+    sample_pages = [
+        "A presente obra é disponibilizada pela equipe eLivros respeitando o domínio público e propriedade intelectual de forma...",
+        "BENTO, Cida\nO Pacto da Branquitude\nSão Paulo: Companhia das Letras, 2022.\nISBN 978-85-359-3350-5",
+    ]
+    pdf = sample_pdf_generator("BENTO, Cida - O Pacto da Branquitude.pdf", "Pacto da Branquitude", sample_pages)
+    sample_text = "\n\n".join(sample_pages)
+
+    candidates = extract_candidate_metadata(sample_text, pdf_path=str(pdf), total_pages=150)
+    assert candidates.raw_title is not None
+    assert "dominio publico" not in candidates.raw_title.lower()
+    assert "propriedade intelectual" not in candidates.raw_title.lower()
+    assert "Pacto da Branquitude" in candidates.raw_title
+
+
+def test_beer_franco_issn_rejected_as_title(sample_pdf_generator):
+    """Verifica que cabeçalho numérico com ISSN nunca é gravado como título do artigo."""
+    from organizador_pdf.classifier_jev import extract_candidate_metadata, is_invalid_or_disclaimer_title
+
+    assert is_invalid_or_disclaimer_title("ISSN 0123-8884") is True
+    assert is_invalid_or_disclaimer_title("DOI: 10.1590/1234") is True
+    assert is_invalid_or_disclaimer_title("ISBN 978-85-359-3350-5") is True
+
+    sample_pages = [
+        "ISSN 0123-8884\nRevista Latinoamericana de Psicopatologia Fundamental\n\nDA INDISSOCIABILIDADE ENTRE CLÍNICA E POLÍTICA\nBEER, P. A.; FRANCO, R.",
+    ]
+    pdf = sample_pdf_generator("BEER e FRANCO-DA_INDISSOCIABILIDADE.pdf", "Artigo", sample_pages)
+    sample_text = sample_pages[0]
+
+    candidates = extract_candidate_metadata(sample_text, pdf_path=str(pdf), total_pages=15)
+    assert candidates.raw_title != "ISSN 0123-8884"
+    assert "ISSN" not in candidates.raw_title
+    assert "indissociabilidade" in candidates.raw_title.lower()
+
+
+def test_neuropsicologia_page_and_cdd_cleaned_from_title():
+    """Verifica que prefixos residuais de página e códigos de catalogação CDD/CDU são limpos."""
+    from organizador_pdf.classifier_jev import sanitize_title_candidate
+
+    raw_polluted = "Página 2] 150.195 - Neuropsicologia: Teoria e Prática"
+    cleaned = sanitize_title_candidate(raw_polluted)
+    assert cleaned == "Neuropsicologia: Teoria e Prática"
+
+    raw_cdd = "CDD 150 - Neuropsicologia Contemporânea"
+    assert sanitize_title_candidate(raw_cdd) == "Neuropsicologia Contemporânea"
+
+    raw_cutter = "N494 - Neuropsicologia e Funções Executivas"
+    assert sanitize_title_candidate(raw_cutter) == "Neuropsicologia e Funções Executivas"
+
+
+def test_angela_ales_bello_editorial_credits_truncated():
+    """Verifica que blocos maciços de ficha/créditos de tradução são truncados do título."""
+    from organizador_pdf.classifier_jev import sanitize_title_candidate
+
+    polluted = "Introdução à Fenomenologia Tradução de Jacinta Turolo Garcia Revisão técnica de Maria Silva Capa: Design Studio"
+    cleaned = sanitize_title_candidate(polluted)
+    assert cleaned == "Introdução à Fenomenologia"
+
+
+def test_bell_hooks_single_word_fallback_and_outros_quarantine(sample_pdf_generator):
+    """Verifica que título unipalavra 'criar' dá lugar ao nome do arquivo e 'Outros' aciona quarentena."""
+    from organizador_pdf.classifier_jev import extract_candidate_metadata
+    from organizador_pdf.metadata_api import MetadataEnricher
+    from organizador_pdf.models import JevValidationResult
+
+    sample_pages = [
+        "criar\n\nTexto de abertura sobre pensamento crítico feminista e descolonização.",
+    ]
+    pdf = sample_pdf_generator("hooks, bell - Ensinando a Transgredir.pdf", "Ensinando a Transgredir", sample_pages)
+
+    candidates = extract_candidate_metadata(sample_pages[0], pdf_path=str(pdf), total_pages=80)
+    # Título candidato não deve ser a palavra isolada 'criar' quando o arquivo possui título substantivo
+    assert candidates.raw_title == "Ensinando a Transgredir"
+    assert candidates.title_source == "nome_arquivo"
+
+    # Quando um item termina classificado como 'outros', deve ser marcado para revisão
+    jev_outros = JevValidationResult(
+        classification="outros",
+        classification_confidence=0.95,
+        candidates=candidates,
+    )
+    enricher = MetadataEnricher(online=False)
+    meta = enricher.enrich(jev_outros)
+    assert meta.needs_review is True
+    assert any("outros" in r.lower() for r in meta.review_reasons)
+
+
+def test_separate_classification_and_metadata_confidence():
+    """Verifica que alta confiança de tipo não anula baixa confiança de metadados nem suprime revisão."""
+    from organizador_pdf.metadata_api import MetadataEnricher
+    from organizador_pdf.models import JevValidationResult, ExtractedCandidates
+
+    # Documento onde o classificador diz ser 'livro' com 99% de certeza, mas o título é 'Sem Título'
+    jev_res = JevValidationResult(
+        classification="livro",
+        classification_confidence=0.99,
+        candidates=ExtractedCandidates(raw_title="Sem Título", raw_authors=[]),
+    )
+    enricher = MetadataEnricher(online=False)
+    meta = enricher.enrich(jev_res)
+
+    assert meta.confidence_classification == 0.99
+    assert meta.confidence_metadata < 0.50
+    assert meta.needs_review is True
+    assert any("sem título" in r.lower() for r in meta.review_reasons)
+
+
+def test_scanned_pdf_andrade_case_returns_pendente_ocr(tmp_path):
+    """Verifica que PDF sem camada de texto (como ANDRADE) resulta em Situacao.PENDENTE_OCR."""
+    import pymupdf
+    from organizador_pdf.pipeline import Pipeline, OpcoesDoPipeline
+    from organizador_pdf.models import Situacao
+    from organizador_pdf.config import Config
+
+    # Cria um PDF com página em branco (sem nenhuma fonte ou camada de texto)
+    pdf_path = tmp_path / "ANDRADE, Érico - Negritude sem identidade.pdf"
+    doc = pymupdf.open()
+    doc.new_page()  # Página vazia / escaneada
+    doc.save(str(pdf_path))
+    doc.close()
+
+    out_dir = tmp_path / "out_andrade"
+    out_dir.mkdir()
+
+    pipeline = Pipeline(
+        config=Config(verificar_online=False, classificador="local"),
+        opcoes=OpcoesDoPipeline(destino=out_dir),
+    )
+    res = pipeline.processar_arquivo(pdf_path)
+
+    assert res.situacao == Situacao.PENDENTE_OCR
+    assert res.requer_ocr is True
+    assert "digitalizado" in (res.aviso or "").lower() or "ocr" in (res.aviso or "").lower()
+    # Não gravou nada no destino
+    assert res.pdf_destino is None
+
+
+def test_persistence_failure_idempotent_retry_avoids_duplicate_paid_call(tmp_path, monkeypatch):
+    """Verifica que se a API remota responde e a gravação local falha, a retomada reutiliza o cache sem nova chamada paga."""
+    from unittest.mock import MagicMock
+    import sys
+    from organizador_pdf.classifier_jev import JevClassifier
+
+    mock_choice = MagicMock()
+    mock_choice.choice = "livro"
+    mock_choice.confidence = 0.95
+
+    mock_resp = MagicMock()
+    mock_resp.choices = {"classification": mock_choice}
+    mock_resp.nouls = {}
+
+    mock_client = MagicMock()
+    mock_client.__enter__.return_value = mock_client
+    mock_client.system_one.return_value = mock_resp
+
+    mock_sdk = MagicMock()
+    mock_sdk.TypeSafeClient.return_value = mock_client
+    monkeypatch.setitem(sys.modules, "typesafe_sdk", mock_sdk)
+
+    cache_file = tmp_path / "idempotent_jev_cache.json"
+    classifier = JevClassifier(api_key="ts_test_key", modo="jev_remoto", cache_file=cache_file)
+
+    sample_doc = "Capítulo 1. Fundamentos epistemológicos da psicanálise freudiana."
+
+    # 1. Primeira chamada: consulta API remota e persiste cache
+    res1 = classifier.classify_and_validate(pdf_path="livro_epist.pdf", texto_pre_extraido=sample_doc, total_paginas=200)
+    assert res1.classification == "livro"
+    assert res1.provider == "typesafe"
+    assert mock_client.system_one.call_count == 1
+
+    # 2. Simula falha de persistência no disco (ex.: erro de I/O na pasta de destino)
+    # Na retomada / reexecução da mesma análise, o cache DEVE ser reutilizado:
+    res2 = classifier.classify_and_validate(pdf_path="livro_epist.pdf", texto_pre_extraido=sample_doc, total_paginas=200)
+    assert res2.classification == "livro"
+    assert res2.provider == "typesafe"
+    assert res2.raw_jev_data.get("cached") is True
+    # mock_client.system_one NUNCA deve ser chamado uma segunda vez!
+    assert mock_client.system_one.call_count == 1
+
+
+def test_cli_cabecalho_truthful_remote_mode_and_network_status(monkeypatch):
+    """Verifica que o cabeçalho da CLI reflete fielmente o modo remoto exclusivo e a separação de rede."""
+    import io
+    from rich.console import Console
+    from organizador_pdf.cli import _cabecalho
+    import organizador_pdf.cli as cli_mod
+
+    buffer = io.StringIO()
+    test_console = Console(file=buffer, force_terminal=False, color_system=None, width=140)
+    monkeypatch.setattr(cli_mod, "saida", test_console)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "ts_test_key")
+
+    from pathlib import Path
+    orig = Path("/tmp/origem")
+    dest = Path("/tmp/destino")
+
+    # Modo remoto exclusivo com consultas bibliográficas desativadas:
+    # NÃO deve ser rotulado como "Modo Offline" genérico!
+    _cabecalho(
+        origem=orig,
+        destino=dest,
+        pdfs=[Path("doc.pdf")],
+        dry_run=False,
+        mover=False,
+        quarantine=True,
+        enriquecimento_online=False,
+        classificador="remoto",
+    )
+
+    output = buffer.getvalue()
+    assert "JEV remoto — TypeSafe AI" in output
+    assert "fallback local desativado" in output
+    assert "Transmissão JEV:" in output
+    assert "Ativa" in output
+    assert "Bases Bibliog.:" in output
+    assert "Desativadas" in output
+    assert "Modo Offline" not in output  # Não pode chamar de Modo Offline se o JEV remoto está ativo!
+
+
+
 
 
 

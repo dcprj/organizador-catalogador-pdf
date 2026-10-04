@@ -55,14 +55,19 @@ source .venv/bin/activate       # No Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
-### Instalação com Suporte Opcional TypeSafe AI
+### Instalação com Suporte TypeSafe AI (Modo Remoto Exclusivo)
 
-Se desejar suporte à classificação remota via TypeSafe AI:
+Para ambientes que utilizam a classificação remota via TypeSafe AI:
 ```bash
 pip install -e ".[typesafe]"
 ```
+Configure a chave de API no ambiente ou arquivo `.env`:
+```bash
+export TYPESAFE_API_KEY="sua_chave_typesafe"
+```
+Quando executado com `--classificador remoto` (ou `--classificador jev_remoto`), o sistema opera em modo remoto estrito: se a chave não estiver configurada ou o pacote `typesafe-sdk` não estiver instalado, a execução falhará imediatamente com erro claro (`ErroDeConfiguracao`), sem fallback silencioso para heurísticas locais.
 
-Para desenvolvimento e execução dos testes automatizados:
+Para desenvolvimento e execução da suíte completa de testes:
 ```bash
 pip install -e ".[dev]"
 ```

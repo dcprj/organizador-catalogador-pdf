@@ -175,7 +175,11 @@ class ExtractedCandidates(BaseModel):
     doi: Optional[str] = None
     doi_source: Optional[str] = None
     isbn: Optional[str] = None
+    isbn_source: Optional[str] = None
     issn: Optional[str] = None
+    issn_source: Optional[str] = None
+    title_source: Optional[str] = None
+    author_source: Optional[str] = None
     sample_text: str = ""
 
 
@@ -251,8 +255,14 @@ class Metadados(BaseModel):
     review_reasons: list[str] = Field(default_factory=list)
     source_apis: list[str] = Field(default_factory=list)
     confidence: float = 1.0
+    confidence_classification: float = 1.0
+    confidence_metadata: float = 1.0
     provedor_classificador: Optional[str] = None
     doi_source: Optional[str] = None
+    title_source: Optional[str] = None
+    author_source: Optional[str] = None
+    isbn_source: Optional[str] = None
+    issn_source: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -404,6 +414,7 @@ class Situacao(str, Enum):
     SUCESSO = "sucesso"
     FALHA = "falha"
     SIMULADO = "simulado"
+    PENDENTE_OCR = "pendente_ocr"
 
 
 class ResultadoDoArquivo(BaseModel):
@@ -424,6 +435,10 @@ class ResultadoDoArquivo(BaseModel):
     def ok(self) -> bool:
         return self.situacao in (Situacao.SUCESSO, Situacao.SIMULADO)
 
+    @property
+    def requer_ocr(self) -> bool:
+        return self.situacao is Situacao.PENDENTE_OCR or "ocr" in (self.erro or "").lower()
+
 
 class PipelineResult(BaseModel):
     """Resultado do pipeline compatível com os testes e scripts locais."""
@@ -437,4 +452,5 @@ class PipelineResult(BaseModel):
     success: bool
     is_dry_run: bool = False
     needs_review: bool = False
+    requires_ocr: bool = False
     error_message: Optional[str] = None

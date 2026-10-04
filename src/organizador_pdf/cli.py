@@ -293,6 +293,7 @@ def processar(
         estrutura=estrutura,
         quarantine=quarantine,
         enriquecimento_online=enriquecimento_online,
+        classificador=config.classificador,
         max_paginas=getattr(config, "max_paginas", 10),
         max_caracteres=getattr(config, "max_caracteres", 30000),
     )
@@ -425,38 +426,70 @@ def _cabecalho(
     estrutura: str = "cnpq",
     quarantine: bool = True,
     enriquecimento_online: bool = True,
+    classificador: Optional[str] = "auto",
     max_paginas: int = 10,
     max_caracteres: int = 30000,
 ) -> None:
+    modo_cls = (classificador or "auto").strip().lower()
     has_typesafe = bool(os.getenv("TYPESAFE_API_KEY"))
-    classificador_desc = (
-        "Jev System One (TypeSafe API + Heurísticas Locais)"
-        if has_typesafe
-        else "Jev System One (Heurísticas Locais Calibradas)"
-    )
-    enriquecimento_desc = (
-        "Ativo (Brasil API, Google Books, Crossref, OpenAlex)"
-        if enriquecimento_online
-        else "Desativado (Modo Offline)"
-    )
+    sdk_installed = False
+    try:
+        import typesafe_sdk  # noqa: F401
+        sdk_installed = True
+    except Exception:
+        pass
+
+    if modo_cls in ("remoto", "jev_remoto"):
+        classificador_desc = "JEV remoto — TypeSafe AI (modo exclusivo; fallback local desativado)"
+        transmissao_jev_desc = "[bold cyan]Ativa[/] (amostra textual até 3.000 caracteres via TypeSafe AI)"
+    elif modo_cls == "local":
+        classificador_desc = "JEV local — Heurísticas determinísticas calibradas (zero rede)"
+        transmissao_jev_desc = "[bold green]Inativa[/] (execução 100% local, zero dados transmitidos)"
+    else:  # auto
+        if has_typesafe and sdk_installed:
+            classificador_desc = "JEV híbrido — TypeSafe AI remoto com fallback local calibrado"
+            transmissao_jev_desc = "[bold cyan]Ativa[/] (amostra textual via TypeSafe AI se necessário)"
+        elif has_typesafe and not sdk_installed:
+            classificador_desc = "JEV local — Heurísticas calibradas (chave detectada mas typesafe-sdk não instalado)"
+            transmissao_jev_desc = "[bold green]Inativa[/] (execução 100% local)"
+        else:
+            classificador_desc = "JEV local — Heurísticas determinísticas calibradas (sem chave remota)"
+            transmissao_jev_desc = "[bold green]Inativa[/] (execução 100% local)"
+
+    if enriquecimento_online:
+        bibliografia_desc = "[bold cyan]Ativas[/] (Brasil API, Google Books, Crossref, OpenAlex — apenas metadados/IDs)"
+    else:
+        bibliografia_desc = "[dim]Desativadas[/] (zero consultas a bases externas)"
+
+    if modo_cls == "local" and not enriquecimento_online:
+        rede_geral = "[bold green]100% Offline (Zero Tráfego de Rede)[/]"
+    elif modo_cls in ("remoto", "jev_remoto") and not enriquecimento_online:
+        rede_geral = "[bold yellow]Classificação Remota JEV Ativa / Consultas Bibliográficas Desativadas[/]"
+    elif enriquecimento_online and modo_cls == "local":
+        rede_geral = "[bold yellow]Classificação Local (Zero Envio do PDF) / Consultas Bibliográficas Ativas[/]"
+    else:
+        rede_geral = "[bold cyan]Online (Classificação JEV e Consultas Bibliográficas)[/]"
+
     quarentena_desc = (
         "Ativa (documentos de baixa confiança ou divergência vão para revisao_manual/)"
         if quarantine
         else "Desativada"
     )
     linhas = [
-        f"[bold]Origem:[/]         {origem.resolve()}",
-        f"[bold]Destino:[/]        {destino.resolve()}",
-        f"[bold]PDFs:[/]           {len(pdfs)}",
-        f"[bold]Classificador:[/]  {classificador_desc}",
-        f"[bold]Enriquecimento:[/] {enriquecimento_desc}",
-        f"[bold]Análise:[/]        {max_paginas} primeiras + {max_paginas} últimas páginas (até {max_caracteres:,} caracteres)",
-        f"[bold]Quarentena:[/]     {quarentena_desc}",
-        f"[bold]Estrutura:[/]      " + ("Plana por categoria (<destino>/<tipo>/)" if estrutura == "plana" else "Hierárquica CNPq (<destino>/<Área>/<Subárea>/<Tipo>/)"),
-        f"[bold]Modo:[/]           " + ("mover" if mover else "copiar"),
+        f"[bold]Origem:[/]            {origem.resolve()}",
+        f"[bold]Destino:[/]           {destino.resolve()}",
+        f"[bold]PDFs:[/]              {len(pdfs)}",
+        f"[bold]Classificador:[/]     {classificador_desc}",
+        f"[bold]Transmissão JEV:[/]   {transmissao_jev_desc}",
+        f"[bold]Bases Bibliog.:[/]    {bibliografia_desc}",
+        f"[bold]Rede / Tráfego:[/]    {rede_geral}",
+        f"[bold]Análise:[/]           {max_paginas} primeiras + {max_paginas} últimas páginas (até {max_caracteres:,} caracteres)",
+        f"[bold]Quarentena:[/]        {quarentena_desc}",
+        f"[bold]Estrutura:[/]         " + ("Plana por categoria (<destino>/<tipo>/)" if estrutura == "plana" else "Hierárquica CNPq (<destino>/<Área>/<Subárea>/<Tipo>/)"),
+        f"[bold]Modo:[/]              " + ("mover" if mover else "copiar"),
     ]
     if paralelo > 1:
-        linhas.append(f"[bold]Paralelo:[/]       até {paralelo} arquivo(s) simultâneos")
+        linhas.append(f"[bold]Paralelo:[/]          até {paralelo} arquivo(s) simultâneos")
     if dry_run:
         linhas.append("[bold yellow]DRY-RUN — nenhum arquivo será gravado.[/]")
     saida.print(Panel("\n".join(linhas), title="Organizador de PDF", expand=False))
@@ -470,7 +503,14 @@ def _relatorio(
     arquivo_log: Path,
 ) -> None:
     sucessos = [r for r in resultados if r.ok]
-    falhas = [r for r in resultados if not r.ok]
+    pendentes_ocr = [
+        r for r in resultados
+        if r.situacao is Situacao.PENDENTE_OCR or r.requer_ocr
+    ]
+    falhas = [
+        r for r in resultados
+        if not r.ok and r not in pendentes_ocr
+    ]
 
     if sucessos:
         titulo = "Estrutura planejada (dry-run)" if dry_run else "Arquivos organizados"
@@ -518,59 +558,59 @@ def _relatorio(
         saida.print()
         saida.print(tabela_avisos)
 
-    if falhas:
-        escaneados = [
-            r for r in falhas
-            if "digitalizado/escaneado" in (r.erro or "").lower() or "ocr" in (r.erro or "").lower()
-        ]
-        outras_falhas = [r for r in falhas if r not in escaneados]
-
-        if escaneados:
-            tabela_escaneados = Table(
-                title="📄 PDFs Escaneados / Sem Camada de Texto (Requer OCR)",
-                show_lines=False,
-                expand=True,
-                border_style="magenta",
+    if pendentes_ocr:
+        tabela_escaneados = Table(
+            title="📄 PDFs Digitalizados / Pendentes de OCR (Sem texto nativo)",
+            show_lines=False,
+            expand=True,
+            border_style="magenta",
+        )
+        tabela_escaneados.add_column("Arquivo", overflow="ellipsis", max_width=34)
+        tabela_escaneados.add_column("Diagnóstico e Ação Recomendada", overflow="fold")
+        for resultado in pendentes_ocr:
+            tabela_escaneados.add_row(
+                resultado.origem.name,
+                resultado.erro or "Documento digitalizado sem texto nativo extraível. Execute OCR prévio (ex: ocrmypdf) antes de catalogar.",
             )
-            tabela_escaneados.add_column("Arquivo", overflow="ellipsis", max_width=34)
-            tabela_escaneados.add_column("Diagnóstico e Solução Recomendada", overflow="fold")
-            for resultado in escaneados:
-                tabela_escaneados.add_row(
-                    resultado.origem.name,
-                    resultado.erro or "Nenhum texto nativo extraível (requer OCR prévio)",
-                )
-            saida.print()
-            saida.print(tabela_escaneados)
+        saida.print()
+        saida.print(tabela_escaneados)
 
-        if outras_falhas:
-            tabela_erros = Table(title="Falhas de Processamento", show_lines=False, expand=True)
-            tabela_erros.add_column("Arquivo", overflow="ellipsis", max_width=34)
-            tabela_erros.add_column("Etapa", max_width=22)
-            tabela_erros.add_column("Erro", overflow="fold")
-            for resultado in outras_falhas:
-                tabela_erros.add_row(
-                    resultado.origem.name, resultado.etapa or "—", resultado.erro or "—"
-                )
-            saida.print()
-            saida.print(tabela_erros)
+    if falhas:
+        tabela_erros = Table(title="Falhas Técnicas de Processamento", show_lines=False, expand=True)
+        tabela_erros.add_column("Arquivo", overflow="ellipsis", max_width=34)
+        tabela_erros.add_column("Etapa", max_width=22)
+        tabela_erros.add_column("Erro", overflow="fold")
+        for resultado in falhas:
+            tabela_erros.add_row(
+                resultado.origem.name, resultado.etapa or "—", resultado.erro or "—"
+            )
+        saida.print()
+        saida.print(tabela_erros)
 
     simulados = sum(1 for r in resultados if r.situacao is Situacao.SIMULADO)
     gravados = sum(1 for r in resultados if r.situacao is Situacao.SUCESSO)
-    resumo = (
-        f"[green]{gravados} gravado(s)[/] · "
-        f"[cyan]{simulados} simulado(s)[/] · "
-        f"[red]{len(falhas)} falha(s)[/] · {len(resultados)} total"
-    )
+    partes_resumo = [
+        f"[green]{gravados} gravado(s)[/]",
+        f"[cyan]{simulados} simulado(s)[/]",
+    ]
+    if pendentes_ocr:
+        partes_resumo.append(f"[magenta]{len(pendentes_ocr)} pendente(s) de OCR[/]")
+    partes_resumo.append(f"[red]{len(falhas)} falha(s) técnica(s)[/]")
+    partes_resumo.append(f"{len(resultados)} total")
+    resumo = " · ".join(partes_resumo)
+
     if sucessos:
         typesafe_count = sum(1 for r in sucessos if getattr(r, "provedor_usado", "") in ("typesafe", "jev_remoto"))
         locais = len(sucessos) - typesafe_count
-        if typesafe_count > 0:
-            resumo += f"\n[dim]{locais} classificado(s) localmente (Jev System One) · {typesafe_count} via TypeSafe AI (remoto)[/]"
+        if typesafe_count == len(sucessos):
+            resumo += f"\n[dim]{typesafe_count} classificado(s) via JEV remoto (TypeSafe AI; fallback local desativado)[/]"
+        elif typesafe_count > 0:
+            resumo += f"\n[dim]{locais} classificado(s) localmente (Jev System One) · {typesafe_count} via TypeSafe AI[/]"
         else:
             resumo += f"\n[dim]{len(sucessos)} classificado(s) pelo motor determinístico local (Jev System One)[/]"
     if avisos:
         resumo += f"\n[yellow]{len(avisos)} com possível divergência/revisão manual[/]"
-    if falhas or avisos:
+    if falhas or avisos or pendentes_ocr:
         resumo += f"\nDetalhes em: {arquivo_log.resolve()}"
     saida.print()
     saida.print(Panel(resumo, title="Resumo", expand=False))
