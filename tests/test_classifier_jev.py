@@ -82,7 +82,8 @@ def test_jev_classifier_with_mocked_sdk(sample_pdf_generator):
     mock_client_instance.system_one.return_value = mock_response
     mock_client_instance.__enter__.return_value = mock_client_instance
 
-    with patch("typesafe_sdk.TypeSafeClient", return_value=mock_client_instance):
+    mock_sdk_mod = MagicMock(TypeSafeClient=MagicMock(return_value=mock_client_instance))
+    with patch.dict("sys.modules", {"typesafe_sdk": mock_sdk_mod}):
         classifier = JevClassifier(api_key="test_api_key")
         result = classifier.classify_and_validate(str(pdf_path))
 
