@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -43,22 +44,74 @@ class EstadoDeExecucao:
     """Estado global salvo para retomada do comando no terminal."""
 
     parametros: ParametrosSalvos
-    concluidos: set[str] = field(default_factory=set)
+    sucessos: set[str] = field(default_factory=set)
+    falhas: dict[str, str] = field(default_factory=dict)
+    versao: int = 1
 
-    def marcar_concluido(self, caminho: Path) -> None:
-        """Registra um PDF como definitivamente processado."""
-        self.concluidos.add(str(caminho.resolve()))
+    def __init__(
+        self,
+        parametros: ParametrosSalvos,
+        sucessos: Optional[Set[str]] = None,
+        falhas: Optional[Dict[str, str]] = None,
+        versao: int = 1,
+        concluidos: Optional[Set[str]] = None,
+    ) -> None:
+        self.parametros = parametros
+        if sucessos is not None:
+            self.sucessos = set(sucessos)
+        elif concluidos is not None:
+            self.sucessos = set(concluidos)
+        else:
+            self.sucessos = set()
+        self.falhas = dict(falhas) if falhas is not None else {}
+        self.versao = versao
+
+    @property
+    def concluidos(self) -> set[str]:
+        """Alias para compatibilidade retroativa com código e testes existentes."""
+        return self.sucessos
+
+    @concluidos.setter
+    def concluidos(self, valores: Set[str]) -> None:
+        self.sucessos = set(valores)
+
+    def marcar_sucesso(self, caminho: Path | str) -> None:
+        """Registra um PDF como concluído com sucesso."""
+        abs_p = str(Path(caminho).resolve())
+        self.sucessos.add(abs_p)
+        self.falhas.pop(abs_p, None)
         self.salvar()
 
+    def marcar_falha(self, caminho: Path | str, erro: str) -> None:
+        """Registra uma falha transitória/retentável em um PDF."""
+        abs_p = str(Path(caminho).resolve())
+        self.falhas[abs_p] = erro
+        self.salvar()
+
+    def marcar_concluido(self, caminho: Path | str) -> None:
+        """Compatibilidade: registra como sucesso."""
+        self.marcar_sucesso(caminho)
+
     def salvar(self) -> None:
+        """Gravação atômica do estado via arquivo temporário + os.replace."""
         CAMINHO_ESTADO.parent.mkdir(parents=True, exist_ok=True)
         dados = {
+            "versao": self.versao,
             "parametros": asdict(self.parametros),
-            "concluidos": sorted(self.concluidos),
+            "sucessos": sorted(self.sucessos),
+            "falhas": self.falhas,
+            "concluidos": sorted(self.sucessos),
         }
-        CAMINHO_ESTADO.write_text(
-            json.dumps(dados, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        arquivo_tmp = CAMINHO_ESTADO.with_name(f"{CAMINHO_ESTADO.name}.{os.getpid()}.tmp")
+        try:
+            arquivo_tmp.write_text(
+                json.dumps(dados, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            os.replace(arquivo_tmp, CAMINHO_ESTADO)
+        except Exception:
+            if arquivo_tmp.exists():
+                arquivo_tmp.unlink(missing_ok=True)
+            raise
 
     @classmethod
     def carregar(cls) -> Optional["EstadoDeExecucao"]:
@@ -67,15 +120,27 @@ class EstadoDeExecucao:
             return None
         try:
             dados = json.loads(CAMINHO_ESTADO.read_text(encoding="utf-8"))
+            if not isinstance(dados, dict):
+                return None
             params_raw = dados.get("parametros", {})
             from dataclasses import fields
             valid_field_names = {f.name for f in fields(ParametrosSalvos)}
             filtered_params = {k: v for k, v in params_raw.items() if k in valid_field_names}
+
+            sucessos_raw = dados.get("sucessos")
+            if sucessos_raw is None:
+                sucessos_raw = dados.get("concluidos", [])
+            sucessos = set(sucessos_raw)
+            falhas = dict(dados.get("falhas", {}))
+            versao = int(dados.get("versao", 1))
+
             return cls(
                 parametros=ParametrosSalvos(**filtered_params),
-                concluidos=set(dados.get("concluidos", [])),
+                sucessos=sucessos,
+                falhas=falhas,
+                versao=versao,
             )
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
 
     @staticmethod
@@ -130,7 +195,9 @@ class EstadoManager:
 
         try:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            self.state_file.write_text(json.dumps(self._state, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_file = self.state_file.with_name(f"{self.state_file.name}.{os.getpid()}.tmp")
+            tmp_file.write_text(json.dumps(self._state, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp_file, self.state_file)
         except Exception as e:
             logger.error("Falha ao salvar checkpoint em %s: %s", self.state_file, e)
 

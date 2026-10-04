@@ -229,12 +229,17 @@ def processar(
         saida.print(f"[yellow]Nenhum arquivo PDF encontrado em {origem.resolve()}[/]")
         raise typer.Exit(code=0)
 
-    # Filtra os já concluídos com --resume
+    # Filtra os já concluídos com sucesso com --resume
     if estado is not None and resume:
-        pdfs = [p for p in todos_pdfs if str(p.resolve()) not in estado.concluidos]
+        sucessos_anteriores = estado.sucessos
+        falhas_anteriores = set(estado.falhas.keys())
+        pdfs = [p for p in todos_pdfs if str(p.resolve()) not in sucessos_anteriores]
         pulados = len(todos_pdfs) - len(pdfs)
         if pulados:
-            saida.print(f"[dim]{pulados} arquivo(s) pulado(s) pois já foram concluídos.[/]")
+            saida.print(f"[dim]{pulados} arquivo(s) pulado(s) pois já foram concluídos com sucesso.[/]")
+        retentados = sum(1 for p in pdfs if str(p.resolve()) in falhas_anteriores)
+        if retentados:
+            saida.print(f"[yellow]{retentados} arquivo(s) com falha anterior serão retentados.[/]")
     else:
         pdfs = todos_pdfs
 
@@ -287,8 +292,16 @@ def processar(
         saida.print(f"\n[bold yellow]Lote interrompido ({interrompido}). Use --resume para continuar.[/]")
         raise typer.Exit(code=2)
 
-    if estado is not None and not dry_run and all(r.ok for r in resultados):
-        EstadoDeExecucao.limpar()
+    if estado is not None and not dry_run:
+        todos_resolvidos = {str(p.resolve()) for p in todos_pdfs}
+        restantes = todos_resolvidos - estado.sucessos
+        if not restantes and not estado.falhas:
+            EstadoDeExecucao.limpar()
+        elif limite and restantes:
+            saida.print(
+                f"[dim]Lote parcial concluído ({len(resultados)} processados). "
+                f"Estado preservado para os {len(restantes)} restantes com --resume.[/]"
+            )
 
     tem_falhas = any(not r.ok for r in resultados)
     if tem_falhas:
@@ -352,7 +365,10 @@ def _executar_lote(
                         resultados[pdf] = resultado
                         if estado is not None:
                             with lock_estado:
-                                estado.marcar_concluido(pdf)
+                                if resultado.ok:
+                                    estado.marcar_sucesso(pdf)
+                                else:
+                                    estado.marcar_falha(pdf, resultado.erro or "Falha no processamento")
                         with lock_progresso:
                             progresso.advance(tarefa)
                         if interrompido is None:

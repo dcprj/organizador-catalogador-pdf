@@ -257,6 +257,33 @@ class TestOrganizar:
 
         assert not origem.exists()
 
+    def test_falha_na_escrita_de_markdown_mantem_pdf_na_origem(
+        self, metadados: Metadados, tmp_path: Path, monkeypatch
+    ):
+        origem = tmp_path / "entrada.pdf"
+        origem.write_bytes(b"%PDF-1.4 fake")
+        destino = tmp_path / "saida"
+
+        orig_write = Path.write_text
+
+        def falso_write(self, *args, **kwargs):
+            if ".tmp" in self.name:
+                raise OSError("Disco cheio")
+            return orig_write(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", falso_write)
+
+        with pytest.raises(ErroDeOrganizacao, match="Falha ao gravar Markdown"):
+            organizar(
+                metadados,
+                pdf_origem=origem,
+                destino=destino,
+                markdown="# md",
+                mover=True,
+            )
+
+        assert origem.exists()
+
     def test_colisao_mantem_pdf_e_md_pareados(self, metadados: Metadados, tmp_path: Path):
         destino = tmp_path / "saida"
         for indice in range(2):

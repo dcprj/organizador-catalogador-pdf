@@ -303,14 +303,33 @@ def organizar(
             if destino_md:
                 destino_md = diretorio_md / f"{destino_pdf.stem}.md"
 
-            if mover:
-                shutil.move(str(pdf_origem), str(destino_pdf))
-            else:
-                shutil.copy2(str(pdf_origem), str(destino_pdf))
-
+            # 1. Se houver Markdown, grava via arquivo temporário atômico
+            md_gravado = False
             if markdown is not None and destino_md is not None:
-                destino_md.write_text(markdown, encoding="utf-8")
+                tmp_md = destino_md.with_name(f"{destino_md.name}.{os.getpid()}.tmp")
+                try:
+                    tmp_md.write_text(markdown, encoding="utf-8")
+                    os.replace(tmp_md, destino_md)
+                    md_gravado = True
+                except Exception as exc:
+                    if tmp_md.exists():
+                        tmp_md.unlink(missing_ok=True)
+                    raise ErroDeOrganizacao(f"Falha ao gravar Markdown em {destino_md}: {exc}") from exc
 
+            # 2. Copia ou move o PDF original com salvaguarda de rollback
+            try:
+                if mover:
+                    shutil.move(str(pdf_origem), str(destino_pdf))
+                else:
+                    shutil.copy2(str(pdf_origem), str(destino_pdf))
+            except Exception as exc:
+                # Rollback do Markdown se a movimentação/cópia do PDF falhar
+                if md_gravado and destino_md and destino_md.exists():
+                    destino_md.unlink(missing_ok=True)
+                raise ErroDeOrganizacao(f"Falha ao transferir PDF de {pdf_origem} para {destino_pdf}: {exc}") from exc
+
+    except ErroDeOrganizacao:
+        raise
     except Exception as exc:
         raise ErroDeOrganizacao(f"Falha ao organizar {pdf_origem.name} em {destino_pdf}: {exc}") from exc
 

@@ -100,6 +100,26 @@ class TestMarcarConcluido:
             str(pdf2.resolve()),
         }
 
+    def test_sucessos_e_falhas_separados(self, tmp_path: Path):
+        pdf1 = tmp_path / "ok.pdf"
+        pdf2 = tmp_path / "falha.pdf"
+        e = EstadoDeExecucao(parametros=_parametros())
+
+        e.marcar_sucesso(pdf1)
+        e.marcar_falha(pdf2, "conexão recusada")
+
+        recarregado = EstadoDeExecucao.carregar()
+        assert recarregado is not None
+        assert str(pdf1.resolve()) in recarregado.sucessos
+        assert str(pdf2.resolve()) not in recarregado.sucessos
+        assert recarregado.falhas[str(pdf2.resolve())] == "conexão recusada"
+
+        # Recuperação posterior da falha
+        e.marcar_sucesso(pdf2)
+        recarregado2 = EstadoDeExecucao.carregar()
+        assert str(pdf2.resolve()) in recarregado2.sucessos
+        assert str(pdf2.resolve()) not in recarregado2.falhas
+
 
 class TestLimpar:
     def test_remove_o_arquivo(self, tmp_path: Path):

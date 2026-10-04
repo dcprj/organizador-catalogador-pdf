@@ -154,7 +154,7 @@ class TestInterrupcaoEResume:
         assert resultado.exit_code == 2
         assert "nenhuma execução pendente" in resultado.output.lower()
 
-    def test_falhas_definitivas_nao_sao_retentadas_no_resume(self, lote, monkeypatch):
+    def test_falhas_anteriores_sao_retentadas_no_resume(self, lote, monkeypatch):
         origem, destino, pdfs = lote
 
         def falso_processar(self, caminho: Path) -> ResultadoDoArquivo:
@@ -175,9 +175,33 @@ class TestInterrupcaoEResume:
         segunda = runner.invoke(app, ["--resume"])
 
         assert segunda.exit_code == 0, segunda.output
-        # pdfs[0] falhou definitivamente na 1a execução -> não é retentado
-        assert pdfs[0] not in vistos
-        assert sorted(vistos) == [pdfs[1], pdfs[2]]
+        # pdfs[0] falhou na 1a execução -> deve ser retentado no resume!
+        assert pdfs[0] in vistos
+        assert sorted(vistos) == pdfs
+
+    def test_limite_parcial_preserva_estado_para_resume(self, lote, monkeypatch):
+        origem, destino, pdfs = lote
+        monkeypatch.setattr(Pipeline, "processar_arquivo", lambda self, c: _resultado_sucesso(c))
+
+        # Executa apenas 1 dos 3 arquivos
+        primeira = runner.invoke(app, ["--origem", str(origem), "--destino", str(destino), "--limite", "1"])
+        assert primeira.exit_code == 0
+
+        # O estado NÃO deve ser apagado porque ainda restam 2 arquivos do lote original
+        assert estado_mod.CAMINHO_ESTADO.exists()
+
+        # Retoma o lote restante
+        vistos: list[Path] = []
+        monkeypatch.setattr(
+            Pipeline,
+            "processar_arquivo",
+            lambda self, c: (vistos.append(c), _resultado_sucesso(c))[1],
+        )
+        segunda = runner.invoke(app, ["--resume"])
+        assert segunda.exit_code == 0
+        assert len(vistos) == 2
+        # Agora sim o lote todo foi concluído com sucesso -> estado limpo
+        assert not estado_mod.CAMINHO_ESTADO.exists()
 
 
 class TestEstatisticaLocalVsTypeSafe:
