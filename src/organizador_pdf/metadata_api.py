@@ -134,8 +134,9 @@ def clean_journal_name(journal: Optional[str]) -> Optional[str]:
 class MetadataEnricher:
     """Consolidates metadata by querying public academic, book, and national registry APIs."""
 
-    def __init__(self, timeout: float = DEFAULT_TIMEOUT):
+    def __init__(self, timeout: float = DEFAULT_TIMEOUT, online: bool = True):
         self.timeout = timeout
+        self.online = online
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": USER_AGENT})
         self.google_books_api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
@@ -175,6 +176,10 @@ class MetadataEnricher:
             classification=jev_result.classification,
             identifiers=Identifiers(doi=doi, isbn=isbn, issn=issn),
         )
+
+        if not self.online:
+            logger.info("Enriquecimento online desativado (modo offline). Mantendo metadados candidatos.")
+            return metadata
 
         sources_consulted: List[str] = []
 

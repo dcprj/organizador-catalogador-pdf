@@ -55,6 +55,7 @@ def processar(
     origem: Optional[Path] = typer.Option(
         None,
         "--origem",
+        "--input",
         "-i",
         help="Diretório contendo os PDFs a processar. Obrigatório, exceto com --resume.",
         exists=True,
@@ -65,6 +66,7 @@ def processar(
     destino: Optional[Path] = typer.Option(
         None,
         "--destino",
+        "--output",
         "-o",
         help="Diretório raiz onde os arquivos organizados serão salvos. Obrigatório, exceto com --resume.",
         file_okay=False,
@@ -104,9 +106,15 @@ def processar(
         "--quarantine/--no-quarantine",
         help="Direciona arquivos com avisos de divergência ou baixa confiança para revisao_manual/ (padrão: ligado).",
     ),
+    online: bool = typer.Option(
+        True,
+        "--online/--offline",
+        help="Permite ou desativa consultas a APIs públicas (Crossref, Google Books, Brasil API) para enriquecimento bibliográfico (padrão: online).",
+    ),
     paralelo: int = typer.Option(
         1,
         "--paralelo",
+        "-j",
         min=1,
         max=32,
         help="Número de arquivos processados simultaneamente (padrão: 1).",
@@ -129,6 +137,12 @@ def processar(
         "-v",
         help="Exibe mensagens detalhadas no terminal.",
     ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "--validate",
+        help="Executa em modo interativo de validação passo a passo com confirmação de metadados em tempo real.",
+    ),
     version: Optional[bool] = typer.Option(
         None,
         "--version",
@@ -139,6 +153,19 @@ def processar(
 ) -> None:
     """Executa a catalogação e organização do lote de PDFs."""
     configurar_logs(arquivo_log=arquivo_log, verbose=verbose)
+
+    if interactive:
+        if origem is None or destino is None:
+            saida.print("[bold red]--origem e --destino são obrigatórios para o modo interativo.[/]")
+            raise typer.Exit(code=2)
+        from scripts.interactive_validator import run_interactive_validator
+        cod = run_interactive_validator(
+            input_dir=str(origem.resolve()),
+            output_dir=str(destino.resolve()),
+            interactive=True,
+            move_original=mover,
+        )
+        raise typer.Exit(code=cod)
 
     # 1. Trata o --resume
     estado: Optional[EstadoDeExecucao] = None
@@ -208,6 +235,7 @@ def processar(
         dry_run=dry_run,
         mover=mover,
         paralelo=paralelo,
+        online=online,
     )
 
     opcoes = OpcoesDoPipeline(
@@ -216,6 +244,7 @@ def processar(
         mover=mover,
         subpasta_markdown=subpasta_markdown,
         quarantine=quarantine,
+        online=online,
     )
     pipeline = Pipeline(opcoes=opcoes)
 
@@ -322,13 +351,15 @@ def _cabecalho(
     dry_run: bool,
     mover: bool,
     paralelo: int = 1,
+    online: bool = True,
 ) -> None:
     linhas = [
         f"[bold]Origem:[/]  {origem.resolve()}",
         f"[bold]Destino:[/] {destino.resolve()}",
         f"[bold]PDFs:[/]    {len(pdfs)}",
-        "[bold]Motor:[/]   Deterministico Local (CIP, ABNT NBR 6023, APIs Publicas)",
-        "[bold]Analise:[/] 10 primeiras + 10 ultimas paginas (sem converter miolo)",
+        "[bold]Motor:[/]   Determinístico Local (CIP, ABNT NBR 6023)",
+        f"[bold]Rede:[/]    " + ("[green]Online[/] (consultas a APIs públicas ativas)" if online else "[yellow]100% Offline[/] (consultas externas desativadas)"),
+        "[bold]Análise:[/] 10 primeiras + 10 últimas páginas (sem converter miolo)",
         f"[bold]Modo:[/]    " + ("mover" if mover else "copiar"),
     ]
     if paralelo > 1:

@@ -256,3 +256,44 @@ def test_cli_new_flags_help():
     assert "--resume" in proc.stdout
     assert "--recursive" in proc.stdout
     assert "--no-quarantine" in proc.stdout
+    assert "--offline" in proc.stdout
+
+
+def test_metadata_enricher_offline_mode():
+    """Verify that MetadataEnricher in offline mode does not make external requests."""
+    from src.metadata_api import MetadataEnricher
+    from src.models import ExtractedCandidates, JevValidationResult
+
+    enricher = MetadataEnricher(online=False)
+    assert not enricher.online
+
+    dummy_jev = JevValidationResult(
+        classification="livro",
+        confidence=0.98,
+        reasoning="Test",
+        candidates=ExtractedCandidates(
+            raw_title="Título Offline",
+            raw_authors=["Autor Teste"],
+            raw_year=2024,
+            isbn="978-85-326-1234-5",
+        ),
+        probabilities={"isbn": 1.0},
+    )
+
+    result = enricher.enrich(dummy_jev)
+    assert result.title == "Título Offline"
+    assert result.authors == ["Autor Teste"]
+    assert result.year == 2024
+
+
+def test_cli_typer_flags_help():
+    """Verify that organizador-pdf CLI Typer includes --offline and --input/--output."""
+    from typer.testing import CliRunner
+    from src.organizador_pdf.cli import app
+
+    runner = CliRunner(env={"COLUMNS": "160"})
+    res = runner.invoke(app, ["--help"])
+    assert res.exit_code == 0
+    assert "--offline" in res.output
+    assert "--input" in res.output
+    assert "--output" in res.output

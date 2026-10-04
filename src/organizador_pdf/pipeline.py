@@ -50,14 +50,15 @@ class OpcoesDoPipeline:
     mover: bool = False
     subpasta_markdown: Optional[str] = None
     quarantine: bool = True
+    online: bool = True
 
 
 class ExtratorDeterministico:
     """Extrator padrão que roda localmente usando Jev/CIP e APIs públicas."""
 
-    def __init__(self) -> None:
+    def __init__(self, online: bool = True) -> None:
         self.classifier = JevClassifier()
-        self.enricher = MetadataEnricher()
+        self.enricher = MetadataEnricher(online=online)
 
     def extrair(self, documento: DocumentoConvertido) -> Metadados:
         jev_res = self.classifier.classify_and_validate(str(documento.caminho))
@@ -79,7 +80,8 @@ class Pipeline:
     ) -> None:
         self.config = config or Config()
         self.opcoes = opcoes or OpcoesDoPipeline(destino=Path("destino"))
-        self.extrator = extrator or ExtratorDeterministico()
+        online = getattr(self.opcoes, "online", True)
+        self.extrator = extrator or ExtratorDeterministico(online=online)
         self.extrator_fallback = extrator_fallback
 
     def processar_arquivo(self, caminho: Path) -> ResultadoDoArquivo:
@@ -96,7 +98,7 @@ class Pipeline:
             metadados, aviso, usou_fallback = self._extrair(documento, caminho.name)
             provedor_usado = self._nome_do_provedor_usado(usou_fallback)
 
-            if getattr(self.config, "verificar_online", True):
+            if getattr(self.opcoes, "online", True) and getattr(self.config, "verificar_online", True):
                 metadados, aviso_online = verificar_identificadores(metadados)
                 if aviso_online:
                     aviso = f"{aviso} Além disso, {aviso_online}" if aviso else aviso_online

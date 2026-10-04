@@ -190,7 +190,8 @@ def converter_pdf(
 
     if not texto_amostra.strip():
         raise ErroDeConversao(
-            "Nenhum texto nativo extraível — o PDF provavelmente é digitalizado/escaneado."
+            "Nenhum texto nativo extraível — o PDF provavelmente é digitalizado/escaneado. "
+            "Dica: use uma ferramenta de OCR (ex.: ocrmypdf) para adicionar camada de texto antes de catalogar."
         )
 
     return DocumentoConvertido(

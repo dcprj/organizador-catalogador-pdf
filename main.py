@@ -58,14 +58,18 @@ Classificações Suportadas:
 
     parser.add_argument(
         "--input",
+        "--origem",
         "-i",
+        dest="input",
         required=True,
         type=str,
         help="Caminho da pasta de origem contendo os arquivos PDF para processamento.",
     )
     parser.add_argument(
         "--output",
+        "--destino",
         "-o",
+        dest="output",
         required=True,
         type=str,
         help="Caminho da pasta de destino onde os arquivos serão organizados por classificação.",
@@ -100,6 +104,14 @@ Classificações Suportadas:
         action="store_true",
         default=False,
         help="Desativa o direcionamento para revisao_manual/ para documentos com baixa confiança ou metadados incertos.",
+    )
+    parser.add_argument(
+        "--offline",
+        "--no-online",
+        dest="offline",
+        action="store_true",
+        default=False,
+        help="Desativa consultas externas a APIs públicas (Crossref, Google Books, Brasil API), rodando 100%% offline.",
     )
     parser.add_argument(
         "--verbose",
@@ -157,11 +169,12 @@ def main() -> int:
     print(f"🔍 Recursivo  : {'Sim (--recursive)' if args.recursive else 'Não (somente raiz)'}")
     print(f"🔄 Retomada   : {'Ativa (--resume)' if args.resume else 'Padrão'}")
     print(f"🛡️  Quarentena : {'Desativada (--no-quarantine)' if args.no_quarantine else 'Ativa (revisao_manual/)'}")
+    print(f"🌐 Rede        : {'100% Offline (--offline)' if args.offline else 'Online (APIs públicas ativas)'}")
     if args.dry_run:
         print(f"⚠️  MODO      : SIMULAÇÃO / DRY-RUN (Nenhum arquivo será gravado ou movido)")
     print("=" * 75 + "\n")
 
-    organizer = PipelineOrganizer()
+    organizer = PipelineOrganizer(online=not args.offline)
     results = organizer.process_directory(
         input_dir=str(input_dir),
         output_dir=str(output_dir),

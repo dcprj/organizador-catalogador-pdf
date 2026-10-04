@@ -70,6 +70,9 @@ organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --mover --subpasta-md M
 # Processamento concorrente para grandes lotes
 organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --paralelo 4
 
+# Modo 100% offline (bloqueia consultas a APIs externas)
+organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --offline
+
 # Retomada automática após interrupção (Ctrl+C ou queda)
 organizador-pdf --resume
 ```
@@ -78,16 +81,18 @@ organizador-pdf --resume
 
 | Opção | Padrão | Descrição |
 | :--- | :--- | :--- |
-| `--origem` / `-i` | *obrigatório* | Diretório de origem contendo os arquivos PDF |
-| `--destino` / `-o` | *obrigatório* | Diretório raiz de destino da árvore organizada |
+| `--origem` / `--input` / `-i` | *obrigatório* | Diretório de origem contendo os arquivos PDF |
+| `--destino` / `--output` / `-o` | *obrigatório* | Diretório raiz de destino da árvore organizada |
 | `--dry-run` | `False` | Executa o pipeline sem realizar alterações em disco |
 | `--resume` | `False` | Retoma o lote pendente de onde parou |
 | `--recursive` / `-r` | `True` | Varredura recursiva em subpastas (`--no-recursive` desativa) |
 | `--mover` | `False` | Move o arquivo PDF original em vez de copiar |
 | `--subpasta-md` | `None` | Grava os arquivos `.md` em subpasta espelho |
+| `--offline` | `False` | Desativa consultas externas a APIs bibliográficas (`--online` reativa) |
 | `--paralelo` / `-j` | `1` | Número de workers concorrentes para processar o lote |
 | `--quarantine` | `True` | Roteia itens de baixa confiança para `revisao_manual/` |
 | `--limite` / `-n` | `None` | Limita o número máximo de arquivos processados |
+| `--interactive` / `--validate` | `False` | Modo interativo passo a passo com confirmação de metadados |
 | `--log` | `erros.log` | Arquivo para registro detalhado de erros |
 | `--verbose` / `-v` | `False` | Habilita logs informativos detalhados no console |
 | `--version` | — | Exibe a versão instalada da CLI |
@@ -139,7 +144,7 @@ Os testes são automatizados via `pytest` e não dependem de chamadas ativas de 
 pytest
 ```
 
-Resultado esperado: **177 testes passando com 100% de sucesso**.
+Resultado esperado: **179 testes passando com 100% de sucesso**.
 
 ---
 
