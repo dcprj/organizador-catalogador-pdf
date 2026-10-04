@@ -181,6 +181,9 @@ def main() -> int:
             verificar_online=config.verificar_online,
             max_paginas=config.max_paginas,
             max_caracteres=config.max_caracteres,
+            estrutura=args.estrutura,
+            quarantine=not args.no_quarantine,
+            dry_run=args.dry_run,
         )
 
     print("\n" + "=" * 75)

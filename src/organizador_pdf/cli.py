@@ -161,6 +161,9 @@ def processar(
     config = Config.do_ambiente()
     enriquecimento_online = config.verificar_online
 
+    if plana:
+        estrutura = "plana"
+
     if interactive:
         if origem is None or destino is None:
             saida.print("[bold red]--origem e --destino são obrigatórios para o modo interativo.[/]")
@@ -174,6 +177,10 @@ def processar(
             verificar_online=config.verificar_online,
             max_paginas=config.max_paginas,
             max_caracteres=config.max_caracteres,
+            estrutura=estrutura,
+            quarantine=quarantine,
+            subpasta_markdown=subpasta_markdown,
+            dry_run=dry_run,
         )
         raise typer.Exit(code=cod)
 

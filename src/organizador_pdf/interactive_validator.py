@@ -258,6 +258,10 @@ def validate_and_process_pdf(
     verificar_online: Optional[bool] = None,
     max_paginas: Optional[int] = None,
     max_caracteres: Optional[int] = None,
+    estrutura: str = "cnpq",
+    quarantine: bool = True,
+    subpasta_markdown: Optional[str] = None,
+    dry_run: bool = False,
     **kwargs,
 ) -> bool:
     """Process a single PDF through the complete interactive validation pipeline."""
@@ -372,26 +376,32 @@ def validate_and_process_pdf(
     )
     print(f"  {GREEN}✓ Markdown gerado com YAML Frontmatter e citação ABNT completa.{RESET}")
 
-    # Step 9: Organization
+    # Step 9: Organization (Canônica e Transacional via organizar())
     print_step(8, "Organizando e gravando arquivos no destino")
-    out_dir = Path(output_base_dir).resolve() / metadata.classification.lower()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    from .organizer import organizar
 
-    stem_name = generate_standardized_filename(metadata, fallback_name=pdf_file.name)
-    dest_pdf = out_dir / f"{stem_name}.pdf"
-    dest_md = out_dir / f"{stem_name}.md"
+    precisa_revisao = bool(quarantine and metadata.needs_review)
+    res_org = organizar(
+        metadados=metadata,
+        pdf_origem=pdf_file,
+        destino=Path(output_base_dir).resolve(),
+        markdown=md_content,
+        subpasta_markdown=subpasta_markdown,
+        mover=move_original,
+        dry_run=dry_run,
+        revisao_manual=precisa_revisao,
+        estrutura=estrutura,
+    )
 
-    # Save Markdown
-    dest_md.write_text(md_content, encoding="utf-8")
-    print(f"  {GREEN}✓ Markdown gravado em:{RESET} {dest_md.name}")
-
-    # Copy or Move PDF
-    if move_original:
-        shutil.move(str(pdf_file), str(dest_pdf))
-        print(f"  {GREEN}✓ PDF movido e padronizado como:{RESET} {dest_pdf.name}")
+    if dry_run:
+        print(f"  {YELLOW}ℹ [DRY-RUN] Destino simulado:{RESET} {res_org.pdf_destino}")
     else:
-        shutil.copy2(str(pdf_file), str(dest_pdf))
-        print(f"  {GREEN}✓ PDF copiado e padronizado como:{RESET} {dest_pdf.name}")
+        acao = "movido" if move_original else "copiado"
+        print(f"  {GREEN}✓ PDF {acao} e padronizado em:{RESET} {res_org.pdf_destino}")
+        if res_org.markdown_destino:
+            print(f"  {GREEN}✓ Markdown gravado em:{RESET} {res_org.markdown_destino}")
+        if precisa_revisao:
+            print(f"  {YELLOW}⚠️  Enviado para quarentena (revisao_manual/): baixa confiança ou inconsistência.{RESET}")
 
     return True
 
@@ -404,6 +414,10 @@ def run_interactive_validator(
     verificar_online: Optional[bool] = None,
     max_paginas: Optional[int] = None,
     max_caracteres: Optional[int] = None,
+    estrutura: str = "cnpq",
+    quarantine: bool = True,
+    subpasta_markdown: Optional[str] = None,
+    dry_run: bool = False,
     **kwargs,
 ):
     """Scan input folder and process all PDFs interactively."""
@@ -430,6 +444,7 @@ def run_interactive_validator(
     print(f"📁 Pasta de Origem : {BOLD}{in_path}{RESET}")
     print(f"🎯 Pasta de Destino: {BOLD}{out_path}{RESET}")
     print(f"📦 Mover original  : {'Sim' if move_original else 'Não (Copiando)'}")
+    print(f"📁 Estrutura       : {'Plana por categoria (<destino>/<tipo>/)' if estrutura == 'plana' else 'Hierárquica CNPq (<destino>/<Área>/<Subárea>/<Tipo>/)'}")
     print(f"🧠 Classificador   : Jev System One (TypeSafe / Heurísticas Locais)")
     print(f"🌐 APIs Externas   : {'Ativas (Crossref, Google Books, Brasil API, OpenAlex)' if verificar_online else 'Desativadas (ORGPDF_VERIFICAR_ONLINE=false)'}")
     print(f"📄 Amostragem      : até {max_paginas} páginas / {max_caracteres} caracteres")
@@ -460,6 +475,10 @@ def run_interactive_validator(
             verificar_online=verificar_online,
             max_paginas=max_paginas,
             max_caracteres=max_caracteres,
+            estrutura=estrutura,
+            quarantine=quarantine,
+            subpasta_markdown=subpasta_markdown,
+            dry_run=dry_run,
         )
 
     print(f"\n{BOLD}{GREEN}{'=' * 75}{RESET}")

@@ -574,6 +574,78 @@ def test_sampling_limits_affect_actual_text_extraction(tmp_path: Path, sample_pd
     assert res.classification in ["artigo", "livro", "tese", "revista", "apostila", "outros"]
 
 
+def test_interactive_validator_supports_estrutura_cnpq_and_plana(tmp_path: Path, sample_pdf_generator):
+    """Verify that validate_and_process_pdf honors estrutura='cnpq' and 'plana'."""
+    from organizador_pdf.interactive_validator import validate_and_process_pdf
+
+    pages = ["Conteúdo para teste de estrutura cnpq e plana."]
+    pdf_path = sample_pdf_generator("estrutura_test.pdf", "Estrutura Test", pages)
+
+    out_cnpq = tmp_path / "out_cnpq"
+    out_cnpq.mkdir()
+    ok_cnpq = validate_and_process_pdf(
+        pdf_path=str(pdf_path),
+        output_base_dir=str(out_cnpq),
+        interactive=False,
+        estrutura="cnpq",
+    )
+    assert ok_cnpq is True
+    # Deve conter estrutura hierárquica (subpastas além de apenas tipo)
+    cnpq_pdfs = list(out_cnpq.glob("*/*/*/*.pdf"))
+    assert len(cnpq_pdfs) == 1
+
+    out_plana = tmp_path / "out_plana"
+    out_plana.mkdir()
+    ok_plana = validate_and_process_pdf(
+        pdf_path=str(pdf_path),
+        output_base_dir=str(out_plana),
+        interactive=False,
+        estrutura="plana",
+    )
+    assert ok_plana is True
+    # Estrutura plana: <out_plana>/<tipo>/arquivo.pdf
+    plana_pdfs = list(out_plana.glob("*/*.pdf"))
+    assert len(plana_pdfs) == 1
+
+
+def test_interactive_validator_collision_avoidance(tmp_path: Path, sample_pdf_generator):
+    """Verify that validate_and_process_pdf avoids overwriting existing files via caminho_disponivel."""
+    from organizador_pdf.interactive_validator import validate_and_process_pdf
+
+    pages = ["Conteúdo idêntico para testar colisão no validador interativo."]
+    pdf_path = sample_pdf_generator("colisao_test.pdf", "Colisao Test", pages)
+    out_dir = tmp_path / "out_colisao"
+    out_dir.mkdir()
+
+    # Primeira execução
+    validate_and_process_pdf(
+        pdf_path=str(pdf_path),
+        output_base_dir=str(out_dir),
+        interactive=False,
+        estrutura="plana",
+    )
+
+    # Segunda execução do mesmo arquivo
+    validate_and_process_pdf(
+        pdf_path=str(pdf_path),
+        output_base_dir=str(out_dir),
+        interactive=False,
+        estrutura="plana",
+    )
+
+    # Devem existir dois PDFs: o original e a versão com sufixo (2)
+    todos_pdfs = list(out_dir.glob("*/*.pdf"))
+    assert len(todos_pdfs) == 2
+    nomes = [p.name for p in todos_pdfs]
+    assert any("(2).pdf" in n for n in nomes)
+
+    todos_mds = list(out_dir.glob("*/*.md"))
+    assert len(todos_mds) == 2
+    nomes_md = [m.name for m in todos_mds]
+    assert any("(2).md" in n for n in nomes_md)
+
+
+
 
 
 

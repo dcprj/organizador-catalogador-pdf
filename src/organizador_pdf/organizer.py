@@ -134,11 +134,12 @@ def montar_diretorio(
     Suporta estrutura 'cnpq' (hierárquica por Área/Subárea/Tipo) ou 'plana' (direto por Tipo).
     """
     raiz = destino / PASTA_REVISAO_MANUAL if revisao_manual else destino
-    tipo = sanitizar(metadados.plural_do_tipo) or "Outros"
 
     if estrutura == "plana":
-        diretorio_pdf = raiz / tipo.lower()
+        tipo_plana = sanitizar(getattr(metadados, "classification", "") or metadados.tipo_publicacao.value).lower()
+        diretorio_pdf = raiz / (tipo_plana or "outros")
     else:
+        tipo = sanitizar(metadados.plural_do_tipo) or "Outros"
         area = sanitizar(metadados.area_principal) or SEM_VALOR
         subarea = sanitizar(metadados.subarea) or area
         diretorio_pdf = raiz / area / subarea / tipo
@@ -416,35 +417,20 @@ class PipelineOrganizer:
                 pdf_path=str(orig_p),
             )
 
-            # 5. Organização das pastas
+            # 5. Organização das pastas via função canônica organizar()
             precisa_revisao = bool(quarantine and meta.needs_review)
-            classif_plural = meta.classification.lower()
-            pasta_tipo = out_base
-            if precisa_revisao:
-                pasta_tipo = pasta_tipo / PASTA_REVISAO_MANUAL
-
-            if self.estrutura == "cnpq":
-                area = sanitizar(meta.area or "Outros") or SEM_VALOR
-                subarea = area
-                pasta_tipo = pasta_tipo / area / subarea / classif_plural
-            else:
-                pasta_tipo = pasta_tipo / classif_plural
-
-            stem = generate_standardized_filename(meta, fallback_name=orig_p.name)
-            target_pdf = pasta_tipo / f"{stem}.pdf"
-            target_md = pasta_tipo / f"{stem}.md"
-
-            if not dry_run:
-                pasta_tipo.mkdir(parents=True, exist_ok=True)
-                target_pdf = caminho_disponivel(target_pdf)
-                target_md = target_pdf.with_suffix(".md")
-
-                if move_original:
-                    shutil.move(str(orig_p), str(target_pdf))
-                else:
-                    shutil.copy2(str(orig_p), str(target_pdf))
-
-                target_md.write_text(md_content, encoding="utf-8")
+            res_org = organizar(
+                metadados=meta,
+                pdf_origem=orig_p,
+                destino=out_base,
+                markdown=md_content,
+                mover=move_original,
+                dry_run=dry_run,
+                revisao_manual=precisa_revisao,
+                estrutura=self.estrutura,
+            )
+            target_pdf = res_org.pdf_destino
+            target_md = res_org.markdown_destino or target_pdf.with_suffix(".md")
 
             return PipelineResult(
                 original_pdf=str(orig_p),

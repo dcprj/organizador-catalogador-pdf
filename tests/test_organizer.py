@@ -124,6 +124,11 @@ class TestMontarDiretorio:
         pdf, _ = montar_diretorio(tmp_path, metadados, revisao_manual=False)
         assert "revisao_manual" not in pdf.parts
 
+    def test_estrutura_plana(self, metadados: Metadados, tmp_path: Path):
+        pdf, md = montar_diretorio(tmp_path, metadados, estrutura="plana")
+        assert pdf == tmp_path / "livro"
+        assert md == pdf
+
 
 class TestGerarMarkdown:
     def test_frontmatter_valido_e_secoes(self, metadados: Metadados):
