@@ -119,13 +119,13 @@ def strip_author_prefixes(author: str) -> str:
     return cleaned
 
 
-def extract_native_sample_text(
+def extract_native_sample_text_with_count(
     pdf_path: str,
     head_pages: int = 10,
-    tail_pages: int = 10,
+    tail_pages: Optional[int] = None,
     max_pages: Optional[int] = None,
-) -> Tuple[str, List[str]]:
-    """Extract selectable native text from the first 10 and last 10 pages of a PDF.
+) -> Tuple[str, List[str], int]:
+    """Extract selectable native text from the first and last pages of a PDF and return total pages.
 
     Strictly native extraction without OCR. Captures front matter (title, authors, CIP)
     and back matter (references, colophon, publication details).
@@ -135,15 +135,21 @@ def extract_native_sample_text(
 
     if max_pages is not None:
         head_pages = max_pages
-        tail_pages = 0
+        if tail_pages is None:
+            tail_pages = 0
+    elif tail_pages is None:
+        tail_pages = head_pages
 
     pages_text: List[str] = []
     with pymupdf.open(pdf_path) as doc:
         total = len(doc)
-        if total <= (head_pages + tail_pages):
+        effective_tail = tail_pages or 0
+        if total <= (head_pages + effective_tail):
             page_indices = list(range(total))
         else:
-            page_indices = list(range(head_pages)) + list(range(total - tail_pages, total))
+            page_indices = list(range(head_pages)) + (
+                list(range(total - effective_tail, total)) if effective_tail > 0 else []
+            )
 
         # Preserve ordering without duplicates
         seen = set()
@@ -160,6 +166,19 @@ def extract_native_sample_text(
 
     non_empty = [p for p in pages_text if p]
     combined_text = "\n\n".join(non_empty).strip()
+    return combined_text, pages_text, total
+
+
+def extract_native_sample_text(
+    pdf_path: str,
+    head_pages: int = 10,
+    tail_pages: Optional[int] = None,
+    max_pages: Optional[int] = None,
+) -> Tuple[str, List[str]]:
+    """Extract selectable native text from the first and last pages of a PDF."""
+    combined_text, pages_text, _ = extract_native_sample_text_with_count(
+        pdf_path, head_pages=head_pages, tail_pages=tail_pages, max_pages=max_pages
+    )
     return combined_text, pages_text
 
 
@@ -447,12 +466,14 @@ def extract_candidate_metadata(
     """Extract preliminary metadata candidates from native text, page-by-page CIP, and filename."""
     candidates = ExtractedCandidates(sample_text=sample_text[:4000])
 
-    # 1. Document structural parsing (CIP card and Thesis Resumo) - HIGHEST PRIORITY
+    # 1. Document structural parsing (CIP card and Thesis Resumo) and front matter - HIGHEST PRIORITY
+    head_text = ""
     if pdf_path and os.path.exists(pdf_path):
         try:
             with pymupdf.open(pdf_path) as doc:
+                total_p = len(doc)
                 # 1a. Page-by-page CIP extraction
-                for page_idx in range(min(6, len(doc))):
+                for page_idx in range(min(6, total_p)):
                     p_text = doc[page_idx].get_text("text") or ""
                     cip_meta = parse_page_cip(p_text)
                     if cip_meta:
@@ -490,20 +511,53 @@ def extract_candidate_metadata(
                             candidates.raw_publisher = thesis_resumo["institution"]
                         if thesis_resumo.get("city") and not candidates.raw_city:
                             candidates.raw_city = thesis_resumo["city"]
+
+                # 2. Extract DOI and ISSN strictly from front pages (pages 1 to 5)
+                head_text = "\n".join(doc[i].get_text("text") or "" for i in range(min(5, total_p)))
+
+                # 4. If no ISBN in front matter, check colophon / back pages
+                if not candidates.isbn:
+                    check_pages = list(range(max(0, total_p - 30), total_p))
+                    for p_num in check_pages:
+                        p_txt = doc[p_num].get_text("text") or ""
+                        p_low = p_txt.lower()
+                        if any(ad in p_low for ad in [
+                            "compre agora e leia", "outras obras", "leia também", "do mesmo autor",
+                            "compre agora", "compre já", "comprar livro", "conheça também"
+                        ]):
+                            continue
+                        m_isbn = re.search(r"\bISBN(?:-1[03])?[:\s]+([0-9Xx -]{10,17})\b", p_txt, re.I)
+                        if m_isbn:
+                            raw_val = m_isbn.group(1)
+                            cleaned_digits = re.sub(r"[^0-9X]", "", raw_val)
+                            if len(cleaned_digits) in (10, 13):
+                                candidates.isbn = cleaned_digits
+                                break
         except Exception as e:
             logger.debug("Page structural parsing exception: %s", e)
-
-    # 2. Extract DOI and ISSN STRICTLY from front pages (pages 1 to 5)
-    # Never extract DOIs/ISSNs from bibliography or reference lists at the end of books/theses!
-    head_text = ""
-    if pdf_path and os.path.exists(pdf_path):
-        try:
-            with pymupdf.open(pdf_path) as doc:
-                head_text = "\n".join(doc[i].get_text("text") or "" for i in range(min(5, len(doc))))
-        except Exception:
-            head_text = sample_text
     else:
-        # Cut sample_text before bibliography section
+        # Fallback to sample_text when no pdf_path provided
+        cip_meta = parse_page_cip(sample_text[:10000])
+        if cip_meta:
+            if cip_meta.get("title") and len(cip_meta["title"]) > 3:
+                candidates.raw_title = cip_meta["title"]
+            if cip_meta.get("subtitle"):
+                candidates.raw_subtitle = cip_meta["subtitle"]
+            if cip_meta.get("authors"):
+                candidates.raw_authors = cip_meta["authors"]
+            if cip_meta.get("publisher"):
+                candidates.raw_publisher = cip_meta["publisher"]
+            if cip_meta.get("edition"):
+                candidates.raw_edition = cip_meta["edition"]
+            if cip_meta.get("year"):
+                candidates.raw_year = cip_meta["year"]
+            if cip_meta.get("city"):
+                candidates.raw_city = cip_meta["city"]
+            if cip_meta.get("isbn"):
+                candidates.isbn = cip_meta["isbn"]
+            if cip_meta.get("area"):
+                candidates.raw_area = cip_meta["area"]
+
         ref_cut = re.split(r"\n\s*(?:refer[êe]ncias|references|bibliografia)\b", sample_text, flags=re.I)
         head_text = ref_cut[0] if ref_cut else sample_text
 
@@ -517,7 +571,7 @@ def extract_candidate_metadata(
     if issn_match:
         candidates.issn = issn_match.group(1).strip()
 
-    # 3. Extract ISBN from front pages if not already in CIP
+    # Extract ISBN from front matter if not already found in CIP
     if not candidates.isbn:
         isbn_match = re.search(r"\bISBN(?:-1[03])?[:\s]+([0-9Xx -]{10,17})\b", head_text, re.I)
         if isbn_match:
@@ -525,32 +579,6 @@ def extract_candidate_metadata(
             cleaned_digits = re.sub(r"[^0-9X]", "", raw_val)
             if len(cleaned_digits) in (10, 13):
                 candidates.isbn = cleaned_digits
-
-    # 4. If no ISBN in front matter, check colophon / back pages (skipping commercial catalog ads)
-    if not candidates.isbn and pdf_path and os.path.exists(pdf_path):
-        try:
-            with pymupdf.open(pdf_path) as doc:
-                total_p = len(doc)
-                check_pages = list(range(max(0, total_p - 30), total_p))
-                for p_num in check_pages:
-                    p_txt = doc[p_num].get_text("text") or ""
-                    p_low = p_txt.lower()
-                    # Skip commercial advertisements for other titles
-                    if any(ad in p_low for ad in [
-                        "compre agora e leia", "outras obras", "leia também", "do mesmo autor",
-                        "compre agora", "compre já", "comprar livro", "conheça também"
-                    ]):
-                        continue
-                    # Prefer explicit ISBN with label on colophon/copyright pages
-                    m_isbn = re.search(r"\bISBN(?:-1[03])?[:\s]+([0-9Xx -]{10,17})\b", p_txt, re.I)
-                    if m_isbn:
-                        raw_val = m_isbn.group(1)
-                        cleaned_digits = re.sub(r"[^0-9X]", "", raw_val)
-                        if len(cleaned_digits) in (10, 13):
-                            candidates.isbn = cleaned_digits
-                            break
-        except Exception as e:
-            logger.debug("Back-page ISBN search exception: %s", e)
 
     # 5. Filename metadata fallback
     fn_meta = parse_filename_extended(pdf_path) if pdf_path else {}
@@ -672,21 +700,22 @@ class JevClassifier:
         pdf_path: str,
         max_paginas: int = 10,
         max_caracteres: int = 30000,
+        texto_pre_extraido: Optional[str] = None,
+        total_paginas: Optional[int] = None,
     ) -> JevValidationResult:
         """Analyze PDF structure, sample text, and candidate metadata."""
-        combined_text, pages_text = extract_native_sample_text(
-            pdf_path, head_pages=max_paginas, tail_pages=max_paginas
-        )
-        if max_caracteres and len(combined_text) > max_caracteres:
-            combined_text = combined_text[:max_caracteres]
-        total_pages = 0
-        try:
-            with pymupdf.open(pdf_path) as doc:
-                total_pages = len(doc)
-        except Exception:
-            pass
-
-        candidates = extract_candidate_metadata(combined_text, pdf_path=pdf_path, total_pages=total_pages)
+        if texto_pre_extraido is not None:
+            combined_text = texto_pre_extraido[:max_caracteres] if max_caracteres else texto_pre_extraido
+            total_pages = total_paginas or 0
+            candidates = extract_candidate_metadata(combined_text, pdf_path=None, total_pages=total_pages)
+        else:
+            combined_text, pages_text = extract_native_sample_text(
+                pdf_path, head_pages=max_paginas, tail_pages=max_paginas
+            )
+            if max_caracteres and len(combined_text) > max_caracteres:
+                combined_text = combined_text[:max_caracteres]
+            total_pages = total_paginas or 0
+            candidates = extract_candidate_metadata(combined_text, pdf_path=pdf_path, total_pages=total_pages)
 
         # Attempt to run through TypeSafe SDK if API key is present
         if self.api_key:
@@ -871,10 +900,32 @@ class JevClassifier:
             elif total_pages <= 30:
                 scores["artigo"] += 3.5
 
-        best_class = max(scores, key=lambda k: scores[k])
-        best_score = max(0.1, scores[best_class])
-        total_positive = sum(s for s in scores.values() if s > 0) or 1.0
-        confidence = min(0.99, max(0.50, round(best_score / total_positive, 3)))
+        sorted_scores = sorted(scores.items(), key=lambda k: k[1], reverse=True)
+        best_class, best_score = sorted_scores[0]
+        second_class, second_score = sorted_scores[1] if len(sorted_scores) > 1 else ("outros", 0.0)
+        margin = max(0.0, best_score - max(0.0, second_score))
+
+        is_scanned_or_short = len(text.strip()) < 300
+        has_identifier = bool(candidates.doi or candidates.isbn or candidates.issn)
+
+        if candidates.doi and best_class == "artigo":
+            confidence = 0.95
+        elif candidates.isbn and best_class == "livro":
+            confidence = 0.95
+        elif candidates.issn and best_class == "revista":
+            confidence = 0.95
+        elif best_class in ("tese", "apostila") and best_score >= 12.0:
+            confidence = 0.92
+        elif best_class == "outros":
+            confidence = 0.30 if is_scanned_or_short else 0.35
+        elif is_scanned_or_short and not has_identifier and best_score < 10.0:
+            confidence = 0.40
+        elif margin < 1.0:
+            confidence = round(min(0.48, max(0.35, 0.35 + 0.13 * margin)), 2)
+        else:
+            total_positive = sum(s for s in scores.values() if s > 0) or 1.0
+            ratio = best_score / total_positive
+            confidence = round(min(0.90, max(0.52, 0.45 + 0.45 * ratio)), 2)
 
         # Calibrated Noul probabilities
         doi_prob = 0.98 if candidates.doi and "/" in candidates.doi else 0.0
@@ -898,7 +949,14 @@ class JevClassifier:
             classification_confidence=confidence,
             probabilities=probabilities,
             candidates=candidates,
-            raw_jev_data={"calibrated_scores": scores},
+            raw_jev_data={
+                "calibrated_scores": scores,
+                "best_class": best_class,
+                "best_score": round(best_score, 2),
+                "second_class": second_class,
+                "second_score": round(second_score, 2),
+                "margin": round(margin, 2),
+            },
         )
 
     classify_and_extract = classify_and_validate

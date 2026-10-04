@@ -588,6 +588,7 @@ def test_interactive_validator_supports_estrutura_cnpq_and_plana(tmp_path: Path,
         output_base_dir=str(out_cnpq),
         interactive=False,
         estrutura="cnpq",
+        quarantine=False,
     )
     assert ok_cnpq is True
     # Deve conter estrutura hierárquica (subpastas além de apenas tipo)
@@ -601,6 +602,7 @@ def test_interactive_validator_supports_estrutura_cnpq_and_plana(tmp_path: Path,
         output_base_dir=str(out_plana),
         interactive=False,
         estrutura="plana",
+        quarantine=False,
     )
     assert ok_plana is True
     # Estrutura plana: <out_plana>/<tipo>/arquivo.pdf
@@ -623,6 +625,7 @@ def test_interactive_validator_collision_avoidance(tmp_path: Path, sample_pdf_ge
         output_base_dir=str(out_dir),
         interactive=False,
         estrutura="plana",
+        quarantine=False,
     )
 
     # Segunda execução do mesmo arquivo
@@ -631,6 +634,7 @@ def test_interactive_validator_collision_avoidance(tmp_path: Path, sample_pdf_ge
         output_base_dir=str(out_dir),
         interactive=False,
         estrutura="plana",
+        quarantine=False,
     )
 
     # Devem existir dois PDFs: o original e a versão com sufixo (2)
@@ -643,6 +647,86 @@ def test_interactive_validator_collision_avoidance(tmp_path: Path, sample_pdf_ge
     assert len(todos_mds) == 2
     nomes_md = [m.name for m in todos_mds]
     assert any("(2).md" in n for n in nomes_md)
+
+
+def test_low_confidence_and_quarantine_policy(tmp_path: Path, sample_pdf_generator):
+    """Verify that ambiguous PDFs without identifiers receive confidence < 0.50 and are quarantined."""
+    from organizador_pdf.classifier_jev import JevClassifier
+    from organizador_pdf.metadata_api import MetadataEnricher
+    from organizador_pdf.pipeline import Pipeline, OpcoesDoPipeline
+
+    # Ambiguous document without clear keywords or identifiers
+    pages = ["Texto sem marcadores bibliográficos claros ou identificadores públicos."]
+    pdf_path = sample_pdf_generator("ambiguo.pdf", "Ambiguo Test", pages)
+
+    classifier = JevClassifier()
+    res = classifier.classify_and_validate(str(pdf_path))
+    assert res.classification_confidence < 0.50
+    assert "calibrated_scores" in res.raw_jev_data
+
+    enricher = MetadataEnricher(online=False)
+    meta = enricher.enrich(res)
+    assert meta.needs_review is True
+    assert len(meta.review_reasons) > 0
+    assert meta.confidence < 0.50
+
+    # Test via pipeline quarantine
+    out_dir = tmp_path / "out_quarantine"
+    out_dir.mkdir()
+    pipeline = Pipeline(opcoes=OpcoesDoPipeline(destino=out_dir, mover=False, quarantine=True))
+    result = pipeline.processar_arquivo(pdf_path)
+    assert result.ok is True
+    assert result.metadados.needs_review is True
+    assert result.pdf_destino is not None
+    assert "revisao_manual" in result.pdf_destino.parts
+
+
+def test_pre_extracted_text_used_without_reopening_pdf(tmp_path: Path, sample_pdf_generator, monkeypatch):
+    """Verify that classify_and_validate uses texto_pre_extraido without re-opening the PDF."""
+    import pymupdf
+    from organizador_pdf.classifier_jev import JevClassifier
+
+    pages = [f"Conteúdo da página {i}" for i in range(1, 5)]
+    pdf_path = sample_pdf_generator("pre_extraido.pdf", "Pre Extraido", pages)
+
+    open_calls = []
+    orig_open = pymupdf.open
+
+    def spy_open(*args, **kwargs):
+        open_calls.append(args)
+        return orig_open(*args, **kwargs)
+
+    monkeypatch.setattr(pymupdf, "open", spy_open)
+
+    classifier = JevClassifier()
+    # Pass pre-extracted text and total_paginas
+    res = classifier.classify_and_validate(
+        str(pdf_path),
+        texto_pre_extraido="Texto pré-extraído com abstract e introdução",
+        total_paginas=4,
+    )
+    assert res.classification in ["artigo", "livro", "tese", "revista", "apostila", "outros"]
+    # pymupdf.open should NOT have been called because text and page count were provided!
+    assert len(open_calls) == 0
+
+
+def test_extract_native_sample_text_with_count_head_and_tail(sample_pdf_generator):
+    """Verify that extract_native_sample_text_with_count captures both head, tail, and doc length."""
+    from organizador_pdf.classifier_jev import extract_native_sample_text_with_count
+
+    pages = [f"Página de teste número {i}" for i in range(1, 26)]
+    pdf_path = sample_pdf_generator("head_tail_count.pdf", "Head Tail Count", pages)
+
+    combined_text, pages_list, total = extract_native_sample_text_with_count(
+        str(pdf_path), head_pages=5, tail_pages=5
+    )
+    assert total == 25
+    assert len(pages_list) == 10
+    assert "Página de teste número 1" in combined_text
+    assert "Página de teste número 5" in combined_text
+    assert "Página de teste número 25" in combined_text
+    assert "Página de teste número 12" not in combined_text
+
 
 
 

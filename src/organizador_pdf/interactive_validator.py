@@ -125,9 +125,14 @@ def explain_jev_classification(
             print(f"    • Amostra de texto: {len(combined_text[:3000])} caracteres")
             print(f"    • Total de páginas: {total_pages}")
             print(f"    • Candidatos extraídos: Título={candidates.raw_title!r}, Autores={candidates.raw_authors!r}")
-            res = classifier.classify_and_validate(pdf_path, **classify_kwargs)
+            res = classifier.classify_and_validate(
+                pdf_path,
+                texto_pre_extraido=combined_text,
+                total_paginas=total_pages,
+                **classify_kwargs,
+            )
             print(f"  {GREEN}✓ Resposta da API TypeSafe:{RESET}")
-            print(f"    • Categoria escolhida: {BOLD}{res.classification}{RESET} (Confiança: {res.classification_confidence:.2f})")
+            print(f"    • Categoria escolhida: {BOLD}{res.classification}{RESET} (Pontuação Heurística: {res.classification_confidence:.2f})")
             print(f"    • Probabilidades dos campos: {res.probabilities}")
             return res
         else:
@@ -167,14 +172,22 @@ def explain_jev_classification(
     if candidates.issn:
         print(f"    • {GREEN}ISSN detectado:{RESET} {candidates.issn} (Indica 'revista')")
 
-    res = classifier.classify_and_validate(pdf_path, **classify_kwargs)
+    res = classifier.classify_and_validate(
+        pdf_path,
+        texto_pre_extraido=combined_text,
+        total_paginas=total_pages,
+        **classify_kwargs,
+    )
     scores = res.raw_jev_data.get("calibrated_scores", {})
-    print(f"  - Pontuação detalhada calculada pelo Jev:")
+    margin = res.raw_jev_data.get("margin")
+    print(f"  - Pontuação heurística detalhada calculada pelo Jev:")
     for cat, score in scores.items():
         bar = "■" * max(0, int(score))
         print(f"    • {cat:18s}: {score:5.1f} {DIM}{bar}{RESET}")
 
-    print(f"  {GREEN}✓ Classificação Jev:{RESET} {BOLD}{res.classification}{RESET} (Confiança: {res.classification_confidence:.2f})")
+    if margin is not None:
+        print(f"    • Margem heurística   : {margin:.1f} pts")
+    print(f"  {GREEN}✓ Classificação Jev:{RESET} {BOLD}{res.classification}{RESET} (Pontuação Heurística: {res.classification_confidence:.2f})")
     return res
 
 
@@ -401,7 +414,8 @@ def validate_and_process_pdf(
         if res_org.markdown_destino:
             print(f"  {GREEN}✓ Markdown gravado em:{RESET} {res_org.markdown_destino}")
         if precisa_revisao:
-            print(f"  {YELLOW}⚠️  Enviado para quarentena (revisao_manual/): baixa confiança ou inconsistência.{RESET}")
+            reasons = "; ".join(metadata.review_reasons) if metadata.review_reasons else "baixa pontuação heurística ou inconsistência"
+            print(f"  {YELLOW}⚠️  Enviado para quarentena (revisao_manual/): {reasons}.{RESET}")
 
     return True
 

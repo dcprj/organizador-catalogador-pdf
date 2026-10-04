@@ -277,6 +277,8 @@ class MarkdownConverter:
             if metadata.review_reasons:
                 frontmatter_dict["review_reasons"] = metadata.review_reasons
 
+        frontmatter_dict["confidence"] = metadata.confidence
+
         if tags:
             frontmatter_dict["tags"] = tags
 

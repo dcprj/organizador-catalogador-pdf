@@ -239,6 +239,10 @@ def gerar_markdown(
         "catalogado_em": date.today().isoformat(),
         "provedor_extracao": provedor_extracao,
         "extraido_via_fallback": extraido_via_fallback,
+        "confidence": metadados.confidence,
+        "needs_review": metadados.needs_review,
+        "review_reasons": metadados.review_reasons,
+        "source_apis": metadados.source_apis,
     }
 
     yaml_texto = yaml.safe_dump(

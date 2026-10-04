@@ -179,6 +179,8 @@ class MetadataEnricher:
 
         if not self.online:
             logger.info("Enriquecimento online desativado (modo offline). Mantendo metadados candidatos.")
+            metadata.confidence = jev_result.classification_confidence
+            self._evaluate_needs_review(metadata, jev_result, sources_consulted=[])
             return metadata
 
         sources_consulted: List[str] = []
@@ -230,17 +232,39 @@ class MetadataEnricher:
             self._apply_title_fallback(clean_title, jev_result.classification, metadata, sources_consulted)
 
         metadata.source_apis = sources_consulted
+        metadata.confidence = jev_result.classification_confidence
+        self._evaluate_needs_review(metadata, jev_result, sources_consulted=sources_consulted)
+        return metadata
 
-        # Evaluate needs_review (quarantine threshold)
-        if jev_result.classification_confidence < 0.50 and not sources_consulted and not metadata.identifiers.isbn and not metadata.identifiers.doi:
+    def _evaluate_needs_review(
+        self,
+        metadata: PublicationMetadata,
+        jev_result: JevValidationResult,
+        sources_consulted: List[str],
+    ) -> None:
+        """Evaluate quarantine and manual review criteria."""
+        margin = jev_result.raw_jev_data.get("margin") if isinstance(jev_result.raw_jev_data, dict) else None
+        has_verified_id = bool(metadata.identifiers.isbn or metadata.identifiers.doi or metadata.identifiers.issn)
+
+        if jev_result.classification_confidence < 0.50 and not sources_consulted and not has_verified_id:
             metadata.needs_review = True
-            metadata.review_reasons.append("Baixa confiança na classificação (System One) e nenhum identificador confirmado nas bases públicas")
+            metadata.review_reasons.append(
+                f"Baixa pontuação heurística de classificação ({jev_result.classification_confidence:.2f}) sem identificador público"
+            )
+        elif margin is not None and margin < 1.0 and not sources_consulted and not has_verified_id:
+            metadata.needs_review = True
+            metadata.review_reasons.append(
+                f"Margem estreita entre categorias candidatas ({margin:.1f} pts) sem identificador público"
+            )
+
+        if metadata.classification == "outros" and not sources_consulted and not has_verified_id:
+            if not metadata.needs_review:
+                metadata.needs_review = True
+                metadata.review_reasons.append("Documento classificado como 'outros' sem confirmação bibliográfica")
 
         if metadata.title in ("Sem Título", "Publicação Sem Título") or len(metadata.title) < 4:
             metadata.needs_review = True
             metadata.review_reasons.append("Documento sem título bibliográfico identificável")
-
-        return metadata
 
     def _apply_title_fallback(
         self,
