@@ -60,12 +60,23 @@ class OpcoesDoPipeline:
 class ExtratorDeterministico:
     """Extrator padrão que roda localmente usando Jev/CIP e APIs públicas."""
 
-    def __init__(self, enriquecimento_online: bool = True) -> None:
+    def __init__(
+        self,
+        enriquecimento_online: bool = True,
+        max_paginas: int = 10,
+        max_caracteres: int = 30000,
+    ) -> None:
         self.classifier = JevClassifier()
         self.enricher = MetadataEnricher(online=enriquecimento_online)
+        self.max_paginas = max_paginas
+        self.max_caracteres = max_caracteres
 
     def extrair(self, documento: DocumentoConvertido) -> Metadados:
-        jev_res = self.classifier.classify_and_validate(str(documento.caminho))
+        jev_res = self.classifier.classify_and_validate(
+            str(documento.caminho),
+            max_paginas=self.max_paginas,
+            max_caracteres=self.max_caracteres,
+        )
         meta = self.enricher.enrich(jev_res)
         abnt_ref = ABNTFormatter.format(meta)
         meta.referencia_abnt = abnt_ref
@@ -86,7 +97,11 @@ class Pipeline:
         self.opcoes = opcoes or OpcoesDoPipeline(destino=Path("destino"))
         enriquecer = getattr(self.opcoes, "enriquecimento_online", getattr(self.opcoes, "online", True))
         enriquecer = enriquecer and getattr(self.config, "verificar_online", True)
-        self.extrator = extrator or ExtratorDeterministico(enriquecimento_online=enriquecer)
+        self.extrator = extrator or ExtratorDeterministico(
+            enriquecimento_online=enriquecer,
+            max_paginas=getattr(self.config, "max_paginas", 10),
+            max_caracteres=getattr(self.config, "max_caracteres", 30000),
+        )
         self.extrator_fallback = extrator_fallback
 
     def processar_arquivo(self, caminho: Path) -> ResultadoDoArquivo:

@@ -89,11 +89,27 @@ def explain_jev_classification(
     candidates: ExtractedCandidates,
     total_pages: int,
     api_key: Optional[str] = None,
+    max_paginas: Optional[int] = None,
+    max_caracteres: Optional[int] = None,
     **kwargs,
 ) -> JevValidationResult:
     """Run Jev classifier while providing transparent diagnostic reporting."""
+    if kwargs:
+        import warnings
+        for arg in kwargs:
+            warnings.warn(
+                f"O parâmetro '{arg}' em explain_jev_classification foi descontinuado e não tem mais efeito.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
     actual_api_key = api_key or os.getenv("TYPESAFE_API_KEY")
     classifier = JevClassifier(api_key=actual_api_key)
+
+    classify_kwargs: Dict[str, Any] = {}
+    if max_paginas is not None:
+        classify_kwargs["max_paginas"] = max_paginas
+    if max_caracteres is not None:
+        classify_kwargs["max_caracteres"] = max_caracteres
 
     if actual_api_key:
         print(f"  {GREEN}✓ Chave TYPESAFE_API_KEY detectada.{RESET}")
@@ -102,7 +118,7 @@ def explain_jev_classification(
         print(f"    • Amostra de texto: {len(combined_text[:3000])} caracteres")
         print(f"    • Total de páginas: {total_pages}")
         print(f"    • Candidatos extraídos: Título={candidates.raw_title!r}, Autores={candidates.raw_authors!r}")
-        res = classifier.classify_and_validate(pdf_path)
+        res = classifier.classify_and_validate(pdf_path, **classify_kwargs)
         print(f"  {GREEN}✓ Resposta da API TypeSafe:{RESET}")
         print(f"    • Categoria escolhida: {BOLD}{res.classification}{RESET} (Confiança: {res.classification_confidence:.2f})")
         print(f"    • Probabilidades dos campos: {res.probabilities}")
@@ -143,7 +159,7 @@ def explain_jev_classification(
         if candidates.issn:
             print(f"    • {GREEN}ISSN detectado:{RESET} {candidates.issn} (Indica 'revista')")
 
-        res = classifier.classify_and_validate(pdf_path)
+        res = classifier.classify_and_validate(pdf_path, **classify_kwargs)
         scores = res.raw_jev_data.get("calibrated_scores", {})
         print(f"  - Pontuação detalhada calculada pelo Jev:")
         for cat, score in scores.items():
@@ -297,6 +313,8 @@ def validate_and_process_pdf(
         candidates=candidates,
         total_pages=info["total_pages"],
         api_key=api_key,
+        max_paginas=max_paginas,
+        max_caracteres=max_caracteres,
     )
 
     # Step 5: External API Enrichment
@@ -471,6 +489,18 @@ def main():
         default=False,
         help="Executar sem pausar para confirmação do usuário.",
     )
+    parser.add_argument(
+        "--max-paginas",
+        type=int,
+        default=None,
+        help="Limite de páginas para amostragem inicial/final (padrão: 10).",
+    )
+    parser.add_argument(
+        "--max-caracteres",
+        type=int,
+        default=None,
+        help="Teto de caracteres da amostra para análise (padrão: 30000).",
+    )
 
     args = parser.parse_args()
 
@@ -479,6 +509,8 @@ def main():
         output_dir=args.output,
         interactive=not args.non_interactive,
         move_original=args.move,
+        max_paginas=args.max_paginas,
+        max_caracteres=args.max_caracteres,
     )
 
 

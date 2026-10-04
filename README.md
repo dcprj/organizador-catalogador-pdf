@@ -9,7 +9,7 @@ A partir da versão **v0.4.0**, o projeto adota um **motor determinístico com o
 - **Extração de Ficha Catalográfica (CIP)**: identifica e decodifica blocos de catalogação na fonte (AACR2 / ISBD) nas páginas iniciais.
 - **Validação e Enriquecimento Multi-API Pública**: consulta gratuita contra Brasil API (Câmara Brasileira do Livro / ISBN), Google Books, Crossref (DOI), OpenAlex e OpenLibrary.
 - **Formatação ABNT NBR 6023:2018 Estrita**: manipulação correta de sobrenomes compostos e agnomes familiares (Filho, Neto, Júnior, Sobrinho).
-- **Markdown Companheiro Inteligente**: amostragem rápida das 10 primeiras e 10 últimas páginas para metadados, sem duplicar o texto integral do PDF.
+- **Markdown Companheiro Inteligente**: amostragem rápida das 10 primeiras e 10 últimas páginas para metadados (até 30.000 caracteres por padrão), sem duplicar o texto integral do PDF.
 - **Nomenclatura Visual Padronizada**: renomeação clara no formato `SOBRENOME, Nome - Título (Ano)`.
 
 ```
@@ -119,7 +119,7 @@ Recursos do Validador:
 ## Como Funciona o Pipeline
 
 1. **Amostragem Leve de Texto (`converter.py`)**:
-   Extrai o texto nativo das primeiras e últimas 10 páginas via PyMuPDF. PDFs escaneados (sem camada de texto nativa) são reportados para OCR prévio.
+   Extrai o texto nativo das primeiras e últimas 10 páginas (até 30.000 caracteres por padrão, configurável via `ORGPDF_MAX_PAGINAS` e `ORGPDF_MAX_CARACTERES`) via PyMuPDF. PDFs escaneados (sem camada de texto nativa) são reportados para OCR prévio.
 2. **Classificação e Heurísticas (`classifier_jev.py`)**:
    - Detecta Fichas Catalográficas (CIP) no padrão AACR2/ISBD.
    - Aplica filtros de disclaimers de repositórios universitários para evitar alucinação de autores institucionais.

@@ -47,8 +47,8 @@ class Config:
     """
 
     modelo: str = MODELO_PADRAO
-    max_paginas: int = 6
-    max_caracteres: int = 15_000
+    max_paginas: int = 10
+    max_caracteres: int = 30_000
     ollama_url: str = OLLAMA_URL_PADRAO
     #: Confere ISBN/DOI extraídos contra Crossref/Open Library (grátis, sem
     #: chave). É a única chamada de rede do app além do próprio Ollama — só
@@ -125,9 +125,9 @@ class Config:
 
         return cls(
             modelo=modelo_resolvido,
-            max_paginas=_inteiro_positivo("ORGPDF_MAX_PAGINAS", 6, cli=max_paginas),
+            max_paginas=_inteiro_positivo("ORGPDF_MAX_PAGINAS", 10, cli=max_paginas),
             max_caracteres=_inteiro_positivo(
-                "ORGPDF_MAX_CARACTERES", 15_000, cli=max_caracteres
+                "ORGPDF_MAX_CARACTERES", 30_000, cli=max_caracteres
             ),
             ollama_url=(ollama_url or os.getenv("ORGPDF_OLLAMA_URL") or OLLAMA_URL_PADRAO).strip()
             or OLLAMA_URL_PADRAO,

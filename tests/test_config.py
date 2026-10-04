@@ -71,9 +71,9 @@ class TestPrecedencia:
             Config.do_ambiente()
 
     def test_max_paginas_padrao_e_via_ambiente(self, monkeypatch):
-        assert Config.do_ambiente().max_paginas == 6
-        monkeypatch.setenv("ORGPDF_MAX_PAGINAS", "10")
         assert Config.do_ambiente().max_paginas == 10
+        monkeypatch.setenv("ORGPDF_MAX_PAGINAS", "8")
+        assert Config.do_ambiente().max_paginas == 8
 
     def test_max_paginas_via_cli_sobrescreve_ambiente(self, monkeypatch):
         monkeypatch.setenv("ORGPDF_MAX_PAGINAS", "10")
@@ -84,7 +84,7 @@ class TestPrecedencia:
             Config.do_ambiente(max_paginas=0)
 
     def test_max_caracteres_padrao_e_via_ambiente(self, monkeypatch):
-        assert Config.do_ambiente().max_caracteres == 15_000
+        assert Config.do_ambiente().max_caracteres == 30_000
         monkeypatch.setenv("ORGPDF_MAX_CARACTERES", "5000")
         assert Config.do_ambiente().max_caracteres == 5000
 

@@ -443,4 +443,137 @@ def test_deprecation_warnings_on_old_kwargs():
         PipelineOrganizer(sem_enriquecimento_online=True)
 
 
+def test_classify_and_validate_receives_limits_from_interactive_validator(tmp_path: Path, sample_pdf_generator, monkeypatch):
+    """Verify that validate_and_process_pdf forwards custom max_paginas and max_caracteres to classify_and_validate."""
+    import organizador_pdf.classifier_jev as cj
+    from organizador_pdf.interactive_validator import validate_and_process_pdf
+
+    pages = ["Conteúdo para teste do validador interativo com limites customizados."]
+    pdf_path = sample_pdf_generator("interativo_limites.pdf", "Interativo Limites", pages)
+    out_dir = tmp_path / "out_interativo"
+    out_dir.mkdir()
+
+    calls = []
+    orig = cj.JevClassifier.classify_and_validate
+
+    def spy(self, pdf_path, max_paginas=10, max_caracteres=30000, **kwargs):
+        calls.append({"pdf_path": pdf_path, "max_paginas": max_paginas, "max_caracteres": max_caracteres})
+        return orig(self, pdf_path, max_paginas=max_paginas, max_caracteres=max_caracteres, **kwargs)
+
+    monkeypatch.setattr(cj.JevClassifier, "classify_and_validate", spy)
+
+    validate_and_process_pdf(
+        pdf_path=str(pdf_path),
+        output_base_dir=str(out_dir),
+        interactive=False,
+        max_paginas=4,
+        max_caracteres=2500,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["max_paginas"] == 4
+    assert calls[0]["max_caracteres"] == 2500
+
+
+def test_classify_and_validate_receives_limits_from_cli_pipeline(tmp_path: Path, sample_pdf_generator, monkeypatch):
+    """Verify that Typer CLI pipeline forwards custom limits to classify_and_validate."""
+    from typer.testing import CliRunner
+    from organizador_pdf.cli import app
+    import organizador_pdf.classifier_jev as cj
+
+    in_dir = tmp_path / "cli_in"
+    out_dir = tmp_path / "cli_out"
+    in_dir.mkdir()
+    out_dir.mkdir()
+
+    pages = ["Conteúdo do PDF para teste CLI."]
+    pdf = sample_pdf_generator("cli_doc.pdf", "CLI Doc", pages)
+    pdf.rename(in_dir / "cli_doc.pdf")
+
+    monkeypatch.setenv("ORGPDF_MAX_PAGINAS", "5")
+    monkeypatch.setenv("ORGPDF_MAX_CARACTERES", "10000")
+
+    calls = []
+    orig = cj.JevClassifier.classify_and_validate
+
+    def spy(self, pdf_path, max_paginas=10, max_caracteres=30000, **kwargs):
+        calls.append({"pdf_path": pdf_path, "max_paginas": max_paginas, "max_caracteres": max_caracteres})
+        return orig(self, pdf_path, max_paginas=max_paginas, max_caracteres=max_caracteres, **kwargs)
+
+    monkeypatch.setattr(cj.JevClassifier, "classify_and_validate", spy)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["-i", str(in_dir), "-o", str(out_dir), "--dry-run"])
+    assert result.exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["max_paginas"] == 5
+    assert calls[0]["max_caracteres"] == 10000
+
+
+def test_classify_and_validate_receives_limits_from_main(tmp_path: Path, sample_pdf_generator, monkeypatch):
+    """Verify that main.py forwards custom limits to classify_and_validate."""
+    import main
+    import organizador_pdf.classifier_jev as cj
+
+    in_dir = tmp_path / "main_in"
+    out_dir = tmp_path / "main_out"
+    in_dir.mkdir()
+    out_dir.mkdir()
+
+    pages = ["Conteúdo para teste via main.py."]
+    pdf = sample_pdf_generator("main_doc.pdf", "Main Doc", pages)
+    pdf.rename(in_dir / "main_doc.pdf")
+
+    monkeypatch.setenv("ORGPDF_MAX_PAGINAS", "7")
+    monkeypatch.setenv("ORGPDF_MAX_CARACTERES", "14000")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["main.py", "--input", str(in_dir), "--output", str(out_dir), "--dry-run"],
+    )
+
+    calls = []
+    orig = cj.JevClassifier.classify_and_validate
+
+    def spy(self, pdf_path, max_paginas=10, max_caracteres=30000, **kwargs):
+        calls.append({"pdf_path": pdf_path, "max_paginas": max_paginas, "max_caracteres": max_caracteres})
+        return orig(self, pdf_path, max_paginas=max_paginas, max_caracteres=max_caracteres, **kwargs)
+
+    monkeypatch.setattr(cj.JevClassifier, "classify_and_validate", spy)
+
+    ret = main.main()
+    assert ret == 0
+    assert len(calls) == 1
+    assert calls[0]["max_paginas"] == 7
+    assert calls[0]["max_caracteres"] == 14000
+
+
+def test_sampling_limits_affect_actual_text_extraction(tmp_path: Path, sample_pdf_generator, monkeypatch):
+    """Verify that max_paginas and max_caracteres effectively limit text extraction and candidate analysis."""
+    import organizador_pdf.classifier_jev as cj
+
+    # 12 pages of text with distinct markers
+    pages = [f"Página {i}: " + ("x" * 200) for i in range(1, 13)]
+    pdf_path = sample_pdf_generator("doc_12_paginas.pdf", "Doc 12 Paginas", pages)
+
+    calls_extract = []
+    orig_extract = cj.extract_native_sample_text
+
+    def spy_extract(pdf, head_pages=10, tail_pages=10, **kwargs):
+        calls_extract.append({"head_pages": head_pages, "tail_pages": tail_pages})
+        return orig_extract(pdf, head_pages=head_pages, tail_pages=tail_pages, **kwargs)
+
+    monkeypatch.setattr(cj, "extract_native_sample_text", spy_extract)
+
+    classifier = cj.JevClassifier()
+    # Call with max_paginas=2 and max_caracteres=300
+    res = classifier.classify_and_validate(str(pdf_path), max_paginas=2, max_caracteres=300)
+
+    assert len(calls_extract) == 1
+    assert calls_extract[0]["head_pages"] == 2
+    assert calls_extract[0]["tail_pages"] == 2
+    assert res.classification in ["artigo", "livro", "tese", "revista", "apostila", "outros"]
+
+
+
+
 
