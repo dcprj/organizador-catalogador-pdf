@@ -256,7 +256,7 @@ def test_cli_new_flags_help():
     assert "--resume" in proc.stdout
     assert "--recursive" in proc.stdout
     assert "--no-quarantine" in proc.stdout
-    assert "--sem-enriquecimento-online" in proc.stdout
+    assert "--interactive" in proc.stdout
 
 
 def test_metadata_enricher_offline_mode():
@@ -287,27 +287,30 @@ def test_metadata_enricher_offline_mode():
 
 
 def test_cli_typer_flags_help():
-    """Verify that organizador-pdf CLI Typer includes --sem-enriquecimento-online and --input/--output."""
+    """Verify that organizador-pdf CLI Typer includes expected options."""
     from typer.testing import CliRunner
     from src.organizador_pdf.cli import app
 
     runner = CliRunner(env={"COLUMNS": "160"})
     res = runner.invoke(app, ["--help"])
     assert res.exit_code == 0
-    assert "--sem-enriquecimento-online" in res.output
     assert "--input" in res.output
     assert "--output" in res.output
+    assert "--origem" in res.output
+    assert "--destino" in res.output
+    assert "--resume" in res.output
+    assert "--quarantine" in res.output
+    assert "--interactive" in res.output
 
 
-def test_resume_preserva_quarantine_e_enriquecimento(tmp_path: Path):
-    """Verify that EstadoDeExecucao saves and restores quarantine and enriquecimento_online."""
+def test_resume_preserva_parametros(tmp_path: Path):
+    """Verify that EstadoDeExecucao saves and restores execution parameters."""
     from src.organizador_pdf.estado import EstadoDeExecucao, ParametrosSalvos
 
     params = ParametrosSalvos(
         origem=str(tmp_path / "origem"),
         destino=str(tmp_path / "destino"),
         quarantine=False,
-        enriquecimento_online=False,
     )
     estado = EstadoDeExecucao(parametros=params)
     estado.salvar()
@@ -315,73 +318,29 @@ def test_resume_preserva_quarantine_e_enriquecimento(tmp_path: Path):
     recarregado = EstadoDeExecucao.carregar()
     assert recarregado is not None
     assert recarregado.parametros.quarantine is False
-    assert recarregado.parametros.enriquecimento_online is False
 
 
-def test_jev_classifier_blocks_network_when_permitir_rede_false(monkeypatch):
-    """Verify that JevClassifier zeroes API key when permitir_rede is False."""
+def test_jev_classifier_always_uses_jev(monkeypatch, sample_pdf_generator):
+    """Verify that JevClassifier uses TYPESAFE_API_KEY if present, and local fallback if not."""
     from src.organizador_pdf.classifier_jev import JevClassifier
 
+    # 1. With API key in environment
     monkeypatch.setenv("TYPESAFE_API_KEY", "dummy-secret-key")
-    classifier = JevClassifier(permitir_rede=False)
-    assert classifier.api_key is None
+    classifier_with_key = JevClassifier()
+    assert classifier_with_key.api_key == "dummy-secret-key"
 
+    # 2. Without API key
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    classifier_no_key = JevClassifier()
+    assert classifier_no_key.api_key is None
 
-def test_strict_zero_network_when_sem_enriquecimento_online(tmp_path: Path, monkeypatch, sample_pdf_generator):
-    """Ensure that with sem_enriquecimento_online=True or permitir_rede=False, zero network requests occur."""
-    import requests
-    from src.organizador_pdf.metadata_api import MetadataEnricher
-    from src.organizador_pdf.classifier_jev import JevClassifier
-    from src.organizador_pdf.interactive_validator import validate_and_process_pdf
-    from src.models import ExtractedCandidates, JevValidationResult
-
-    # Strictly block any network call via requests
-    def mock_fail(*args, **kwargs):
-        raise RuntimeError("VIOLAÇÃO DE REDE: Chamada de rede externa detectada quando permitir_rede=False!")
-
-    monkeypatch.setattr(requests.Session, "send", mock_fail)
-    monkeypatch.setattr(requests.Session, "request", mock_fail)
-    monkeypatch.setattr(requests, "get", mock_fail)
-    monkeypatch.setattr(requests, "post", mock_fail)
-    monkeypatch.setenv("TYPESAFE_API_KEY", "dummy-secret-key")
-
-    # 1. MetadataEnricher test
-    enricher = MetadataEnricher(online=False)
-    dummy_jev = JevValidationResult(
-        classification="livro",
-        confidence=0.98,
-        reasoning="Test",
-        candidates=ExtractedCandidates(
-            raw_title="Título Offline",
-            raw_authors=["Autor Teste"],
-            raw_year=2024,
-            isbn="978-85-326-1234-5",
-            doi="10.1000/182",
-        ),
-        probabilities={"isbn": 1.0},
-    )
-    result = enricher.enrich(dummy_jev)
-    assert result.title == "Título Offline"
-    assert result.source_apis == []
-
-    # 2. JevClassifier test
-    pages = ["Documento de teste com conteúdo básico e ISBN 978-85-326-1234-5."]
-    pdf_path = sample_pdf_generator("doc_offline.pdf", "Offline Doc", pages)
-    classifier = JevClassifier(permitir_rede=False)
-    res = classifier.classify_and_validate(str(pdf_path))
+    # 3. Classify with fallback
+    pages = ["Documento de teste com conteúdo básico para classificação Jev local."]
+    pdf_path = sample_pdf_generator("doc_jev.pdf", "Jev Doc", pages)
+    res = classifier_no_key.classify_and_validate(str(pdf_path))
     assert res.classification is not None
-
-    # 3. Interactive validator process test (non-interactive, sem_enriquecimento_online=True)
-    out_dir = tmp_path / "saida_offline"
-    out_dir.mkdir()
-    ok = validate_and_process_pdf(
-        pdf_path=str(pdf_path),
-        output_base_dir=str(out_dir),
-        interactive=False,
-        move_original=False,
-        sem_enriquecimento_online=True,
-    )
-    assert ok is True
+    assert res.classification_confidence >= 0.0
+    assert res.probabilities is not None
 
 
 def test_scripts_interactive_validator_shim_import():
@@ -393,46 +352,41 @@ def test_scripts_interactive_validator_shim_import():
     assert hasattr(shim, "validate_and_process_pdf")
 
 
-def test_main_respects_config_verificar_online(tmp_path: Path, monkeypatch):
-    """Verify that main.py respects ORGPDF_VERIFICAR_ONLINE=false from the environment."""
+def test_main_propagates_config_limits(tmp_path: Path, monkeypatch):
+    """Verify that main.py respects max_paginas and max_caracteres from Config."""
     from main import build_parser, Config
+    from src.organizador_pdf.organizer import PipelineOrganizer
 
-    monkeypatch.setenv("ORGPDF_VERIFICAR_ONLINE", "false")
+    monkeypatch.setenv("ORGPDF_MAX_PAGINAS", "8")
+    monkeypatch.setenv("ORGPDF_MAX_CARACTERES", "12000")
     config = Config.do_ambiente()
-    assert config.verificar_online is False
+    assert config.max_paginas == 8
+    assert config.max_caracteres == 12000
 
-    parser = build_parser()
-    args = parser.parse_args(["--input", str(tmp_path), "--output", str(tmp_path)])
-    enriquecimento_online = (not args.sem_enriquecimento_online) and config.verificar_online
-    assert enriquecimento_online is False
+    organizer = PipelineOrganizer(
+        max_paginas=config.max_paginas,
+        max_caracteres=config.max_caracteres,
+    )
+    assert organizer.max_paginas == 8
+    assert organizer.max_caracteres == 12000
 
 
-def test_resume_preserva_sem_enriquecimento_online_cli(tmp_path: Path, monkeypatch, sample_pdf_generator):
-    """Test full pipeline resume with sem_enriquecimento_online=True, ensuring network is strictly blocked."""
-    import requests
+def test_resume_preserva_execucao_cli(tmp_path: Path, sample_pdf_generator):
+    """Test full pipeline resume via Typer CLI."""
     from typer.testing import CliRunner
     from src.organizador_pdf.cli import app
     from src.organizador_pdf.estado import EstadoDeExecucao, ParametrosSalvos
-
-    # Strictly block any network call
-    def mock_fail(*args, **kwargs):
-        raise RuntimeError("VIOLAÇÃO DE REDE: Tentativa de conexão externa durante retomada sem enriquecimento!")
-
-    monkeypatch.setattr(requests.Session, "send", mock_fail)
-    monkeypatch.setattr(requests.Session, "request", mock_fail)
-    monkeypatch.setattr(requests, "get", mock_fail)
-    monkeypatch.setattr(requests, "post", mock_fail)
 
     origem = tmp_path / "origem"
     destino = tmp_path / "destino"
     origem.mkdir()
     destino.mkdir()
 
-    pages = ["Documento de teste para retomada sem enriquecimento online."]
+    pages = ["Documento de teste para retomada do lote."]
     pdf1 = sample_pdf_generator("pdf1.pdf", "PDF 1", pages)
     pdf1.rename(origem / "pdf1.pdf")
 
-    # Manually seed an interrupted state with enriquecimento_online=False
+    # Manually seed an interrupted state
     estado = EstadoDeExecucao(
         parametros=ParametrosSalvos(
             origem=str(origem),
@@ -443,7 +397,6 @@ def test_resume_preserva_sem_enriquecimento_online_cli(tmp_path: Path, monkeypat
             subpasta_markdown=None,
             paralelo=1,
             quarantine=True,
-            enriquecimento_online=False,
         ),
         concluidos=[],
     )

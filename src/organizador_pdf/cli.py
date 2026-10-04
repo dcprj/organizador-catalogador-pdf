@@ -106,12 +106,6 @@ def processar(
         "--quarantine/--no-quarantine",
         help="Direciona arquivos com avisos de divergência ou baixa confiança para revisao_manual/ (padrão: ligado).",
     ),
-    sem_enriquecimento_online: bool = typer.Option(
-        False,
-        "--sem-enriquecimento-online",
-        "--no-enrichment",
-        help="Desativa consultas a APIs públicas (Crossref, Google Books, Brasil API), mantendo apenas metadados locais.",
-    ),
     paralelo: int = typer.Option(
         1,
         "--paralelo",
@@ -155,7 +149,7 @@ def processar(
     """Executa a catalogação e organização do lote de PDFs."""
     configurar_logs(arquivo_log=arquivo_log, verbose=verbose)
     config = Config.do_ambiente()
-    enriquecimento_online = (not sem_enriquecimento_online) and config.verificar_online
+    enriquecimento_online = config.verificar_online
 
     if interactive:
         if origem is None or destino is None:
@@ -167,7 +161,6 @@ def processar(
             output_dir=str(destino.resolve()),
             interactive=True,
             move_original=mover,
-            sem_enriquecimento_online=not enriquecimento_online,
         )
         raise typer.Exit(code=cod)
 
@@ -243,7 +236,6 @@ def processar(
         dry_run=dry_run,
         mover=mover,
         paralelo=paralelo,
-        enriquecimento_online=enriquecimento_online,
     )
 
     opcoes = OpcoesDoPipeline(
@@ -359,19 +351,13 @@ def _cabecalho(
     dry_run: bool,
     mover: bool,
     paralelo: int = 1,
-    enriquecimento_online: bool = True,
 ) -> None:
-    status_enriquecimento = (
-        "[green]Ativo[/] (Brasil API, Google Books, Crossref)"
-        if enriquecimento_online
-        else "[yellow]Desativado[/] (--sem-enriquecimento-online)"
-    )
     linhas = [
         f"[bold]Origem:[/]         {origem.resolve()}",
         f"[bold]Destino:[/]        {destino.resolve()}",
         f"[bold]PDFs:[/]           {len(pdfs)}",
-        "[bold]Motor:[/]          Determinístico Local (CIP, ABNT NBR 6023)",
-        f"[bold]Enriquecimento:[/] {status_enriquecimento}",
+        "[bold]Classificador:[/]  Jev System One (TypeSafe / Heurísticas Calibradas)",
+        "[bold]Enriquecimento:[/] Ativo (Brasil API, Google Books, Crossref, OpenAlex)",
         "[bold]Análise:[/]        10 primeiras + 10 últimas páginas",
         f"[bold]Modo:[/]           " + ("mover" if mover else "copiar"),
     ]

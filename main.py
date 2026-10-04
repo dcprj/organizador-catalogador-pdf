@@ -115,14 +115,6 @@ Classificações Suportadas:
         help="Desativa o direcionamento para revisao_manual/ para documentos com baixa confiança ou metadados incertos.",
     )
     parser.add_argument(
-        "--sem-enriquecimento-online",
-        "--no-enrichment",
-        dest="sem_enriquecimento_online",
-        action="store_true",
-        default=False,
-        help="Desativa consultas a APIs públicas (Crossref, Google Books, Brasil API), mantendo apenas metadados locais.",
-    )
-    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -161,10 +153,7 @@ def main() -> int:
         output_dir.mkdir(parents=True, exist_ok=True)
 
     mover_original = bool(args.mover)
-
     config = Config.do_ambiente()
-    enriquecimento_online = (not args.sem_enriquecimento_online) and config.verificar_online
-    sem_enriquecimento = not enriquecimento_online
 
     if args.interactive:
         from organizador_pdf.interactive_validator import run_interactive_validator
@@ -173,7 +162,6 @@ def main() -> int:
             output_dir=str(output_dir),
             interactive=True,
             move_original=mover_original,
-            sem_enriquecimento_online=sem_enriquecimento,
         )
 
     print("\n" + "=" * 75)
@@ -185,12 +173,16 @@ def main() -> int:
     print(f"🔍 Recursivo      : {'Sim' if args.recursive else 'Não (somente raiz)'}")
     print(f"🔄 Retomada       : {'Ativa (--resume)' if args.resume else 'Padrão'}")
     print(f"🛡️  Quarentena     : {'Desativada (--no-quarantine)' if args.no_quarantine else 'Ativa (revisao_manual/)'}")
-    print(f"🌐 Enriquecimento : {'Desativado (--sem-enriquecimento-online / ORGPDF_VERIFICAR_ONLINE=false)' if sem_enriquecimento else 'Ativo (APIs públicas)'}")
+    print(f"🧠 Classificador  : Jev System One (TypeSafe / Heurísticas Locais)")
+    print(f"🌐 Enriquecimento : Ativo (Crossref, Google Books, Brasil API, OpenAlex)")
     if args.dry_run:
         print(f"⚠️  MODO          : SIMULAÇÃO / DRY-RUN (Nenhum arquivo será gravado ou movido)")
     print("=" * 75 + "\n")
 
-    organizer = PipelineOrganizer(enriquecimento_online=enriquecimento_online)
+    organizer = PipelineOrganizer(
+        max_paginas=config.max_paginas,
+        max_caracteres=config.max_caracteres,
+    )
     results = organizer.process_directory(
         input_dir=str(input_dir),
         output_dir=str(output_dir),

@@ -89,11 +89,11 @@ def explain_jev_classification(
     candidates: ExtractedCandidates,
     total_pages: int,
     api_key: Optional[str] = None,
-    permitir_rede: bool = True,
+    **kwargs,
 ) -> JevValidationResult:
     """Run Jev classifier while providing transparent diagnostic reporting."""
-    actual_api_key = (api_key or os.getenv("TYPESAFE_API_KEY")) if permitir_rede else None
-    classifier = JevClassifier(api_key=actual_api_key, permitir_rede=permitir_rede)
+    actual_api_key = api_key or os.getenv("TYPESAFE_API_KEY")
+    classifier = JevClassifier(api_key=actual_api_key)
 
     if actual_api_key:
         print(f"  {GREEN}✓ Chave TYPESAFE_API_KEY detectada.{RESET}")
@@ -108,10 +108,7 @@ def explain_jev_classification(
         print(f"    • Probabilidades dos campos: {res.probabilities}")
         return res
     else:
-        if not permitir_rede:
-            print(f"  {YELLOW}ℹ Conexão externa desativada (--sem-enriquecimento-online).{RESET}")
-        else:
-            print(f"  {YELLOW}ℹ Nenhuma TYPESAFE_API_KEY configurada no .env.{RESET}")
+        print(f"  {YELLOW}ℹ Nenhuma TYPESAFE_API_KEY configurada no ambiente.{RESET}")
         print(f"  Executando motor calibrado local de regras probabilísticas (System One Heuristics)...")
 
         # Heuristic explanation
@@ -234,7 +231,7 @@ def validate_and_process_pdf(
     interactive: bool = True,
     move_original: bool = False,
     api_key: Optional[str] = None,
-    sem_enriquecimento_online: bool = False,
+    **kwargs,
 ) -> bool:
     """Process a single PDF through the complete interactive validation pipeline."""
     pdf_file = Path(pdf_path).resolve()
@@ -273,30 +270,22 @@ def validate_and_process_pdf(
 
     # Step 4: Classification
     print_step(4, "Processando a classificação com Jev (System One)")
-    actual_key = None if sem_enriquecimento_online else api_key
     jev_result = explain_jev_classification(
         pdf_path=str(pdf_file),
         combined_text=combined_text,
         candidates=candidates,
         total_pages=info["total_pages"],
-        api_key=actual_key,
-        permitir_rede=not sem_enriquecimento_online,
+        api_key=api_key,
     )
 
     # Step 5: External API Enrichment
-    if sem_enriquecimento_online:
-        print_step(5, "Enriquecimento externo desativado (--sem-enriquecimento-online)")
-        enricher = MetadataEnricher(online=False)
-        metadata = enricher.enrich(jev_result)
-        print(f"  {YELLOW}ℹ Consultas a APIs externas desativadas pelo usuário.{RESET}")
+    print_step(5, "Enriquecendo metadados via APIs Públicas (Crossref, Google Books, OpenLibrary, OpenAlex)")
+    enricher = MetadataEnricher(online=True)
+    metadata = enricher.enrich(jev_result)
+    if metadata.source_apis:
+        print(f"  {GREEN}✓ APIs consultadas com sucesso:{RESET} {', '.join(metadata.source_apis)}")
     else:
-        print_step(5, "Enriquecendo metadados via APIs Públicas (Crossref, Google Books, OpenLibrary, OpenAlex)")
-        enricher = MetadataEnricher(online=True)
-        metadata = enricher.enrich(jev_result)
-        if metadata.source_apis:
-            print(f"  {GREEN}✓ APIs consultadas com sucesso:{RESET} {', '.join(metadata.source_apis)}")
-        else:
-            print(f"  {YELLOW}ℹ Nenhuma API externa retornou novos dados adicionais (mantidos os dados do documento).{RESET}")
+        print(f"  {YELLOW}ℹ Nenhuma API externa retornou novos dados adicionais (mantidos os dados do documento).{RESET}")
 
     # Format ABNT
     abnt_ref = ABNTFormatter.format(metadata)
@@ -359,7 +348,7 @@ def run_interactive_validator(
     output_dir: str = "/Users/dario/Desktop/destino",
     interactive: bool = True,
     move_original: bool = False,
-    sem_enriquecimento_online: bool = False,
+    **kwargs,
 ):
     """Scan input folder and process all PDFs interactively."""
     print_banner()
@@ -369,7 +358,8 @@ def run_interactive_validator(
     print(f"📁 Pasta de Origem : {BOLD}{in_path}{RESET}")
     print(f"🎯 Pasta de Destino: {BOLD}{out_path}{RESET}")
     print(f"📦 Mover original  : {'Sim' if move_original else 'Não (Copiando)'}")
-    print(f"🌐 APIs Externas   : {'Desativadas (--sem-enriquecimento-online)' if sem_enriquecimento_online else 'Ativas'}")
+    print(f"🧠 Classificador   : Jev System One (TypeSafe / Heurísticas Locais)")
+    print(f"🌐 APIs Externas   : Ativas (Crossref, Google Books, Brasil API, OpenAlex)")
     print(f"🤝 Modo Interativo : {'Habilitado (solicita confirmação)' if interactive else 'Desabilitado'}\n")
 
     if not in_path.exists() or not in_path.is_dir():
@@ -394,7 +384,6 @@ def run_interactive_validator(
             output_base_dir=str(out_path),
             interactive=interactive,
             move_original=move_original,
-            sem_enriquecimento_online=sem_enriquecimento_online,
         )
 
     print(f"\n{BOLD}{GREEN}{'=' * 75}{RESET}")
@@ -432,25 +421,14 @@ def main():
         default=False,
         help="Executar sem pausar para confirmação do usuário.",
     )
-    parser.add_argument(
-        "--sem-enriquecimento-online",
-        "--no-enrichment",
-        dest="sem_enriquecimento_online",
-        action="store_true",
-        default=False,
-        help="Desativa consultas a APIs públicas externas, mantendo apenas metadados locais.",
-    )
 
     args = parser.parse_args()
-    config = Config.do_ambiente()
-    sem_enriquecimento = args.sem_enriquecimento_online or (not config.verificar_online)
 
     return run_interactive_validator(
         input_dir=args.input,
         output_dir=args.output,
         interactive=not args.non_interactive,
         move_original=args.move,
-        sem_enriquecimento_online=sem_enriquecimento,
     )
 
 

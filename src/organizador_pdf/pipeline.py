@@ -61,7 +61,7 @@ class ExtratorDeterministico:
     """Extrator padrão que roda localmente usando Jev/CIP e APIs públicas."""
 
     def __init__(self, enriquecimento_online: bool = True) -> None:
-        self.classifier = JevClassifier(permitir_rede=enriquecimento_online)
+        self.classifier = JevClassifier()
         self.enricher = MetadataEnricher(online=enriquecimento_online)
 
     def extrair(self, documento: DocumentoConvertido) -> Metadados:

@@ -321,9 +321,13 @@ class PipelineOrganizer:
         enricher: Optional[MetadataEnricher] = None,
         enriquecimento_online: bool = True,
         online: Optional[bool] = None,
+        max_paginas: int = 10,
+        max_caracteres: int = 30000,
     ):
+        self.max_paginas = max_paginas
+        self.max_caracteres = max_caracteres
         rede = enriquecimento_online if online is None else online
-        self.classifier = classifier or JevClassifier(permitir_rede=rede)
+        self.classifier = classifier or JevClassifier()
         self.enricher = enricher or MetadataEnricher(online=rede)
 
     def process_pdf(

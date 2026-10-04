@@ -2,10 +2,11 @@
 
 Ferramenta de linha de comando de alta precisão que processa lotes de PDFs, extrai metadados bibliográficos estruturados de forma determinística, gera arquivos Markdown companheiros (`.md`) com frontmatter YAML e referências ABNT (NBR 6023:2018), e organiza os arquivos em uma árvore de diretórios padronizada.
 
-A partir da versão **v0.4.0**, o projeto adota um **motor determinístico local e leve**:
-- **Zero custo de tokens** e **100% de privacidade**: não depende de LLMs pesados externos (Ollama, OpenAI, Anthropic).
+A partir da versão **v0.4.0**, o projeto adota um **motor determinístico com o classificador Jev**:
+- **Classificador Bibliográfico Jev (Sempre Ativo)**: o modelo Jev é sempre utilizado como o núcleo de decisão classificatória da aplicação.
+  - **Sem chave configurada (padrão)**: executa o motor calibrado local de regras probabilísticas (*System One Heuristics*), 100% local, privado, rápido e com zero custo de tokens.
+  - **Com chave `TYPESAFE_API_KEY` (opcional)**: integra-se à API TypeSafe AI com as primitivas `Choice` e `Noul` para validação semântica profunda da amostra do documento.
 - **Extração de Ficha Catalográfica (CIP)**: identifica e decodifica blocos de catalogação na fonte (AACR2 / ISBD) nas páginas iniciais.
-- **Classificador Bibliográfico Especializado**: regras estruturadas para detecção precisa de Livros, Teses/Dissertações/TCCs, Artigos Científicos, Revistas/Periódicos e Apostilas.
 - **Validação e Enriquecimento Multi-API Pública**: consulta gratuita contra Brasil API (Câmara Brasileira do Livro / ISBN), Google Books, Crossref (DOI), OpenAlex e OpenLibrary.
 - **Formatação ABNT NBR 6023:2018 Estrita**: manipulação correta de sobrenomes compostos e agnomes familiares (Filho, Neto, Júnior, Sobrinho).
 - **Markdown Companheiro Inteligente**: amostragem rápida das 10 primeiras e 10 últimas páginas para metadados, sem duplicar o texto integral do PDF.
@@ -73,9 +74,6 @@ organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --mover --subpasta-md M
 # Processamento concorrente para grandes lotes
 organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --paralelo 4
 
-# Desativa consultas externas a bases bibliográficas (enriquecimento)
-organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --sem-enriquecimento-online
-
 # Retomada automática após interrupção (Ctrl+C ou queda)
 organizador-pdf --resume
 ```
@@ -91,7 +89,6 @@ organizador-pdf --resume
 | `--recursive` / `-r` | `True` | Varredura recursiva em subpastas (`--no-recursive` desativa) |
 | `--mover` | `False` | Move o arquivo PDF original em vez de copiar |
 | `--subpasta-md` | `None` | Grava os arquivos `.md` em subpasta espelho |
-| `--sem-enriquecimento-online` | `False` | Desativa consultas a APIs bibliográficas (mantém metadados locais) |
 | `--paralelo` / `-j` | `1` | Número de workers concorrentes para processar o lote |
 | `--quarantine` | `True` | Roteia itens de baixa confiança para `revisao_manual/` |
 | `--limite` / `-n` | `None` | Limita o número máximo de arquivos processados |
@@ -147,7 +144,7 @@ Os testes são automatizados via `pytest` e não dependem de chamadas ativas de 
 pytest
 ```
 
-Resultado esperado: **181 testes passando com 100% de sucesso**.
+Resultado esperado: **Suíte completa de testes automatizados passando com 100% de sucesso.**
 
 ---
 
