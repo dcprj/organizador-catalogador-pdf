@@ -261,6 +261,61 @@ def is_likely_person_name(name_cand: str) -> bool:
     return False
 
 
+SUSPICIOUS_CITY_NAMES = {
+    "jung", "freud", "lacan", "adler", "kant", "nietzsche", "marx", "hegel",
+    "agostinho", "aquino", "platao", "aristoteles", "stein", "campbell",
+    "foucault", "deleuze", "derrida", "habermas", "silva", "santos", "oliveira",
+    "cultrix", "vozes", "zahar", "rocco", "companhia", "editora",
+}
+
+
+def is_suspicious_city(
+    city: Optional[str],
+    authors: Optional[List[str]] = None,
+    title: Optional[str] = None,
+) -> bool:
+    """Verifica se a localidade é implausível, suspeita ou contaminada por nome de pessoa, autor ou assunto."""
+    if not city:
+        return False
+    c = city.strip(" -—–:;,.\t\r\n\"'“”«»[]()")
+    if len(c) < 3:
+        return True
+    norm_c = unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode("ascii").lower().strip()
+
+    # Cidades conhecidas (ex: São Paulo, Rio de Janeiro, Petrópolis, etc.)
+    if norm_c in COMMON_CITY_TYPOS or any(norm_c.startswith(kc) for kc in COMMON_CITY_TYPOS):
+        return False
+
+    if norm_c in SUSPICIOUS_CITY_NAMES:
+        return True
+
+    # Nomes com formato "Sobrenome, Nome"
+    if "," in c:
+        sp = c.split(",", 1)
+        if len(sp) == 2 and len(sp[0].strip()) >= 2 and len(sp[1].strip()) >= 2:
+            return True
+
+    # Nomes biográficos específicos
+    if norm_c in ("carl gustav jung", "c. g. jung", "cg jung", "carl gustav", "sigmund freud", "murray stein"):
+        return True
+
+    if any(norm_c == unicodedata.normalize("NFKD", a).encode("ascii", "ignore").decode("ascii").lower().strip() for a in (authors or [])):
+        return True
+    if authors:
+        for a in authors:
+            a_norm = unicodedata.normalize("NFKD", a).encode("ascii", "ignore").decode("ascii").lower()
+            a_words = [w.strip() for w in re.split(r"[\s,]+", a_norm) if len(w.strip()) >= 3]
+            if norm_c in a_words:
+                return True
+    if title:
+        t_words = [w.strip() for w in re.split(r"[\s,;:]+", unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode("ascii").lower()) if len(w.strip()) >= 4]
+        if norm_c in t_words and norm_c in ("jung", "freud", "lacan", "marx", "nietzsche"):
+            return True
+    if CITY_BOILERPLATE_REGEX.search(city):
+        return True
+    return False
+
+
 def sanitize_title_candidate(title: Optional[str]) -> Optional[str]:
     """Limpa cabeçalhos, marcadores de página, códigos de catalogação e créditos editoriais do título."""
     if not title:
@@ -273,17 +328,20 @@ def sanitize_title_candidate(title: Optional[str]) -> Optional[str]:
     t = re.sub(r"^(?:\[?p[áa]gina\s*\d+\]?|p\.\s*\d+\]?)\s*", "", t, flags=re.I)
     t = re.sub(r"^(?:\[?page\s*\d+\]?)\s*", "", t, flags=re.I)
 
-    # 2. Remove códigos de catalogação bibliográfica (CDD, CDU, Cutter) no início do título
+    # 2. Remove marcas d'água de agregadores e sites piratas
+    t = re.sub(r"\s*[-–—|]\s*(?:PDFDrive(?:\.com)?|Z-Library|Library Genesis|Libgen|Docero|Scribd|PDFRoom|OceanofPDF)\b.*$", "", t, flags=re.I).strip()
+
+    # 3. Remove códigos de catalogação bibliográfica (CDD, CDU, Cutter) no início do título
     t = re.sub(r"^(?:CDD|CDU)\s*[:\-–\.]?\s*(?:\d{1,4}(?:\.\d+)?\s*[-–:]?\s*)?", "", t, flags=re.I)
     t = re.sub(r"^\d{1,4}(?:\.\d+)?\s*[-–:]\s*", "", t)
     t = re.sub(r"^[A-Z]\d{2,4}[a-z]?\s+[-–:]?\s*", "", t)
 
-    # 3. Trunca antes de blocos maciços de créditos editoriais/ficha
+    # 4. Trunca antes de blocos maciços de créditos editoriais/ficha
     m_credit = CREDIT_SPLIT_PATTERN.search(t)
     if m_credit and m_credit.start() >= 4:
         t = t[:m_credit.start()].strip()
 
-    # 4. Limpa pontuações periféricas residuais
+    # 5. Limpa pontuações periféricas residuais
     t = t.strip(" -—–:\t\r\n\"'“”«»[]")
     return t if len(t) >= 2 else None
 
@@ -503,6 +561,8 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
     if not any(k in norm_low for k in ["ficha catalogr", "cip-brasil", "catalogação na publicação", "cdu", "cdd", "crb-"]):
         return None
 
+    orig_page_text = page_text
+
     # Slice from catalog card header if present to avoid masthead/board text pollution
     m_header = re.search(r"(?:ficha catalogr[aá]fica|cip-brasil|dados internacionais de cataloga[çc][aã]o)", page_text, re.I)
     if m_header:
@@ -547,10 +607,19 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
     joined = re.sub(r"^(?:\d{3}\s+)?[A-Za-z]?\d{1,4}(?:\.\d+)?[a-z]?\s+", "", joined)
     joined = re.sub(r"\b\d{2}-\d{4,5}\b", "", joined)
 
+    # Truncate joined at the boundary of subject tracings, secondary entries, ISBN, original title, CDD/CDU, or legal notes
+    # ISBD description ends before these elements
+    isbd_boundary = re.search(
+        r"(?:\bTítulo original:|\bISBN(?:-1[03])?[:\s]|\b\d{2}-\d{4,5}\b|\b1\.\s+(?!(?:ed\b|edi[çc][ãa]o\b))[A-ZÁÉÍÓÚÂÊÔÃÕÇ]|\bI\.\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ]|\bCDD|\bCDU|\bÍndices para catálogo|\bDireitos de tradução|\bTodos os direitos)",
+        joined,
+        re.I,
+    )
+    isbd_text = joined[:isbd_boundary.start()] if isbd_boundary else joined
+
     # 2. Match Title / Responsibility . -- Edition . -- City : Publisher , Year (accepts : or , or ; between city and publisher)
     m_body = re.search(
-        r"([A-ZÁÉÍÓÚÂÊÔÃÕÇ\d][^/:]+?)\s*(?:\[recurso[^\]]*\])?\s*(?::\s*([^/]+?)\s*)?/\s*(.+?)\.\s*(?:–|-{1,2}|\.)?\s*(?:(\d+ª?\s*\.?\s*ed(?:ição|\.)?)\s*(?:–|-{1,2}|\.)\s*)?(?:(?:Dados eletr[ôo]nicos|recurso digital)\s*\.?\s*(?:–|-{1,2}|\.)\s*)?([A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s,-]+?)\s*[:;,]\s*([A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s,-]+?),?\s*(\d{4})",
-        joined,
+        r"([A-ZÁÉÍÓÚÂÊÔÃÕÇ\d][^/:]+?)\s*(?:\[recurso[^\]]*\])?\s*(?::\s*([^/]+?)\s*)?/\s*(.+?)\.\s*(?:[—–-]{1,2}|\.)?\s*(?:(\d+ª?\s*\.?\s*ed(?:ição|\.)?)\s*(?:[—–-]{1,2}|\.)\s*)?(?:(?:Dados eletr[ôo]nicos|recurso digital)\s*\.?\s*(?:[—–-]{1,2}|\.)\s*)?([A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s,-]+?)\s*[:;,]\s*([A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s,-]+?),?\s*(\d{4})",
+        isbd_text,
         re.I,
     )
     if not m_body:
@@ -563,11 +632,17 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
     if is_invalid_or_disclaimer_title(raw_title):
         raw_title = None
     sub_title = sanitize_title_candidate(m_body.group(2).strip()) if m_body.group(2) else None
+    if raw_title and len(raw_title.split()) == 1 and sub_title and ":" in sub_title:
+        sp = sub_title.split(":", 1)
+        raw_title = f"{raw_title}: {sp[0].strip()}"
+        sub_title = sp[1].strip()
+
     resp = m_body.group(3).strip()
     ed = m_body.group(4).strip() if m_body.group(4) else None
     city = sanitize_city(m_body.group(5).strip())
     pub = m_body.group(6).strip()
     year = int(m_body.group(7))
+    cip_year = year
 
     cip_pages = None
     m_pages = re.search(r"\b(\d{1,4})\s*p(?:ág)?\.", page_text, re.I)
@@ -601,9 +676,34 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
         else:
             authors_list = [auth_name]
 
+    # Plausibility checks on extracted CIP fields:
+    # 1. Year: CIP cards in Brazil started in 1971; modern publications cannot have CIP year < 1950 or > 2030
+    if year < 1950 or year > 2030:
+        year = None
+        cip_year = None
+
+    # 2. City: cannot be a suspicious name (person, author, subject)
+    if is_suspicious_city(city, authors=authors_list, title=raw_title):
+        city = None
+
+    # 3. Publisher: cannot be a person name (like "Carl Gustav")
+    if pub and pub.lower() in ("carl gustav", "c. g.", "sigmund", "friedrich", "immanuel"):
+        pub = None
+
+    # Check reprint in front matter
+    reimpressao = None
+    m_reimp = re.search(r"(\d+ª?\s*reimpress[ãa]o)\s*[,–-]?\s*(\d{4})", orig_page_text, re.I)
+    if m_reimp:
+        reimpressao = f"{m_reimp.group(1)}, {m_reimp.group(2)}"
+        reprint_year = int(m_reimp.group(2))
+        if 1950 <= reprint_year <= 2030:
+            if not cip_year:
+                cip_year = year or reprint_year
+            year = reprint_year
+
     # Extract ISBN if on page
     isbn_val = None
-    m_isbn = re.search(r"ISBN(?:-1[03])?[:\s]+([0-9Xx -]{10,17})", page_text, re.I)
+    m_isbn = re.search(r"ISBN(?:-1[03])?[:\s]+([0-9Xx -]{10,17})", orig_page_text, re.I)
     if m_isbn:
         raw_isbn = re.sub(r"[^0-9X]", "", m_isbn.group(1))
         if len(raw_isbn) in (10, 13) and is_valid_isbn(raw_isbn, strict=False):
@@ -634,7 +734,8 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
         "isbn": isbn_val,
         "area": area,
         "cip_pages": cip_pages,
-        "cip_year": year,
+        "cip_year": cip_year,
+        "reimpressao": reimpressao,
     }
 
 
@@ -802,12 +903,15 @@ def extract_candidate_metadata(
                             candidates.author_source = "ficha_catalografica"
                         if cip_meta.get("publisher"):
                             candidates.raw_publisher = cip_meta["publisher"]
+                            candidates.publisher_source = "ficha_catalografica"
                         if cip_meta.get("edition"):
                             candidates.raw_edition = cip_meta["edition"]
                         if cip_meta.get("year"):
                             candidates.raw_year = cip_meta["year"]
+                            candidates.year_source = "ficha_catalografica"
                         if cip_meta.get("city"):
                             candidates.raw_city = cip_meta["city"]
+                            candidates.city_source = "ficha_catalografica"
                         if cip_meta.get("isbn"):
                             candidates.isbn = cip_meta["isbn"]
                             candidates.isbn_source = "ficha_catalografica"
@@ -817,6 +921,8 @@ def extract_candidate_metadata(
                             candidates.cip_pages = cip_meta["cip_pages"]
                         if cip_meta.get("cip_year"):
                             candidates.cip_year = cip_meta["cip_year"]
+                        if cip_meta.get("reimpressao"):
+                            candidates.reimpressao = cip_meta["reimpressao"]
                         break
 
                 # 1b. Thesis Resumo citation parsing
@@ -909,12 +1015,15 @@ def extract_candidate_metadata(
                     candidates.author_source = "ficha_catalografica"
                 if cip_meta.get("publisher"):
                     candidates.raw_publisher = cip_meta["publisher"]
+                    candidates.publisher_source = "ficha_catalografica"
                 if cip_meta.get("edition"):
                     candidates.raw_edition = cip_meta["edition"]
                 if cip_meta.get("year"):
                     candidates.raw_year = cip_meta["year"]
+                    candidates.year_source = "ficha_catalografica"
                 if cip_meta.get("city"):
                     candidates.raw_city = cip_meta["city"]
+                    candidates.city_source = "ficha_catalografica"
                 if cip_meta.get("isbn"):
                     candidates.isbn = cip_meta["isbn"]
                     candidates.isbn_source = "ficha_catalografica"
@@ -924,6 +1033,8 @@ def extract_candidate_metadata(
                     candidates.cip_pages = cip_meta["cip_pages"]
                 if cip_meta.get("cip_year"):
                     candidates.cip_year = cip_meta["cip_year"]
+                if cip_meta.get("reimpressao"):
+                    candidates.reimpressao = cip_meta["reimpressao"]
                 break
     else:
         # Fallback to sample_text when no pdf_path provided
@@ -939,17 +1050,26 @@ def extract_candidate_metadata(
                 candidates.author_source = "ficha_catalografica"
             if cip_meta.get("publisher"):
                 candidates.raw_publisher = cip_meta["publisher"]
+                candidates.publisher_source = "ficha_catalografica"
             if cip_meta.get("edition"):
                 candidates.raw_edition = cip_meta["edition"]
             if cip_meta.get("year"):
                 candidates.raw_year = cip_meta["year"]
+                candidates.year_source = "ficha_catalografica"
             if cip_meta.get("city"):
                 candidates.raw_city = cip_meta["city"]
+                candidates.city_source = "ficha_catalografica"
             if cip_meta.get("isbn"):
                 candidates.isbn = cip_meta["isbn"]
                 candidates.isbn_source = "ficha_catalografica"
             if cip_meta.get("area"):
                 candidates.raw_area = cip_meta["area"]
+            if cip_meta.get("cip_pages"):
+                candidates.cip_pages = cip_meta["cip_pages"]
+            if cip_meta.get("cip_year"):
+                candidates.cip_year = cip_meta["cip_year"]
+            if cip_meta.get("reimpressao"):
+                candidates.reimpressao = cip_meta["reimpressao"]
 
         ref_cut = re.split(r"\n\s*(?:refer[êe]ncias|references|bibliografia)\b", sample_text, flags=re.I)
         head_text = ref_cut[0] if ref_cut else sample_text

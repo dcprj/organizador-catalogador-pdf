@@ -1949,6 +1949,124 @@ def test_batch_duplicate_isbn_detection(tmp_path: Path, sample_pdf_generator):
     assert any("repetido no lote" in r.lower() for r in res2.metadados.review_reasons)
 
 
+# ==============================================================================
+# TESTES DE REGRESSÃO: Relatório técnico - Falha na validação com ISBN (Murray Stein)
+# ==============================================================================
+
+def test_relatorio_tecnico_murray_stein_cip_parser():
+    """Critério 1, 2, 3:
+    - Identifica ISBN 9788531606465, Murray Stein, Jung: o mapa da alma: uma introdução, São Paulo, Cultrix.
+    - Distingue 5ª ed. 2006 da 8ª reimpressão 2017.
+    - Nunca aceita ano 1875 nem local Jung nem editora Carl Gustav.
+    """
+    from organizador_pdf.classifier_jev import parse_page_cip
+
+    page_text = (
+        "Copyright da edição brasileira © 2000 Editora Pensamento - Cultrix Ltda.\n"
+        "5ª edição 2006 (catalogação na fonte).\n"
+        "8ª reimpressão 2017.\n"
+        "Dados Internacionais de Catalogação na Publicação (CIP)\n"
+        "(Câmara Brasileira do Livro, SP, Brasil)\n"
+        "Stein, Murray, 1942-\n"
+        "Jung: o mapa da alma: uma introdução / Murray Stein; tradução Álvaro Cabral;\n"
+        "revisão técnica Mareia Tabone. — 5ª ed. — São Paulo: Cultrix, 2006.\n"
+        "Título original: Jung's map of the soul: an introduction.\n"
+        "ISBN 978-85-316-0646-5\n"
+        "1. Jung, Carl Gustav, 1875-1961 2. Psicanálise 3. Psicologia analítica\n"
+        "I. Tabone, Marcia. II. Título.\n"
+        "05-8942 CDD-150.1954\n"
+    )
+
+    res = parse_page_cip(page_text)
+    assert res is not None
+    assert res["isbn"] == "9788531606465"
+    assert "Murray Stein" in res["authors"]
+    assert res["title"] == "Jung: o mapa da alma"
+    assert res["subtitle"] == "uma introdução"
+    assert res["city"] == "São Paulo"
+    assert res["publisher"] == "Cultrix"
+    assert res["edition"] == "5ª ed."
+    assert res["cip_year"] == 2006
+    assert res["year"] == 2017
+    assert res["reimpressao"] == "8ª reimpressão, 2017"
+
+    # Garantias negativas expressas
+    assert res["year"] != 1875
+    assert res["city"] != "Jung"
+    assert res["publisher"] != "Carl Gustav"
+
+
+def test_relatorio_tecnico_is_suspicious_city():
+    """Critério 3 e 8: Rejeita Jung, autores e nomes biográficos, mas aceita cidades reais."""
+    from organizador_pdf.classifier_jev import is_suspicious_city
+
+    # Cidades válidas
+    assert is_suspicious_city("São Paulo", authors=["Murray Stein"], title="Jung: o mapa da alma") is False
+    assert is_suspicious_city("Rio de Janeiro", authors=["Joel Birman"]) is False
+    assert is_suspicious_city("Petrópolis", authors=["C. G. Jung"]) is False
+    assert is_suspicious_city("Porto Alegre") is False
+
+    # Cidades suspeitas / contaminadas
+    assert is_suspicious_city("Jung", authors=["Murray Stein"], title="Jung: o mapa da alma") is True
+    assert is_suspicious_city("Carl Gustav", authors=["Murray Stein"]) is True
+    assert is_suspicious_city("Freud", authors=["Peter Gay"]) is True
+    assert is_suspicious_city("Stein", authors=["Murray Stein"]) is True
+    assert is_suspicious_city("Cultrix") is True
+    assert is_suspicious_city("Edição revista") is True
+
+
+def test_relatorio_tecnico_isbn_matching_and_rejection():
+    """Critério 2 e 5: Validação do ISBN retornado pela API."""
+    from organizador_pdf.metadata_api import is_same_isbn
+
+    # ISBN-10 vs ISBN-13 equivalência
+    # 8531606466 <-> 9788531606465
+    assert is_same_isbn("9788531606465", "8531606466") is True
+    assert is_same_isbn("978-85-316-0646-5", "9788531606465") is True
+    assert is_same_isbn("85-316-0646-6", "978-85-316-0646-5") is True
+
+    # Rejeição de ISBNs divergentes
+    assert is_same_isbn("9788531606465", "9788532645319") is False
+    assert is_same_isbn("9788531606465", None) is False
+
+
+def test_relatorio_tecnico_never_publishes_erroneous_metadata_with_confidence_one():
+    """Critério 6: Caso de regressão confirmando que metadados incorretos ou em revisão
+    NUNCA são publicados com needs_review: False e confiança 1.0.
+    """
+    from organizador_pdf.models import Metadados, Identificadores, TipoPublicacao
+    from organizador_pdf.metadata_api import MetadataEnricher
+
+    enricher = MetadataEnricher(online=False)
+
+    # Simula metadados contaminados pelo bug antigo (ano 1875 e local Jung)
+    meta = Metadados(
+        titulo="JUNG O MAPA DA ALMA",
+        autores=["STEIN, MURRAY"],
+        tipo_publicacao=TipoPublicacao.LIVRO,
+        ano=1875,
+        local="Jung",
+        identificadores=Identificadores(isbn="9788531606465"),
+        source_apis=["Brasil API / CBL (ISBN)"],
+        confidence=1.0,
+        confidence_metadata=1.0,
+        needs_review=False,
+    )
+
+    enricher._evaluate_needs_review(meta)
+
+    # Deve marcar para revisão
+    assert meta.needs_review is True
+    # Confiança não pode ser 1.0
+    assert meta.confidence <= 0.70
+    assert meta.confidence_metadata <= 0.70
+    # Ano implausível 1875 deve constar dos motivos de revisão
+    assert any("1875" in r or "implausível" in r for r in meta.review_reasons)
+    # Cidade suspeita Jung deve ser limpa ou apontada em revisão
+    assert meta.local is None or any("Jung" in r or "localidade" in r for r in meta.review_reasons)
+
+
+
 
 
 

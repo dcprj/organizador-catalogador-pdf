@@ -44,6 +44,23 @@ STOP_WORDS = {
 }
 
 
+def is_same_isbn(a: Optional[str], b: Optional[str]) -> bool:
+    """Verifica se dois ISBNs são idênticos ou equivalentes (ISBN-10 vs ISBN-13)."""
+    if not a or not b:
+        return False
+    ca = re.sub(r"[^0-9Xx]", "", str(a)).upper()
+    cb = re.sub(r"[^0-9Xx]", "", str(b)).upper()
+    if not ca or not cb:
+        return False
+    if ca == cb:
+        return True
+    if len(ca) == 13 and len(cb) == 10 and ca.startswith("978"):
+        return ca[3:12] == cb[:9]
+    if len(cb) == 13 and len(ca) == 10 and cb.startswith("978"):
+        return cb[3:12] == ca[:9]
+    return False
+
+
 def is_title_relevant(searched_title: str, retrieved_title: Optional[str], threshold: float = 0.50) -> bool:
     """Validate that API retrieved title has sufficient word overlap with the query.
 
@@ -408,21 +425,33 @@ class MetadataEnricher:
                 if not metadata.doi_source:
                     metadata.doi_source = "api_openalex"
 
+        metadata.cip_pages = getattr(candidates, "cip_pages", None)
+        metadata.cip_year = getattr(candidates, "cip_year", None)
+        metadata.total_pages = getattr(candidates, "total_pages", None)
+        metadata.reimpressao = getattr(candidates, "reimpressao", None)
+        metadata.year_source = getattr(candidates, "year_source", None)
+        metadata.city_source = getattr(candidates, "city_source", None)
+        metadata.publisher_source = getattr(candidates, "publisher_source", None)
+
         # 2. Query by ISBN if present (direct authoritative identifier lookup)
         if isbn and is_valid_isbn(isbn, strict=False):
             logger.info("ISBN found (%s, prob=%.2f). Querying Brasil API, Google Books & OpenLibrary.", isbn, isbn_prob)
             br_meta = self.fetch_brasil_api_isbn(isbn)
             if br_meta:
+                br_meta["source"] = "api_brasilapi"
                 self._merge_metadata(metadata, br_meta, authoritative=True)
                 sources_consulted.append("Brasil API / CBL (ISBN)")
                 metadata.isbn_source = "api_brasilapi"
+                metadata.isbn_verified = True
                 if br_meta.get("title"):
                     metadata.title_source = "api_brasilapi"
 
             gb_meta = self.fetch_google_books_by_isbn(isbn)
             if gb_meta:
+                gb_meta["source"] = "api_google_books"
                 self._merge_metadata(metadata, gb_meta, authoritative=not bool(br_meta))
                 sources_consulted.append("Google Books (ISBN)")
+                metadata.isbn_verified = True
                 if not metadata.isbn_source:
                     metadata.isbn_source = "api_google_books"
                 if gb_meta.get("title") and not br_meta:
@@ -430,8 +459,10 @@ class MetadataEnricher:
 
             ol_meta = self.fetch_openlibrary_by_isbn(isbn)
             if ol_meta:
+                ol_meta["source"] = "api_openlibrary"
                 self._merge_metadata(metadata, ol_meta, authoritative=not bool(br_meta or gb_meta))
                 sources_consulted.append("OpenLibrary (ISBN)")
+                metadata.isbn_verified = True
                 if not metadata.isbn_source:
                     metadata.isbn_source = "api_openlibrary"
 
@@ -470,13 +501,17 @@ class MetadataEnricher:
     def _evaluate_needs_review(
         self,
         metadata: PublicationMetadata,
-        jev_result: JevValidationResult,
-        sources_consulted: List[str],
+        jev_result: Optional[JevValidationResult] = None,
+        sources_consulted: Optional[List[str]] = None,
     ) -> None:
         """Evaluate quarantine and manual review criteria, keeping classification and metadata confidences separate."""
         from .classifier_jev import is_invalid_or_disclaimer_title, GENERIC_SINGLE_WORD_TITLES
 
-        metadata.confidence_classification = jev_result.classification_confidence
+        sources_consulted = sources_consulted or []
+        if jev_result:
+            metadata.confidence_classification = jev_result.classification_confidence
+        elif not getattr(metadata, "confidence_classification", None):
+            metadata.confidence_classification = metadata.confidence
         meta_conf = 1.0
         t = (metadata.title or "").strip()
         t_lower = t.lower()
@@ -545,8 +580,9 @@ class MetadataEnricher:
                 metadata.review_reasons.append(msg)
 
         # 3. Validação de contagem de páginas e integridade da obra
-        tot_pages = getattr(metadata, "total_pages", None) or getattr(jev_result.candidates, "total_pages", 0) or 0
-        cip_pages = getattr(metadata, "cip_pages", None) or getattr(jev_result.candidates, "cip_pages", None)
+        jev_cand = getattr(jev_result, "candidates", None) if jev_result else None
+        tot_pages = getattr(metadata, "total_pages", None) or (getattr(jev_cand, "total_pages", 0) if jev_cand else 0) or 0
+        cip_pages = getattr(metadata, "cip_pages", None) or (getattr(jev_cand, "cip_pages", None) if jev_cand else None)
         if metadata.classification == "livro" and tot_pages > 0:
             if tot_pages < 25:
                 meta_conf -= 0.2
@@ -562,25 +598,42 @@ class MetadataEnricher:
                     metadata.review_reasons.append(msg_cip)
 
         # 4. Divergência entre ano da ficha catalográfica (CIP) e ano catalogado
-        cip_yr = getattr(metadata, "cip_year", None) or getattr(jev_result.candidates, "cip_year", None)
+        cip_yr = getattr(metadata, "cip_year", None) or (getattr(jev_cand, "cip_year", None) if jev_cand else None)
         if cip_yr and metadata.year and abs(cip_yr - metadata.year) > 1:
             metadata.needs_review = True
             msg_yr = f"Divergência entre ano da ficha catalográfica ({cip_yr}) e ano catalogado ({metadata.year}). Possível reimpressão ou reedição."
             if msg_yr not in metadata.review_reasons:
                 metadata.review_reasons.append(msg_yr)
 
+        # Validação de plausibilidade de ano
+        if metadata.year:
+            if metadata.year < 1950 and metadata.identifiers.isbn:
+                meta_conf -= 0.25
+                metadata.needs_review = True
+                msg_yr_impl = f"Ano de publicação ({metadata.year}) implausível para publicação com ISBN. Provável confusão com data histórica ou biográfica."
+                if msg_yr_impl not in metadata.review_reasons:
+                    metadata.review_reasons.append(msg_yr_impl)
+                metadata.year = None
+            elif metadata.year < 1900:
+                meta_conf -= 0.20
+                metadata.needs_review = True
+                msg_yr_hist = f"Ano de publicação ({metadata.year}) anterior ao século XX requer verificação manual."
+                if msg_yr_hist not in metadata.review_reasons:
+                    metadata.review_reasons.append(msg_yr_hist)
+
         # 5. Localidade suspeita ou resíduo editorial
         if metadata.city:
-            from .classifier_jev import sanitize_city, CITY_BOILERPLATE_REGEX
+            from .classifier_jev import sanitize_city, CITY_BOILERPLATE_REGEX, is_suspicious_city
             c_clean = sanitize_city(metadata.city)
             if c_clean:
                 metadata.city = c_clean
-            if not c_clean or CITY_BOILERPLATE_REGEX.search(metadata.city):
-                meta_conf -= 0.1
+            if not c_clean or CITY_BOILERPLATE_REGEX.search(metadata.city) or is_suspicious_city(metadata.city, metadata.authors, metadata.title):
+                meta_conf -= 0.15
                 metadata.needs_review = True
-                msg_city = f"Localidade de publicação suspeita ou contém dados editoriais ('{metadata.city}')"
+                msg_city = f"Localidade de publicação suspeita ou contém dados editoriais/pessoais ('{metadata.city}')"
                 if msg_city not in metadata.review_reasons:
                     metadata.review_reasons.append(msg_city)
+                metadata.city = None
 
         # 6. Validações de identificadores e fontes
         if not has_verified_id and not sources_consulted:
@@ -594,20 +647,24 @@ class MetadataEnricher:
             if not any("outros" in r.lower() for r in metadata.review_reasons):
                 metadata.review_reasons.append(msg_outros)
 
-        margin = jev_result.raw_jev_data.get("margin") if isinstance(jev_result.raw_jev_data, dict) else None
-        if jev_result.classification_confidence < 0.50 and not sources_consulted and not has_verified_id:
-            metadata.needs_review = True
-            metadata.review_reasons.append(
-                f"Baixa pontuação heurística de classificação ({jev_result.classification_confidence:.2f}) sem identificador público"
-            )
-        elif margin is not None and margin < 1.0 and not sources_consulted and not has_verified_id:
-            metadata.needs_review = True
-            metadata.review_reasons.append(
-                f"Margem estreita entre categorias candidatas ({margin:.1f} pts) sem identificador público"
-            )
+        if jev_result:
+            raw_data = getattr(jev_result, "raw_jev_data", None)
+            margin = raw_data.get("margin") if isinstance(raw_data, dict) else None
+            if jev_result.classification_confidence < 0.50 and not sources_consulted and not has_verified_id:
+                metadata.needs_review = True
+                metadata.review_reasons.append(
+                    f"Baixa pontuação heurística de classificação ({jev_result.classification_confidence:.2f}) sem identificador público"
+                )
+            elif margin is not None and margin < 1.0 and not sources_consulted and not has_verified_id:
+                metadata.needs_review = True
+                metadata.review_reasons.append(
+                    f"Margem estreita entre categorias candidatas ({margin:.1f} pts) sem identificador público"
+                )
 
-        if sources_consulted:
+        if sources_consulted and not metadata.needs_review:
             meta_conf = max(meta_conf, 0.85 if "Title Search" in str(sources_consulted) else 0.95)
+        elif metadata.needs_review:
+            meta_conf = min(meta_conf, 0.70)
 
         metadata.confidence_metadata = max(0.1, min(1.0, round(meta_conf, 2)))
         metadata.confidence = min(metadata.confidence_classification, metadata.confidence_metadata)
@@ -750,6 +807,12 @@ class MetadataEnricher:
             resp = self.session.get(url, timeout=self._get_timeout())
             if resp.status_code == 200:
                 data = resp.json()
+                ret_isbn = data.get("isbn")
+                if ret_isbn and not is_same_isbn(clean_isbn, ret_isbn):
+                    logger.warning("Brasil API retornou ISBN divergente (%s != %s). Rejeitando resposta.", ret_isbn, clean_isbn)
+                    self._set_cache(cache_key, None)
+                    return None
+
                 raw_title = data.get("title")
                 if not raw_title:
                     self._set_cache(cache_key, None)
@@ -936,9 +999,27 @@ class MetadataEnricher:
                 data = resp.json()
                 items = data.get("items", [])
                 if items:
+                    target_isbn = None
+                    q_str = str(req_params.get("q", ""))
+                    if "isbn:" in q_str:
+                        target_isbn = q_str.split("isbn:", 1)[1].strip()
+
+                    matching_items = []
+                    if target_isbn:
+                        for it in items:
+                            v = it.get("volumeInfo", {})
+                            ids = [i.get("identifier") for i in v.get("industryIdentifiers", []) if i.get("identifier")]
+                            if any(is_same_isbn(target_isbn, id_val) for id_val in ids):
+                                matching_items.append(it)
+                        if not matching_items:
+                            logger.warning("Google Books não retornou item com o ISBN pesquisado (%s).", target_isbn)
+                            return None
+                    else:
+                        matching_items = items
+
                     # Select the item with the most complete metadata (publisher and publishedDate)
-                    best_item = items[0]
-                    for it in items:
+                    best_item = matching_items[0]
+                    for it in matching_items:
                         v = it.get("volumeInfo", {})
                         if v.get("publisher") and v.get("publishedDate"):
                             best_item = it
@@ -1041,12 +1122,22 @@ class MetadataEnricher:
             resp = self.session.get(url, timeout=self._get_timeout())
             if resp.status_code == 200:
                 data = resp.json()
+                ret_isbns = data.get("isbn_13", []) + data.get("isbn_10", [])
+                if ret_isbns and not any(is_same_isbn(clean_isbn, x) for x in ret_isbns):
+                    logger.warning("OpenLibrary retornou registro sem o ISBN consultado (%s). Rejeitando resposta.", clean_isbn)
+                    self._set_cache(cache_key, None)
+                    return None
+
+                publish_places = data.get("publish_places", [])
+                city = publish_places[0].strip() if publish_places and isinstance(publish_places[0], str) else None
+
                 result = {
                     "title": data.get("title"),
                     "subtitle": data.get("subtitle"),
                     "publisher": data.get("publishers", [None])[0] if data.get("publishers") else None,
+                    "city": city,
                     "year": int(data["publish_date"][-4:]) if data.get("publish_date") and data["publish_date"][-4:].isdigit() else None,
-                    "isbn": isbn,
+                    "isbn": clean_isbn,
                 }
         except requests.RequestException as e:
             logger.debug("OpenLibrary ISBN error: %s", e)
@@ -1210,24 +1301,40 @@ class MetadataEnricher:
             elif not base.authors:
                 base.authors = extra_authors
 
+        from .classifier_jev import is_likely_person_name
         if extra.get("publisher"):
-            if authoritative or not base.publisher:
+            if authoritative or not base.publisher or (base.publisher and is_likely_person_name(base.publisher)):
                 base.publisher = extra["publisher"]
                 base.editora = extra["publisher"]
+                base.publisher_source = extra.get("source") or "api"
 
         if extra.get("year"):
-            if authoritative or not base.year:
-                base.year = extra["year"]
+            try:
+                yr = int(extra["year"])
+                if yr >= 1900:
+                    ano_invalido = bool(base.year and ((base.year < 1950 and base.identifiers.isbn) or base.year < 1900))
+                    if authoritative or not base.year or ano_invalido:
+                        base.year = yr
+                        base.year_source = extra.get("source") or "api"
+            except (ValueError, TypeError):
+                pass
+        elif base.year and (base.year < 1950 and base.identifiers.isbn):
+            base.year = None
 
-        from .classifier_jev import sanitize_city
+        from .classifier_jev import sanitize_city, is_suspicious_city
         if extra.get("city"):
             clean_c = sanitize_city(extra["city"])
-            if clean_c and (authoritative or not base.city):
-                base.city = clean_c
+            if clean_c and not is_suspicious_city(clean_c):
+                cidade_suspeita = bool(base.city and is_suspicious_city(base.city, base.authors, base.title))
+                if authoritative or not base.city or cidade_suspeita:
+                    base.city = clean_c
+                    base.city_source = extra.get("source") or "api"
         elif base.city:
             clean_base_c = sanitize_city(base.city)
-            if clean_base_c:
+            if clean_base_c and not is_suspicious_city(clean_base_c, base.authors, base.title):
                 base.city = clean_base_c
+            elif is_suspicious_city(base.city, base.authors, base.title):
+                base.city = None
 
         if extra.get("edition") and not base.edition:
             base.edition = extra["edition"]

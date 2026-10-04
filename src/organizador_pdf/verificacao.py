@@ -239,19 +239,20 @@ def _ano_da_data_openlibrary(bruto: Optional[str]) -> Optional[int]:
 def _preencher_lacunas(
     metadados: Metadados, *, editora: str = "", ano: Optional[int] = None, local: str = ""
 ) -> Metadados:
-    """Preenche `editora_ou_periodico`/`ano`/`local` só onde já é `None`.
-
-    Nunca sobrescreve um valor que o LLM já extraiu — só completa o que
-    faltou, e só é chamada depois de confirmar (título/autor batendo) que o
-    identificador é da mesma obra.
-    """
+    """Preenche `editora_ou_periodico`/`ano`/`local` onde é None ou onde o valor atual é comprovadamente inválido/suspeito."""
+    from .classifier_jev import is_suspicious_city
     atualizacoes: dict[str, Any] = {}
     if not metadados.editora_ou_periodico and editora:
         atualizacoes["editora_ou_periodico"] = editora
-    if not metadados.ano and ano:
+
+    ano_invalido = bool(metadados.ano and metadados.ano < 1950 and metadados.identificadores.isbn)
+    if (not metadados.ano or ano_invalido) and ano and ano >= 1900:
         atualizacoes["ano"] = ano
-    if not metadados.local and local:
+
+    local_invalido = bool(metadados.local and is_suspicious_city(metadados.local, metadados.autores, metadados.titulo))
+    if (not metadados.local or local_invalido) and local and not is_suspicious_city(local):
         atualizacoes["local"] = local
+
     if not atualizacoes:
         return metadados
     return metadados.model_copy(update=atualizacoes)

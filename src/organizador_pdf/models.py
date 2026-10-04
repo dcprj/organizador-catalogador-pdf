@@ -199,6 +199,10 @@ class ExtractedCandidates(BaseModel):
     total_pages: int = 0
     cip_pages: Optional[int] = None
     cip_year: Optional[int] = None
+    year_source: Optional[str] = None
+    city_source: Optional[str] = None
+    publisher_source: Optional[str] = None
+    reimpressao: Optional[str] = None
 
 
 class JevValidationResult(BaseModel):
@@ -283,6 +287,11 @@ class Metadados(BaseModel):
     author_source: Optional[str] = None
     isbn_source: Optional[str] = None
     issn_source: Optional[str] = None
+    year_source: Optional[str] = None
+    city_source: Optional[str] = None
+    publisher_source: Optional[str] = None
+    reimpressao: Optional[str] = None
+    isbn_verified: bool = False
     total_pages: Optional[int] = None
     cip_pages: Optional[int] = None
     cip_year: Optional[int] = None

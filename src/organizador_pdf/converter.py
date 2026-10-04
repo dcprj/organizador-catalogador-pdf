@@ -338,8 +338,18 @@ class MarkdownConverter:
             frontmatter_dict["title_source"] = metadata.title_source
         if getattr(metadata, "author_source", None):
             frontmatter_dict["author_source"] = metadata.author_source
+        if getattr(metadata, "year_source", None):
+            frontmatter_dict["year_source"] = metadata.year_source
+        if getattr(metadata, "city_source", None):
+            frontmatter_dict["city_source"] = metadata.city_source
+        if getattr(metadata, "publisher_source", None):
+            frontmatter_dict["publisher_source"] = metadata.publisher_source
+        if getattr(metadata, "reimpressao", None):
+            frontmatter_dict["reimpressao"] = metadata.reimpressao
         if getattr(metadata, "isbn_source", None):
             frontmatter_dict["isbn_source"] = metadata.isbn_source
+        if getattr(metadata, "isbn_verified", False):
+            frontmatter_dict["isbn_verified"] = metadata.isbn_verified
         if getattr(metadata, "doi_source", None):
             frontmatter_dict["doi_source"] = metadata.doi_source
         if getattr(metadata, "issn_source", None):
