@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import yaml
 
-from .models import Metadados, PublicationMetadata
+from .models import Metadados, PublicationMetadata, ResultadoExtracaoTexto
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,7 @@ class DocumentoConvertido:
     total_paginas: int
     metadados_embutidos: dict[str, str] = field(default_factory=dict)
     markdown_completo: str = ""
+    extracao_texto: Optional[ResultadoExtracaoTexto] = None
 
     @property
     def tem_texto(self) -> bool:
@@ -138,6 +139,86 @@ gerar_nome_padronizado = generate_standardized_filename
 sanitizar_nome_arquivo = sanitize_filename
 
 
+def is_ocr_available() -> bool:
+    """Verifica se o motor local de OCR (rapidocr_onnxruntime) está instalado e disponível."""
+    try:
+        from rapidocr_onnxruntime import RapidOCR  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def executar_ocr_seletivo(
+    caminho: Path,
+    paginas_inicio: int = 10,
+    paginas_fim: int = 10,
+    indices_alvo: Optional[list[int]] = None,
+) -> tuple[str, list[int]]:
+    """Executa OCR seletivo apenas quando necessário e restrito até as primeiras e últimas 10 páginas.
+
+    Utiliza RapidOCR (ONNX Runtime) com PyMuPDF em memória, 100% offline, rápido e determinístico.
+    """
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError:
+        logger.warning("rapidocr_onnxruntime não está instalado; OCR indisponível.")
+        return "", []
+
+    try:
+        import pymupdf
+    except ImportError:
+        import fitz as pymupdf
+
+    try:
+        ocr = RapidOCR()
+    except Exception as exc:
+        logger.warning("Falha ao inicializar RapidOCR: %s", exc)
+        return "", []
+
+    try:
+        doc = pymupdf.open(str(caminho))
+    except Exception as exc:
+        logger.warning("Falha ao abrir PDF para OCR em %s: %s", caminho.name, exc)
+        return "", []
+
+    try:
+        total_p = doc.page_count
+        if total_p == 0:
+            return "", []
+
+        if indices_alvo is not None:
+            todos_indices = sorted(set(idx for idx in indices_alvo if 0 <= idx < total_p))
+        else:
+            indices_inicio = list(range(min(paginas_inicio, total_p)))
+            if total_p > paginas_inicio:
+                fim_start = max(paginas_inicio, total_p - paginas_fim)
+                indices_fim = list(range(fim_start, total_p))
+            else:
+                indices_fim = []
+            todos_indices = sorted(set(indices_inicio + indices_fim))
+        textos_ocr = []
+        paginas_processadas = []
+
+        for idx in todos_indices:
+            try:
+                page = doc[idx]
+                pix = page.get_pixmap(dpi=150)
+                img_bytes = pix.tobytes("png")
+                result, _ = ocr(img_bytes)
+                if result:
+                    linhas = [line[1].strip() for line in result if line and len(line) > 1 and line[1].strip()]
+                    if linhas:
+                        page_txt = "\n".join(linhas)
+                        textos_ocr.append(f"--- [Página {idx + 1} - OCR] ---\n{page_txt}")
+                        paginas_processadas.append(idx + 1)
+            except Exception as e:
+                logger.debug("Falha de OCR na página %d de %s: %s", idx, caminho.name, e)
+
+        return "\n\n".join(textos_ocr), paginas_processadas
+    finally:
+        doc.close()
+
+
 def converter_pdf(
     caminho: Path,
     *,
@@ -195,24 +276,165 @@ def converter_pdf(
 
         todos_indices = sorted(set(indices_inicio + indices_fim))
 
-        textos_paginas = []
+        paginas_texto: dict[int, str] = {}
         for idx in todos_indices:
             try:
                 page_text = doc[idx].get_text("text")
                 if page_text and page_text.strip():
-                    textos_paginas.append(f"--- [Página {idx + 1}] ---\n{page_text}")
+                    paginas_texto[idx] = page_text.strip()
             except Exception as e:
                 logger.debug("Página %d ilegível em %s: %s", idx, caminho.name, e)
 
-        texto_amostra = "\n\n".join(textos_paginas)
+        texto_amostra = "\n\n".join(f"--- [Página {idx + 1}] ---\n{paginas_texto[idx]}" for idx in sorted(paginas_texto))
     finally:
         doc.close()
 
-    if not texto_amostra.strip():
-        raise ErroPdfEscaneado(
-            "Nenhum texto nativo extraível — o PDF provavelmente é digitalizado/escaneado. "
-            "Dica: use uma ferramenta de OCR (ex.: ocrmypdf) para adicionar camada de texto antes de catalogar."
+    caracteres_uteis = len(re.findall(r"[\w]", texto_amostra))
+    palavras_validas = re.findall(r"[a-zA-ZÀ-ÿ]{3,}", texto_amostra.lower())
+    total_palavras = len(palavras_validas)
+    palavras_distintas = len(set(palavras_validas))
+    paginas_lidas = len(todos_indices)
+    ocr_aplicado = False
+    paginas_ocr: list[int] = []
+
+    # Aciona OCR seletivo por etapas apenas quando necessário (texto nativo ausente ou insuficiente)
+    if not texto_amostra.strip() or caracteres_uteis < 45 or palavras_distintas < 4:
+        logger.info(
+            "[%s] Texto nativo insuficiente (%d caracteres, %d palavras distintas). Iniciando OCR seletivo por etapas...",
+            caminho.name,
+            caracteres_uteis,
+            palavras_distintas,
         )
+
+        # Definição das 4 etapas conforme diretriz do usuário:
+        # Etapa 1: 5 primeiras páginas (1 a 5)
+        # Etapa 2: 5 páginas seguintes (6 a 10)
+        # Etapa 3: 5 últimas páginas
+        # Etapa 4: 5 penúltimas páginas
+        etapas = []
+        e1 = [i for i in range(min(5, total_paginas))]
+        if e1:
+            etapas.append(("Etapa 1/4 (5 primeiras páginas)", e1))
+        if total_paginas > 5:
+            e2 = [i for i in range(5, min(10, total_paginas))]
+            if e2:
+                etapas.append(("Etapa 2/4 (5 páginas seguintes)", e2))
+        if total_paginas > 10:
+            e3_start = max(10, total_paginas - 5)
+            e3 = [i for i in range(e3_start, total_paginas)]
+            if e3:
+                etapas.append(("Etapa 3/4 (5 últimas páginas)", e3))
+        if total_paginas > 15:
+            e4_start = max(10, total_paginas - 10)
+            e4_end = max(10, total_paginas - 5)
+            e4 = [i for i in range(e4_start, e4_end)]
+            if e4:
+                etapas.append(("Etapa 4/4 (5 penúltimas páginas)", e4))
+
+        for nome_etapa, indices_etapa in etapas:
+            alvos = [idx for idx in indices_etapa if len(paginas_texto.get(idx, "")) < 30]
+            if not alvos:
+                continue
+
+            faixa_str = f"páginas {min(alvos) + 1} a {max(alvos) + 1}"
+            logger.info(
+                "[%s] OCR %s: Processando %s (%d páginas)...",
+                caminho.name,
+                nome_etapa,
+                faixa_str,
+                len(alvos),
+            )
+
+            texto_ocr_etapa, pags_ocr_etapa = executar_ocr_seletivo(
+                caminho,
+                indices_alvo=alvos,
+            )
+
+            if texto_ocr_etapa.strip():
+                for bloco in texto_ocr_etapa.split("--- [Página "):
+                    if not bloco.strip():
+                        continue
+                    m_idx = re.match(r"^(\d+)", bloco)
+                    if m_idx:
+                        p_num = int(m_idx.group(1))
+                        idx_0 = p_num - 1
+                        corpo = re.sub(r"^\d+\s*-\s*OCR\]\s*---\s*", "", bloco).strip()
+                        if len(corpo) > len(paginas_texto.get(idx_0, "")):
+                            paginas_texto[idx_0] = corpo
+                ocr_aplicado = True
+                paginas_ocr.extend(pags_ocr_etapa)
+
+            texto_amostra = "\n\n".join(f"--- [Página {idx + 1}] ---\n{paginas_texto[idx]}" for idx in sorted(paginas_texto))
+            caracteres_uteis = len(re.findall(r"[\w]", texto_amostra))
+            palavras_validas = re.findall(r"[a-zA-ZÀ-ÿ]{3,}", texto_amostra.lower())
+            total_palavras = len(palavras_validas)
+            palavras_distintas = len(set(palavras_validas))
+
+            if caracteres_uteis >= 45 and palavras_distintas >= 4:
+                logger.info(
+                    "[%s] OCR %s bem-sucedido: texto suficiente obtido (%d caracteres, %d palavras distintas). Interrompendo OCR.",
+                    caminho.name,
+                    nome_etapa,
+                    caracteres_uteis,
+                    palavras_distintas,
+                )
+                break
+            else:
+                logger.info(
+                    "[%s] OCR %s concluído, mas texto ainda insuficiente (%d caracteres, %d palavras distintas). Tentando próxima etapa...",
+                    caminho.name,
+                    nome_etapa,
+                    caracteres_uteis,
+                    palavras_distintas,
+                )
+
+        paginas_ocr = sorted(set(paginas_ocr))
+
+    if not texto_amostra.strip() or caracteres_uteis < 20:
+        raise ErroPdfEscaneado(
+            "Nenhum texto nativo extraível — o PDF provavelmente é digitalizado/escaneado "
+            "(inclusive após tentativa de OCR seletivo). "
+            "Dica: verifique a integridade do arquivo PDF ou a resolução das páginas digitalizadas."
+        )
+
+    # Avaliação de suficiência para identificar a obra (Passo 1 do fluxo)
+    suficiente = True
+    motivo_insuficiencia = None
+    tem_ocr = is_ocr_available()
+    if caracteres_uteis < 45 or palavras_distintas < 4:
+        suficiente = False
+        if not tem_ocr and not ocr_aplicado:
+            estado_ocr = "OCR_INDISPONIVEL"
+            motivo_insuficiencia = (
+                f"Texto nativo insuficiente ({caracteres_uteis} caracteres úteis) e OCR local indisponível "
+                f"(rapidocr_onnxruntime não instalado)."
+            )
+        elif ocr_aplicado:
+            estado_ocr = "EXECUTADO"
+            motivo_insuficiencia = (
+                f"Texto insuficiente para identificação segura da obra mesmo após OCR seletivo "
+                f"({caracteres_uteis} caracteres úteis e {palavras_distintas} palavras distintas)."
+            )
+        else:
+            estado_ocr = "OCR_INDISPONIVEL"
+            motivo_insuficiencia = (
+                f"Texto nativo insuficiente ({caracteres_uteis} caracteres úteis) para identificação segura da obra."
+            )
+    else:
+        estado_ocr = "EXECUTADO" if ocr_aplicado else "NAO_NECESSARIO"
+
+    extracao_texto = ResultadoExtracaoTexto(
+        caracteres_uteis=caracteres_uteis,
+        total_palavras=total_palavras,
+        paginas_lidas=paginas_lidas,
+        suficiente=suficiente,
+        requer_ocr=not suficiente,
+        motivo_insuficiencia=motivo_insuficiencia,
+        ocr_aplicado=ocr_aplicado,
+        paginas_ocr=paginas_ocr,
+        ocr_disponivel=tem_ocr,
+        estado_ocr=estado_ocr,
+    )
 
     return DocumentoConvertido(
         caminho=caminho,
@@ -220,6 +442,7 @@ def converter_pdf(
         total_paginas=total_paginas,
         metadados_embutidos=metadados_embutidos,
         markdown_completo="",  # Miolo não é convertido por especificação do usuário
+        extracao_texto=extracao_texto,
     )
 
 
@@ -252,24 +475,27 @@ class MarkdownConverter:
             frontmatter_dict["autor_principal"] = autores[0]
 
         # Separar periódico de editora conforme ABNT NBR 6023
+        journal_val = getattr(metadata, "periodico", None) or getattr(metadata, "journal", None)
+        if journal_val:
+            frontmatter_dict["periodico"] = journal_val
+
         is_article_or_journal = (metadata.classification or "").lower() in ("artigo", "artigo_cientifico", "revista")
-        if is_article_or_journal:
-            journal_val = metadata.journal or getattr(metadata, "periodico", None)
-            if journal_val:
-                frontmatter_dict["periodico"] = journal_val
-            pub_val = metadata.publisher or getattr(metadata, "editora", None)
-            if pub_val and pub_val != journal_val:
-                frontmatter_dict["editora"] = pub_val
-            if metadata.volume:
-                frontmatter_dict["volume"] = metadata.volume
-            if metadata.number:
-                frontmatter_dict["numero"] = metadata.number
-            if metadata.pages:
-                frontmatter_dict["paginas"] = metadata.pages
-        else:
-            pub_val = metadata.publisher or getattr(metadata, "editora", None) or getattr(metadata, "editora_ou_periodico", None)
-            if pub_val:
-                frontmatter_dict["editora"] = pub_val
+        pub_val = metadata.publisher or getattr(metadata, "editora", None)
+        if not pub_val and not is_article_or_journal:
+            pub_val = getattr(metadata, "editora_ou_periodico", None)
+
+        if pub_val and pub_val != journal_val:
+            frontmatter_dict["editora"] = pub_val
+
+        vol_val = getattr(metadata, "volume", None)
+        if vol_val:
+            frontmatter_dict["volume"] = str(vol_val)
+        num_val = getattr(metadata, "numero", None) or getattr(metadata, "number", None)
+        if num_val:
+            frontmatter_dict["numero"] = str(num_val)
+        pag_val = getattr(metadata, "paginas", None) or getattr(metadata, "pages", None)
+        if pag_val:
+            frontmatter_dict["paginas"] = str(pag_val)
 
         city = metadata.city or metadata.local
         if city:
@@ -294,12 +520,6 @@ class MarkdownConverter:
             "doi": metadata.identificadores.doi or "",
             "issn": metadata.identificadores.issn or "",
         }
-        if metadata.identificadores.isbn:
-            frontmatter_dict["isbn"] = metadata.identificadores.isbn
-        if metadata.identificadores.doi:
-            frontmatter_dict["doi"] = metadata.identificadores.doi
-        if metadata.identificadores.issn:
-            frontmatter_dict["issn"] = metadata.identificadores.issn
 
         if getattr(metadata, "referencia_abnt", None):
             frontmatter_dict["referencia_abnt"] = metadata.referencia_abnt
@@ -356,6 +576,23 @@ class MarkdownConverter:
             frontmatter_dict["issn_source"] = metadata.issn_source
         if getattr(metadata, "provedor_classificador", None):
             frontmatter_dict["provedor_classificador"] = metadata.provedor_classificador
+        if getattr(metadata, "status_por_provedor", None):
+            frontmatter_dict["status_por_provedor"] = metadata.status_por_provedor
+        if getattr(metadata, "regra_classificacao_tematica", None):
+            frontmatter_dict["regra_classificacao_tematica"] = metadata.regra_classificacao_tematica
+        if getattr(metadata, "justificativa_jev", None):
+            frontmatter_dict["justificativa_classificacao"] = metadata.justificativa_jev
+        if getattr(metadata, "justificativa_classificacao_tematica", None):
+            frontmatter_dict["justificativa_classificacao_tematica"] = metadata.justificativa_classificacao_tematica
+        if getattr(metadata, "tem_texto_integral", False):
+            frontmatter_dict["texto_integral_disponivel"] = True
+            if getattr(metadata, "url_texto_integral", None):
+                frontmatter_dict["url_texto_integral"] = metadata.url_texto_integral
+        elif getattr(metadata, "apenas_referencia", False):
+            frontmatter_dict["texto_integral_disponivel"] = False
+            frontmatter_dict["apenas_referencia"] = True
+        if getattr(metadata, "criterios_atendidos", None):
+            frontmatter_dict["criterios_confianca_atendidos"] = metadata.criterios_atendidos
 
         if tags:
             frontmatter_dict["tags"] = tags
@@ -540,6 +777,16 @@ def migrar_markdown_frontmatter(texto_markdown: str) -> tuple[str, bool, list[st
         dados["motivos_revisao"] = reasons
         if "review_reasons" in dados:
             del dados["review_reasons"]
+
+    # Identificadores: consolidar em 'identificadores' canônico e eliminar chaves de topo duplicadas
+    if "identificadores" not in dados or not isinstance(dados["identificadores"], dict):
+        dados["identificadores"] = {}
+    for id_key in ("isbn", "doi", "issn"):
+        if id_key in dados:
+            id_val = dados.pop(id_key)
+            if id_val and not dados["identificadores"].get(id_key):
+                dados["identificadores"][id_key] = id_val
+            alterado = True
 
     dados["versao_esquema"] = "2.0"
 

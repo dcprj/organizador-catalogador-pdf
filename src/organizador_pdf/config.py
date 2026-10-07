@@ -31,31 +31,37 @@ class Config:
     #: NUNCA envia o arquivo PDF nem texto integral — apenas identificadores/título.
     #: Desligue com ORGPDF_VERIFICAR_ONLINE=false para manter 100% offline.
     verificar_online: bool = True
-    #: Chave de API opcional para classificação semântica remota via TypeSafe AI.
-    #: Se ausente (None), o classificador Jev opera 100% localmente via regras
-    #: probabilísticas calibradas (System One Heuristics).
+    #: Habilita cache local persistente em disco para consultas bibliográficas externas.
+    #: Desligue com ORGPDF_CACHE_BIBLIOGRAFICO=false para forçar consultas 100% ao vivo.
+    cache_bibliografico: bool = True
+    #: Chave de API para classificação semântica remota via TypeSafe AI.
+    #: Obrigatória para o modo padrão 'jev_remoto'.
     typesafe_api_key: Optional[str] = None
-    #: Modo do classificador: 'auto' (usa TypeSafe se chave presente, senão local),
-    #: 'local' (estritamente heurísticas locais), ou 'jev_remoto' (estritamente TypeSafe AI).
-    classificador: str = "auto"
+    #: Modo do classificador: 'jev_remoto' (padrão oficial do sistema, TypeSafe AI remoto),
+    #: ou 'local' (estritamente heurísticas locais determinísticas sem rede).
+    classificador: str = "jev_remoto"
 
     @property
     def modelo(self) -> str:
         """Identificador do modelo classificador em execução."""
-        if self.classificador in ("jev_remoto", "remoto", "typesafe"):
-            return "jev-typesafe"
         if self.classificador == "local":
             return "jev-system-one-local"
-        return "jev-typesafe" if self.typesafe_api_key else "jev-system-one-local"
+        return "jev-typesafe"
 
     @property
     def provedor(self) -> str:
         """Provedor do motor de classificação."""
-        if self.classificador in ("jev_remoto", "remoto", "typesafe"):
-            return "typesafe"
         if self.classificador == "local":
             return "deterministico_local"
-        return "typesafe" if self.typesafe_api_key else "deterministico_local"
+        return "typesafe"
+
+    def validar(self) -> None:
+        """Valida consistência dos parâmetros de configuração antes da execução."""
+        if self.classificador == "jev_remoto" and not self.typesafe_api_key:
+            raise ErroDeConfiguracao(
+                "Modo classificador remoto padrão ('jev_remoto') selecionado, "
+                "mas TYPESAFE_API_KEY não foi configurada no ambiente nem no arquivo .env."
+            )
 
     @property
     def total_offline(self) -> bool:
@@ -69,6 +75,7 @@ class Config:
         env_file: Optional[Path] = None,
         *,
         verificar_online: Optional[bool] = None,
+        cache_bibliografico: Optional[bool] = None,
         max_paginas: Optional[int] = None,
         max_caracteres: Optional[int] = None,
         typesafe_api_key: Optional[str] = None,
@@ -103,20 +110,14 @@ class Config:
             classificador
             or os.getenv("ORGPDF_CLASSIFICADOR")
             or os.getenv("CLASSIFICADOR")
-            or ("remoto" if key else "auto")
+            or "jev_remoto"
         ).strip().lower()
         if classif_bruto in ("remoto", "typesafe", "jev_remoto", "remote"):
             classif = "jev_remoto"
         elif classif_bruto in ("local", "deterministico", "heuristico"):
             classif = "local"
         else:
-            classif = "auto"
-
-        if classif == "jev_remoto" and not key:
-            raise ErroDeConfiguracao(
-                "Modo classificador remoto exclusivo ('jev_remoto') selecionado, "
-                "mas TYPESAFE_API_KEY não foi configurada no ambiente nem no arquivo .env."
-            )
+            classif = "jev_remoto"
 
         return cls(
             max_paginas=_inteiro_positivo("ORGPDF_MAX_PAGINAS", 10, cli=max_paginas),
@@ -127,6 +128,11 @@ class Config:
                 verificar_online
                 if verificar_online is not None
                 else _booleano("ORGPDF_VERIFICAR_ONLINE", True)
+            ),
+            cache_bibliografico=(
+                cache_bibliografico
+                if cache_bibliografico is not None
+                else _booleano("ORGPDF_CACHE_BIBLIOGRAFICO", True)
             ),
             typesafe_api_key=key,
             classificador=classif,

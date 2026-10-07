@@ -123,7 +123,7 @@ def test_jev_calibrated_fallback_thesis(sample_pdf_generator, monkeypatch):
     ]
     pdf_path = sample_pdf_generator("tese.pdf", "Tese Teste", sample_pages)
 
-    classifier = JevClassifier(api_key=None)
+    classifier = JevClassifier(api_key=None, modo="local")
     result = classifier.classify_and_validate(str(pdf_path))
 
     assert result.classification == "tese"
@@ -139,8 +139,8 @@ def test_jev_calibrated_fallback_book(sample_pdf_generator, monkeypatch):
     ]
     pdf_path = sample_pdf_generator("livro.pdf", "Livro Teste", sample_pages)
 
-    # Without api_key, runs calibrated fallback
-    classifier = JevClassifier(api_key=None)
+    # Without api_key, runs calibrated fallback in local mode
+    classifier = JevClassifier(api_key=None, modo="local")
     result = classifier.classify_and_validate(str(pdf_path))
 
     assert result.classification == "livro"
@@ -157,7 +157,7 @@ def test_jev_calibrated_fallback_courseware(sample_pdf_generator, monkeypatch):
     ]
     pdf_path = sample_pdf_generator("apostila.pdf", "Apostila Teste", sample_pages)
 
-    classifier = JevClassifier(api_key=None)
+    classifier = JevClassifier(api_key=None, modo="local")
     result = classifier.classify_and_validate(str(pdf_path))
 
     assert result.classification == "apostila"

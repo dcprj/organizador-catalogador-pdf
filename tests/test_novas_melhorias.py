@@ -321,25 +321,29 @@ def test_resume_preserva_parametros(tmp_path: Path):
 
 
 def test_jev_classifier_always_uses_jev(monkeypatch, sample_pdf_generator):
-    """Verify that JevClassifier uses TYPESAFE_API_KEY if present, and local fallback if not."""
+    """Verify that JevClassifier requires TYPESAFE_API_KEY in remote mode and executes local heuristics when modo='local'."""
     from organizador_pdf.classifier_jev import JevClassifier
+    from organizador_pdf.config import ErroDeConfiguracao
 
     # 1. With API key in environment
     monkeypatch.setenv("TYPESAFE_API_KEY", "dummy-secret-key")
     classifier_with_key = JevClassifier()
     assert classifier_with_key.api_key == "dummy-secret-key"
 
-    # 2. Without API key
+    # 2. Without API key in mandatory remote mode: raises ErroDeConfiguracao at init or classify
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
-    classifier_no_key = JevClassifier()
-    assert classifier_no_key.api_key is None
-
-    # 3. Classify with fallback
     pages = ["Documento de teste com conteúdo básico para classificação Jev local."]
     pdf_path = sample_pdf_generator("doc_jev.pdf", "Jev Doc", pages)
-    res = classifier_no_key.classify_and_validate(str(pdf_path))
+    with pytest.raises(ErroDeConfiguracao):
+        classifier_no_key = JevClassifier()
+        classifier_no_key.classify_and_validate(str(pdf_path))
+
+    # 3. Explicit local mode executes calibrated local heuristics
+    classifier_local = JevClassifier(modo="local")
+    res = classifier_local.classify_and_validate(str(pdf_path))
     assert res.classification is not None
     assert res.classification_confidence >= 0.0
+    assert res.provider == "deterministico_local"
     assert res.probabilities is not None
 
 
@@ -567,14 +571,14 @@ def test_sampling_limits_affect_actual_text_extraction(tmp_path: Path, sample_pd
 
     monkeypatch.setattr(cj, "extract_native_sample_text", spy_extract)
 
-    classifier = cj.JevClassifier()
+    classifier = cj.JevClassifier(modo="local")
     # Call with max_paginas=2 and max_caracteres=300
     res = classifier.classify_and_validate(str(pdf_path), max_paginas=2, max_caracteres=300)
 
     assert len(calls_extract) == 1
     assert calls_extract[0]["head_pages"] == 2
     assert calls_extract[0]["tail_pages"] == 2
-    assert res.classification in ["artigo", "livro", "tese", "revista", "apostila", "outros"]
+    assert res.classification in ["artigo", "livro", "tese", "revista", "apostila", "outros", "arquivo_parcial"]
 
 
 def test_interactive_validator_supports_estrutura_cnpq_and_plana(tmp_path: Path, sample_pdf_generator):
@@ -711,7 +715,7 @@ def test_pre_extracted_text_used_without_reopening_pdf(tmp_path: Path, sample_pd
 
     monkeypatch.setattr(pymupdf, "open", spy_open)
 
-    classifier = JevClassifier()
+    classifier = JevClassifier(modo="local")
     # Pass pre-extracted text and total_paginas
     res = classifier.classify_and_validate(
         str(pdf_path),
@@ -777,6 +781,7 @@ def test_metadata_enricher_in_memory_cache():
     from organizador_pdf.metadata_api import MetadataEnricher
 
     enricher = MetadataEnricher()
+    enricher.clear_cache()
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = {
@@ -1089,9 +1094,9 @@ def test_classificador_modo_remoto_missing_key_fails_fast(monkeypatch, tmp_path)
     empty_env = tmp_path / "empty.env"
     empty_env.write_text("", encoding="utf-8")
 
-    # Config.do_ambiente deve disparar ErroDeConfiguracao quando remoto sem chave
+    # Config.do_ambiente deve disparar ErroDeConfiguracao quando remoto sem chave ao validar
     with pytest.raises(ErroDeConfiguracao, match="remoto"):
-        Config.do_ambiente(classificador="remoto", env_file=empty_env)
+        Config.do_ambiente(classificador="remoto", env_file=empty_env).validar()
 
     # Instanciação direta do JevClassifier em modo jev_remoto sem chave
     with pytest.raises(ErroDeConfiguracao, match="remoto"):
@@ -1141,8 +1146,8 @@ def test_classificador_modo_remoto_api_call_failure_raises(monkeypatch):
         )
 
 
-def test_jev_classifier_idempotent_caching(monkeypatch, tmp_path):
-    """Verifica que chamadas repetidas usam o cache por sha256 sem reexecutar chamada externa cobrada."""
+def test_jev_classifier_always_executes_fresh_remote_call_without_cache(monkeypatch, tmp_path):
+    """Verifica que o cache JEV está desativado e cada classificação de PDF gera uma chamada remota nova."""
     from unittest.mock import MagicMock
     import sys
     from organizador_pdf.classifier_jev import JevClassifier
@@ -1164,24 +1169,24 @@ def test_jev_classifier_idempotent_caching(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "typesafe_sdk", mock_sdk)
 
     cache_file = tmp_path / "cache_jev.json"
-    classifier = JevClassifier(api_key="ts_test_key", modo="auto", cache_file=cache_file)
+    classifier = JevClassifier(api_key="ts_test_key", modo="jev_remoto", cache_file=cache_file)
 
     sample = "Texto de amostra com Abstract e Introdução científica para classificação."
 
-    # Primeira execução: chama a API remota e grava em cache
+    # Primeira execução: chama a API remota e NÃO grava em cache de JEV
     res1 = classifier.classify_and_validate(pdf_path="artigo.pdf", texto_pre_extraido=sample, total_paginas=8)
     assert res1.classification == "artigo"
     assert res1.provider == "typesafe"
     assert mock_client.system_one.call_count == 1
-    assert cache_file.exists()
+    assert not cache_file.exists()  # Nenhum cache JEV gravado
 
-    # Segunda execução com mesmo texto e total de páginas: DEVE vir do cache sem chamar o SDK
+    # Segunda execução com mesmo texto e total de páginas: DEVE realizar chamada remota nova
     res2 = classifier.classify_and_validate(pdf_path="artigo.pdf", texto_pre_extraido=sample, total_paginas=8)
     assert res2.classification == "artigo"
     assert res2.provider == "typesafe"
-    assert res2.raw_jev_data.get("cached") is True
-    # Call count deve continuar exatamente 1!
-    assert mock_client.system_one.call_count == 1
+    assert res2.raw_jev_data.get("cached") is not True
+    # Call count deve ser incrementado para 2 (nova chamada remota obrigatória)
+    assert mock_client.system_one.call_count == 2
 
 
 def test_doi_in_references_and_citations_rejected_ambrosio_case():
@@ -1510,14 +1515,12 @@ def test_persistence_failure_idempotent_retry_avoids_duplicate_paid_call(tmp_pat
     assert res1.provider == "typesafe"
     assert mock_client.system_one.call_count == 1
 
-    # 2. Simula falha de persistência no disco (ex.: erro de I/O na pasta de destino)
-    # Na retomada / reexecução da mesma análise, o cache DEVE ser reutilizado:
+    # 2. Na retomada ou reprocessamento, o JEV gera nova chamada remota obrigatória (sem cache):
     res2 = classifier.classify_and_validate(pdf_path="livro_epist.pdf", texto_pre_extraido=sample_doc, total_paginas=200)
     assert res2.classification == "livro"
     assert res2.provider == "typesafe"
-    assert res2.raw_jev_data.get("cached") is True
-    # mock_client.system_one NUNCA deve ser chamado uma segunda vez!
-    assert mock_client.system_one.call_count == 1
+    assert res2.raw_jev_data.get("cached") is not True
+    assert mock_client.system_one.call_count == 2
 
 
 def test_cli_cabecalho_truthful_remote_mode_and_network_status(monkeypatch):
@@ -1712,8 +1715,10 @@ def test_beer_e_franco_separacao_periodico_e_editora():
     assert parsed["tipo_documento"] == "artigo"
     assert parsed["periodico"] == "Affectio Societatis"
     assert parsed["editora"] == "Universidad de Antioquia"
-    assert parsed["doi"] == "10.17533/udea.affs.v14n27a08"
-    assert parsed["issn"] == "0123-8884"
+    assert parsed["identificadores"]["doi"] == "10.17533/udea.affs.v14n27a08"
+    assert parsed["identificadores"]["issn"] == "0123-8884"
+    assert "doi" not in parsed
+    assert "issn" not in parsed
     assert "publisher" not in parsed
 
 
@@ -1742,7 +1747,8 @@ def test_referencia_abnt_sem_isbn_com_identificador_no_frontmatter():
 
     fm_bello = MarkdownConverter.build_yaml_frontmatter(bello)
     parsed_bello = yaml.safe_load(fm_bello.strip().strip("-").strip())
-    assert parsed_bello["isbn"] == "9788574603093"
+    assert parsed_bello["identificadores"]["isbn"] == "9788574603093"
+    assert "isbn" not in parsed_bello
 
     # 2. Joel Birman
     birman = PublicationMetadata(
@@ -1762,7 +1768,8 @@ def test_referencia_abnt_sem_isbn_com_identificador_no_frontmatter():
 
     fm_birman = MarkdownConverter.build_yaml_frontmatter(birman)
     parsed_birman = yaml.safe_load(fm_birman.strip().strip("-").strip())
-    assert parsed_birman["isbn"] == "9788520011508"
+    assert parsed_birman["identificadores"]["isbn"] == "9788520011508"
+    assert "isbn" not in parsed_birman
 
 
 def test_infer_thematic_area_jungian_and_academic():
@@ -1796,29 +1803,47 @@ def test_infer_thematic_area_jungian_and_academic():
 
 
 def test_missing_essential_fields_trigger_review():
-    """Verifica que livros/teses sem autor, ano ou local disparam revisão manual obrigatória."""
+    """Verifica que livros/teses sem autor disparam revisão manual,
+
+    enquanto ausência de localidade (cidade) não impede a organização de obra identificada com segurança.
+    """
     from organizador_pdf.metadata_api import MetadataEnricher
     from organizador_pdf.models import PublicationMetadata, Identifiers, JevValidationResult
 
     enricher = MetadataEnricher(online=False)
 
-    # Book missing authors
+    # Livro sem autoria identificada deve ir para revisão manual
     meta1 = PublicationMetadata(title="Livro Sem Autor", classification="livro", year=2020, city="São Paulo")
     enricher._evaluate_needs_review(meta1, JevValidationResult(classification="livro"), sources_consulted=[])
     assert meta1.needs_review is True
     assert any("sem autoria" in r.lower() for r in meta1.review_reasons)
 
-    # Book missing year
-    meta2 = PublicationMetadata(title="Livro Sem Ano", classification="livro", authors=["Autor Y"], city="São Paulo")
-    enricher._evaluate_needs_review(meta2, JevValidationResult(classification="livro"), sources_consulted=[])
-    assert meta2.needs_review is True
-    assert any("sem ano" in r.lower() for r in meta2.review_reasons)
+    # Livro com autor e título identificados mas sem local (cidade) NÃO deve ir para revisão manual ([S. l.])
+    meta3 = PublicationMetadata(
+        title="Livro Sem Cidade",
+        classification="livro",
+        authors=["Autor Z"],
+        year=2020,
+        area_principal="Filosofia",
+        subarea="Ética",
+    )
+    enricher._evaluate_needs_review(
+        meta3,
+        JevValidationResult(
+            classification="livro",
+            classification_confidence=0.85,
+            assunto="Filosofia",
+            subarea="Ética",
+            subject_confidence=0.9,
+        ),
+        sources_consulted=[],
+    )
+    assert meta3.needs_review is False
 
-    # Book missing city
-    meta3 = PublicationMetadata(title="Livro Sem Cidade", classification="livro", authors=["Autor Z"], year=2020)
-    enricher._evaluate_needs_review(meta3, JevValidationResult(classification="livro"), sources_consulted=[])
-    assert meta3.needs_review is True
-    assert any("sem local" in r.lower() for r in meta3.review_reasons)
+    # Livro sem autor e sem ano (identidade incerta) deve ir para revisão manual
+    meta4 = PublicationMetadata(title="Obra Desconhecida", classification="livro")
+    enricher._evaluate_needs_review(meta4, JevValidationResult(classification="livro"), sources_consulted=[])
+    assert meta4.needs_review is True
 
 
 def test_book_page_count_and_partial_copy_review():
@@ -2066,14 +2091,292 @@ def test_relatorio_tecnico_never_publishes_erroneous_metadata_with_confidence_on
     assert meta.local is None or any("Jung" in r or "localidade" in r for r in meta.review_reasons)
 
 
+def test_ca01_caso_hall_copyright_e_cip_parenteses():
+    """CA-01: Mascaramento de título por disclaimer de copyright e parser CIP com parênteses."""
+    from organizador_pdf.classifier_jev import is_invalid_or_disclaimer_title, parse_page_cip
+    from organizador_pdf.metadata_api import MetadataEnricher
+    from organizador_pdf.models import PublicationMetadata, Identifiers
+
+    # 1. Padrão de copyright e editora deve ser detectado como disclaimer inválido
+    bad_title = "© 2017 Elsevier Editora Ltda."
+    assert is_invalid_or_disclaimer_title(bad_title) is True
+
+    # 2. Avaliação de quarentena degrada confiança de título disclaimer
+    enricher = MetadataEnricher(online=False)
+    meta = PublicationMetadata(
+        title=bad_title,
+        authors=["HALL, John E."],
+        year=2017,
+        identifiers=Identifiers(isbn="9788535262858"),
+    )
+    enricher._evaluate_needs_review(meta)
+    assert meta.needs_review is True
+    assert meta.confidence_metadata <= 0.20
+    assert any("Título inválido" in r or "disclaimer" in r for r in meta.review_reasons)
+
+    # 3. Parser CIP com parênteses de autor ("Hall, John E. (John Edward), 1946-")
+    cip_text = """
+    Dados Internacionais de Catalogação na Publicação (CIP)
+    H175t
+    Hall, John E. (John Edward), 1946-
+    Tratado de fisiologia médica / John E. Hall. - 13. ed. - Rio de Janeiro : Elsevier, 2017.
+    1176 p. : il. ; 28 cm.
+    ISBN 978-85-352-6285-8
+    1. Fisiologia humana. 2. Fisiopatologia. I. Título.
+    """
+    parsed = parse_page_cip(cip_text)
+    assert parsed is not None
+    assert "fisiologia" in parsed["title"].lower()
+    assert "elsevier" in (parsed.get("publisher") or "").lower()
+    assert parsed.get("year") == 2017
+    assert "13" in (parsed.get("edition") or "")
 
 
+def test_ca02_maquina_estados_provedor_e_isbn_verified():
+    """CA-02: Máquina de estados de provedor e isbn_verified somente com confirmação explícita."""
+    from organizador_pdf.models import (
+        StatusConsultaProvedor,
+        PublicationMetadata,
+        Identifiers,
+        JevValidationResult,
+        ExtractedCandidates,
+    )
+    from organizador_pdf.metadata_api import MetadataEnricher
+
+    # Verificar enum
+    assert StatusConsultaProvedor.CONFIRMADO.value == "CONFIRMADO"
+    assert StatusConsultaProvedor.RESPOSTA_SEM_CONFIRMACAO.value == "RESPOSTA_SEM_CONFIRMACAO"
+    assert StatusConsultaProvedor.DIVERGENTE.value == "DIVERGENTE"
+    assert StatusConsultaProvedor.NAO_ENCONTRADO.value == "NAO_ENCONTRADO"
+    assert StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE.value == "ERRO_HTTP_OU_LIMITE"
+    assert StatusConsultaProvedor.FALHA_CONEXAO.value == "FALHA_CONEXAO"
+    assert StatusConsultaProvedor.NAO_CONSULTADO.value == "NAO_CONSULTADO"
+
+    enricher = MetadataEnricher(online=True)
+
+    # Simula provedor com resposta sem confirmação explícita do ISBN
+    def fake_brasilapi(isbn: str):
+        enricher.set_provider_status("brasil_api", StatusConsultaProvedor.RESPOSTA_SEM_CONFIRMACAO)
+        return {"title": "Livro Sem Confirmação", "year": 2020}
+
+    def fake_gbooks(isbn: str):
+        enricher.set_provider_status("google_books", StatusConsultaProvedor.NAO_ENCONTRADO)
+        return None
+
+    def fake_openlib(isbn: str):
+        enricher.set_provider_status("openlibrary", StatusConsultaProvedor.NAO_ENCONTRADO)
+        return None
+
+    enricher.fetch_brasil_api_isbn = fake_brasilapi
+    enricher.fetch_google_books_by_isbn = fake_gbooks
+    enricher.fetch_openlibrary_by_isbn = fake_openlib
+
+    jev = JevValidationResult(
+        classification="livro",
+        classification_confidence=0.98,
+        probabilities={"isbn": 0.99},
+        candidates=ExtractedCandidates(
+            raw_title="Título Nativo",
+            isbn="9788535262858",
+            raw_year=2017,
+        ),
+    )
+
+    enriched = enricher.enrich(jev)
+    # Não atingiu CONFIRMADO em nenhum provedor -> isbn_verified deve ser False
+    assert enriched.isbn_verified is False
+    assert enriched.status_por_provedor.get("brasil_api") == "RESPOSTA_SEM_CONFIRMACAO"
+    assert enriched.needs_review is True
+    assert any("sem confirmação explícita" in r for r in enriched.review_reasons)
+    assert enriched.confidence_metadata <= 0.70
+
+    # Agora simula provedor com confirmação explícita
+    def fake_brasilapi_conf(isbn: str):
+        enricher.set_provider_status("brasil_api", StatusConsultaProvedor.CONFIRMADO)
+        return {"title": "Livro Confirmado", "year": 2017, "isbn": isbn}
+
+    enricher.fetch_brasil_api_isbn = fake_brasilapi_conf
+    enriched_conf = enricher.enrich(jev)
+    assert enriched_conf.isbn_verified is True
+    assert enriched_conf.status_por_provedor.get("brasil_api") == "CONFIRMADO"
 
 
+def test_ca03_sanitizacao_contextual_subtitulo_gorenstein():
+    """CA-03: Poda de créditos editoriais secundários e preservação de subtítulo conceitual."""
+    from organizador_pdf.classifier_jev import sanitize_subtitle_candidate
+
+    # Caso Gorenstein: contaminação com expediente editorial
+    sub_com_creditos = (
+        "Letícia Bispo de Lima Colaboraram nesta edição: "
+        "Coordenadora editorial: Cláudia Bittencourt Assistente editorial: Paola Araújo de Oliveira"
+    )
+    limpo = sanitize_subtitle_candidate(sub_com_creditos)
+    # Deve podar os créditos editoriais
+    assert limpo is None
+
+    # Subtítulo conceitual legítimo
+    sub_valido = "um guia prático para diagnóstico clínico"
+    assert sanitize_subtitle_candidate(sub_valido) == sub_valido
+
+    # Subtítulo conceitual com link que deve ter a URL removida sem destruir o conceito
+    sub_com_link = "teoria e prática clínica disponível em https://editora.com.br/livro"
+    assert sanitize_subtitle_candidate(sub_com_link) == "teoria e prática clínica disponível em"
 
 
+def test_ca04_duplicatas_isbn_simetria_normalizacao_sha256(tmp_path: Path, sample_pdf_generator):
+    """CA-04: Normalização canônica ISBN-10/13, thread-safety e simetria de duplicatas por SHA-256."""
+    from organizador_pdf.models import (
+        converter_isbn10_para_isbn13,
+        normalizar_isbn_canonico,
+        Metadados,
+        Identificadores,
+        TipoPublicacao,
+    )
+    from organizador_pdf.pipeline import OrganizadorPipeline, OpcoesDoPipeline, _calcular_sha256
+    from organizador_pdf.config import Config
+
+    # 1. Normalização canônica
+    isbn10 = "853526285X"
+    isbn13 = converter_isbn10_para_isbn13(isbn10)
+    assert isbn13 == "9788535262858"
+    assert normalizar_isbn_canonico(isbn10) == "9788535262858"
+    assert normalizar_isbn_canonico("978-85-352-6285-8") == "9788535262858"
+
+    # 2. Simulação de dois arquivos no lote
+    pages1 = ["Página 1 do documento A com algum conteúdo para ser um PDF válido."]
+    pages2 = ["Página 1 do documento B com conteúdo diferente para gerar outro hash."]
+    pdf1 = sample_pdf_generator("arq1.pdf", "Livro 1", pages1)
+    pdf2 = sample_pdf_generator("arq2.pdf", "Livro 2", pages2)
+
+    sha1 = _calcular_sha256(pdf1)
+    sha2 = _calcular_sha256(pdf2)
+    assert sha1 != sha2
+
+    class ExtratorMock:
+        def __init__(self):
+            self.chamadas = 0
+        def extrair(self, doc):
+            self.chamadas += 1
+            return Metadados(
+                titulo=f"Obra Volume {self.chamadas}",
+                autores=["AUTOR, Teste"],
+                tipo_publicacao=TipoPublicacao.LIVRO,
+                ano=2020,
+                identificadores=Identificadores(isbn="853526285X" if self.chamadas == 1 else "9788535262858"),
+            )
+
+    destino = tmp_path / "destino"
+    pipeline = OrganizadorPipeline(
+        config=Config(verificar_online=False),
+        opcoes=OpcoesDoPipeline(destino=destino, quarantine=True),
+        extrator=ExtratorMock(),
+    )
+
+    resultados = pipeline.processar_lote([pdf1, pdf2])
+    assert len(resultados) == 2
+
+    # Tratamento simétrico: ambos os arquivos devem ter needs_review=True e aviso de duplicata
+    assert resultados[0].metadados.needs_review is True
+    assert resultados[1].metadados.needs_review is True
+    assert any("arquivos diferentes" in r and "conferir edições/volumes" in r for r in resultados[0].metadados.review_reasons)
+    assert any("arquivos diferentes" in r and "conferir edições/volumes" in r for r in resultados[1].metadados.review_reasons)
+
+    # Ambos devem ter sido direcionados para revisao_manual
+    assert "revisao_manual" in resultados[0].pdf_destino.parts
+    assert "revisao_manual" in resultados[1].pdf_destino.parts
 
 
+def test_ca05_desacoplamento_titulo_autor_divergencia_arquivo():
+    """CA-05: Desacoplamento da validação de título e autor; autor não mascara título com sobreposição nula."""
+    from organizador_pdf.pipeline import _titulo_diverge_do_arquivo
+    from organizador_pdf.models import Metadados, TipoPublicacao
+
+    # Caso Hall: arquivo informativo traz título e autores
+    nome_arquivo = "Tratado_de_Fisiologia_Médica_Arthur_C_Guyton,_John_Edward_Hall_z (1).pdf"
+
+    # Metadados com autor correto (Hall), mas título mascarado por disclaimer
+    meta_invalido = Metadados(
+        titulo="© 2017 Elsevier Editora Ltda.",
+        autor_principal="HALL, John E.",
+        autores=["HALL, John E."],
+        tipo_publicacao=TipoPublicacao.LIVRO,
+        ano=2017,
+    )
+    aviso = _titulo_diverge_do_arquivo(nome_arquivo, meta_invalido)
+    assert aviso is not None
+    assert "não possui nenhuma palavra significativa em comum" in aviso
+
+    # Metadados corretos: título coincide
+    meta_correto = Metadados(
+        titulo="Tratado de Fisiologia Médica",
+        autor_principal="HALL, John E.",
+        autores=["HALL, John E.", "GUYTON, Arthur C."],
+        tipo_publicacao=TipoPublicacao.LIVRO,
+        ano=2017,
+    )
+    assert _titulo_diverge_do_arquivo(nome_arquivo, meta_correto) is None
+
+    # Arquivo não informativo não gera falso alarme
+    assert _titulo_diverge_do_arquivo("scan001.pdf", meta_invalido) is None
+    assert _titulo_diverge_do_arquivo("documento.pdf", meta_invalido) is None
 
 
+def test_ca06_classificacao_tematica_descritores_clinicos_e_rastreabilidade():
+    """CA-06: Descritores clínicos/psicometria direcionam para Psicologia e registram a regra no frontmatter."""
+    from organizador_pdf.metadata_api import infer_thematic_area
+    from organizador_pdf.organizer import gerar_markdown
+    from organizador_pdf.models import Metadados, TipoPublicacao
+
+    # Caso Gorenstein: título com avaliação e saúde mental
+    area, subarea, regra = infer_thematic_area(
+        title="Instrumentos de Avaliação em Saúde Mental",
+        authors=["GORENSTEIN, Clarice"],
+        sample_text="Escalas de avaliação psicológica, testes psicométricos e diagnóstico clínico.",
+        return_rule=True,
+    )
+    # Não pode ser Educação
+    assert area == "Psicologia"
+    assert subarea in ("Avaliação Psicológica", "Psicologia Clínica")
+    assert "avaliacao_psicologica" in regra or "psicologia_clinica" in regra
+
+    # Rastreabilidade registrada no markdown gerado
+    meta = Metadados(
+        titulo="Instrumentos de Avaliação em Saúde Mental",
+        autores=["GORENSTEIN, Clarice"],
+        area_principal=area,
+        subarea=subarea,
+        regra_classificacao_tematica=regra,
+        tipo_publicacao=TipoPublicacao.LIVRO,
+        status_por_provedor={"brasil_api": "CONFIRMADO"},
+    )
+    md = gerar_markdown(meta)
+    assert "regra_classificacao_tematica:" in md
+    assert "status_por_provedor:" in md
+    assert "brasil_api: CONFIRMADO" in md
+
+
+def test_ca07_abnt_reimpressao_nbr6023_2025():
+    """CA-07: Formatação consistente de edição e reimpressão segundo ABNT NBR 6023:2025."""
+    from organizador_pdf.abnt_formatter import ABNTFormatter
+    from organizador_pdf.models import PublicationMetadata
+
+    # Caso Murray Stein: 5ª edição de 2006 com 8ª reimpressão em 2017
+    m = PublicationMetadata(
+        classification="livro",
+        title="Jung: o mapa da alma",
+        subtitle="uma introdução",
+        authors=["Murray Stein"],
+        edition="5",
+        city="São Paulo",
+        publisher="Cultrix",
+        year=2017,
+        cip_year=2006,
+        reimpressao="8ª reimpressão, 2017",
+    )
+    ref = ABNTFormatter.format_reference(m)
+    # A edição 5. ed. deve estar associada ao ano original (2006)
+    assert "5. ed." in ref
+    assert "São Paulo: Cultrix, 2006." in ref
+    # A reimpressão deve constar em nota suplementar sem contradição
+    assert "8. reimpr. 2017." in ref
 

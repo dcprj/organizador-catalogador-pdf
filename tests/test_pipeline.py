@@ -255,7 +255,7 @@ class TestFallbackDeProvedor:
     ):
         fallback = ExtratorFalso(metadados)
         pipeline = Pipeline(
-            Config(verificar_online=False),
+            Config(verificar_online=False, classificador="local"),
             OpcoesDoPipeline(destino=tmp_path / "biblioteca"),
             extrator=ExtratorFalso(metadados),
             extrator_fallback=fallback,

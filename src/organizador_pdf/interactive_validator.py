@@ -91,7 +91,7 @@ def explain_jev_classification(
     api_key: Optional[str] = None,
     max_paginas: Optional[int] = None,
     max_caracteres: Optional[int] = None,
-    classificador_modo: str = "auto",
+    classificador_modo: str = "jev_remoto",
     **kwargs,
 ) -> JevValidationResult:
     """Run Jev classifier while providing transparent diagnostic reporting."""
@@ -276,7 +276,7 @@ def validate_and_process_pdf(
     quarantine: bool = True,
     subpasta_markdown: Optional[str] = None,
     dry_run: bool = False,
-    classificador: Optional[str] = None,
+    classificador: Optional[str] = "jev_remoto",
     **kwargs,
 ) -> bool:
     """Process a single PDF through the complete interactive validation pipeline."""
@@ -288,7 +288,7 @@ def validate_and_process_pdf(
                 DeprecationWarning,
                 stacklevel=2,
             )
-    config = Config.do_ambiente()
+    config = Config.do_ambiente(classificador=classificador)
     if verificar_online is None:
         verificar_online = config.verificar_online
     if max_paginas is None:
@@ -296,7 +296,7 @@ def validate_and_process_pdf(
     if max_caracteres is None:
         max_caracteres = config.max_caracteres
     actual_api_key = api_key or getattr(config, "typesafe_api_key", None) or os.getenv("TYPESAFE_API_KEY")
-    classificador_modo = classificador or getattr(config, "classificador", "auto")
+    classificador_modo = classificador or getattr(config, "classificador", "jev_remoto")
 
     pdf_file = Path(pdf_path).resolve()
     print(f"\n{BOLD}{'─' * 75}{RESET}")
@@ -437,7 +437,7 @@ def run_interactive_validator(
     quarantine: bool = True,
     subpasta_markdown: Optional[str] = None,
     dry_run: bool = False,
-    classificador: Optional[str] = None,
+    classificador: Optional[str] = "jev_remoto",
     **kwargs,
 ):
     """Scan input folder and process all PDFs interactively."""
@@ -465,13 +465,13 @@ def run_interactive_validator(
     print(f"🎯 Pasta de Destino: {BOLD}{out_path}{RESET}")
     print(f"📦 Mover original  : {'Sim' if move_original else 'Não (Copiando)'}")
     print(f"📁 Estrutura       : {'Plana por categoria (<destino>/<tipo>/)' if estrutura == 'plana' else 'Hierárquica CNPq (<destino>/<Área>/<Subárea>/<Tipo>/)'}")
-    modo_cls = (config.classificador or "auto").strip().lower()
+    modo_cls = (config.classificador or "jev_remoto").strip().lower()
     if modo_cls in ("remoto", "jev_remoto"):
-        cls_label = "JEV remoto — TypeSafe AI (modo exclusivo; fallback local desativado)"
+        cls_label = "JEV remoto — TypeSafe AI (modo exclusivo padrão; fallback local desativado)"
     elif modo_cls == "local":
         cls_label = "JEV local — Heurísticas determinísticas calibradas (zero rede)"
     else:
-        cls_label = f"JEV híbrido ({config.classificador})"
+        cls_label = f"JEV ({config.classificador})"
 
     print(f"🧠 Classificador   : {cls_label}")
     print(f"🌐 APIs Externas   : {'Ativas (Crossref, Google Books, Brasil API, OpenAlex)' if verificar_online else 'Desativadas (zero consultas externas)'}")
@@ -560,8 +560,8 @@ def main():
     parser.add_argument(
         "--classificador",
         type=str,
-        default=None,
-        help="Modo do classificador documental: 'auto', 'local' ou 'remoto' / 'jev_remoto'.",
+        default="jev_remoto",
+        help="Modo do classificador documental: 'remoto' / 'jev_remoto' (padrão) ou 'local'.",
     )
 
     args = parser.parse_args()

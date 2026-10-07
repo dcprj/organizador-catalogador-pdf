@@ -28,6 +28,7 @@ from .models import (
     PublicationType,
     ExtractedCandidates,
     JevValidationResult,
+    CandidatoMetadado,
     is_valid_isbn,
     is_valid_issn,
     normalizar_doi,
@@ -134,6 +135,11 @@ IGNORED_PATTERNS = [
 
 # Disclaimers and legal terms that should never be treated as titles
 DISCLAIMER_TITLE_PATTERN = re.compile(
+    r"(?:(?:©|\(c\)|copyright)\s*(?:\d{4})?.*|"
+    r"\b\d{4}\s+.*(?:Editora|Ltda|S\.A\.|Publishing|Press)\b|"
+    r"\b(?:todos\s+os\s+direitos|gostaríamos\s+de\s+homenagear|ao\s+público\s+brasileiro|"
+    r"gerente\s+editorial|coordena[çc][ãa]o\s+editorial|assistente\s+editorial|"
+    r"colaboraram\s+nesta\s+edi[çc][ãa]o)\b|"
     r"\b(?:dom[íi]nio\s+p[úu]blico|propriedade\s+intelectual|direitos?\s+autorais?|"
     r"direitos?\s+reservados?|termo(?:s)?\s+de\s+uso|licen[çc]a\s+de\s+uso|creative\s+commons|"
     r"reprodu[çc][ãa]o\s+proibida|distribui[çc][ãa]o\s+gratuita|elivros|odinright|"
@@ -141,7 +147,7 @@ DISCLAIMER_TITLE_PATTERN = re.compile(
     r"totalmente\s+gratuita|acreditar\s+que\s+o\s+conhecimento|conhecimento\s+e\s+a\s+educa|"
     r"dados\s+internacionais\s+de\s+cataloga[çc][ãa]o|ficha\s+catalogr[áa]fica|"
     r"cip[- ]brasil|cataloga[çc][ãa]o[- ]na[- ]fonte|comiss[ãa]o\s+respons[áa]vel|"
-    r"a\s+editora\s+.*\s+apresenta|este\s+[ée]\s+um\s+trabalho\s+de\s+divulga[çc][ãa]o)\b",
+    r"a\s+editora\s+.*\s+apresenta|este\s+[ée]\s+um\s+trabalho\s+de\s+divulga[çc][ãa]o)\b)",
     re.I,
 )
 
@@ -156,7 +162,9 @@ CREDIT_SPLIT_PATTERN = re.compile(
     r"\s+(?:Tradu[çc][ãa]o(?:\s+de|\s+por)?|Revis[ãa]o(?:\s+t[ée]cnica)?|"
     r"Capa(?:\s*:)?|Projeto\s+gr[áa]fico|Coordena[çc][ãa]o\s+editorial|"
     r"Conselho\s+editorial|Editora\s+respons[áa]vel|Ilustra[çc][õo]es(?:\s+de)?|"
-    r"Diagrama[çc][ãa]o(?:\s*:)?|Edi[çc][ãa]o\s+de\s+texto|Editora\s+[A-Z])[:\s]",
+    r"Diagrama[çc][ãa]o(?:\s*:)?|Edi[çc][ãa]o\s+de\s+texto|Editora\s+[A-Z]|"
+    r"Colaboraram\s+nesta\s+edi[çc][ãa]o|Gerente\s+editorial|Coordenador[a-z]?\s+editorial|"
+    r"Assistente\s+editorial|Prepara[çc][ãa]o\s+de\s+originais|Leitura\s+final|Produ[çc][ãa]o\s+digital)[:\s]",
     re.I,
 )
 
@@ -243,6 +251,12 @@ def is_likely_person_name(name_cand: str) -> bool:
         return False
     if any(unicodedata.normalize("NFKD", w).encode("ascii", "ignore").decode().lower() in COMMON_NON_PERSON_NOUNS for w in words):
         return False
+    if len(words) == 1:
+        return cand.title() in ("Jung", "Freud", "Lacan", "Adler", "Kant", "Nietzsche", "Platao", "Aristoteles", "Agostinho")
+    if " e " in cand:
+        cand_parts = [p.strip() for p in cand.split(" e ")]
+        if len(cand_parts) == 2 and all(is_likely_person_name(p) or (len(p.split()) == 1 and p[0].isupper() and len(p) >= 3) for p in cand_parts):
+            return True
     if "," in cand:
         sp = cand.split(",", 1)
         if len(sp) == 2 and len(sp[0].strip()) >= 2 and len(sp[1].strip()) >= 2:
@@ -252,8 +266,6 @@ def is_likely_person_name(name_cand: str) -> bool:
     if re.match(r"^(?:[A-Za-z]\.?\s*){1,3}[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+$", cand, re.I):
         return True
     if all(re.match(r"^[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+$", w) for w in words if len(w) > 2):
-        return True
-    if len(words) == 1 and cand.title() in ("Jung", "Freud", "Lacan", "Adler", "Kant", "Nietzsche", "Platao", "Aristoteles", "Agostinho"):
         return True
     cand_lower = unicodedata.normalize("NFKD", cand).encode("ascii", "ignore").decode().lower().strip()
     if cand_lower in ("c.g. jung", "c. g. jung", "cg jung", "carl gustav jung", "carl jung", "sallie nichols", "murray stein", "judith harris"):
@@ -346,6 +358,54 @@ def sanitize_title_candidate(title: Optional[str]) -> Optional[str]:
     return t if len(t) >= 2 else None
 
 
+def sanitize_subtitle_candidate(subtitle: Optional[str]) -> Optional[str]:
+    """Sanitiza subtítulos removendo créditos editoriais, URLs e resíduos de diagramação."""
+    if not subtitle:
+        return None
+    s = subtitle.strip()
+
+    # 1. Trunca antes de blocos de créditos editoriais secundários
+    m_credit = CREDIT_SPLIT_PATTERN.search(s)
+    if m_credit:
+        prefix = s[:m_credit.start()].strip()
+        if is_likely_person_name(prefix):
+            return None
+        s = prefix
+
+    # 2. Isola e remove URLs ou endereços web sem destruir trecho conceitual
+    s = re.sub(r"https?://\S+|www\.\S+", "", s, flags=re.I).strip(" -—–:;,.\t\r\n\"'“”«»[]()|")
+
+    # 3. Limpa pontuações periféricas
+    s = s.strip(" -—–:\t\r\n\"'“”«»[]()")
+
+    if len(s) < 3 or is_likely_person_name(s):
+        return None
+
+    return s
+
+
+def is_prose_or_paragraph_title(text: Optional[str]) -> bool:
+    """Verifica se o candidato a título é na verdade uma frase/parágrafo corrido de prosa ou introdução."""
+    if not text:
+        return False
+    t = text.strip()
+    words = t.split()
+    if len(words) >= 15:
+        return True
+    if re.search(r"\.\s+[A-ZÀ-Ú]", t):  # Frases múltiplas encadeadas
+        return True
+    lower = t.lower()
+    prose_markers = [
+        "o tema deste livro", "este livro", "este artigo", "aquele período",
+        "que se inicia", "embora não", "concentramo-nos", "neste trabalho",
+        "o objetivo deste", "apresentamos aqui", "com o objetivo de",
+        "experimental. embora",
+    ]
+    if any(m in lower for m in prose_markers):
+        return True
+    return False
+
+
 def is_invalid_or_disclaimer_title(title: Optional[str]) -> bool:
     """Verifica se o candidato a título é claramente inválido, disclaimer ou identificador."""
     if not title:
@@ -353,11 +413,25 @@ def is_invalid_or_disclaimer_title(title: Optional[str]) -> bool:
     t = title.strip()
     if len(t) < 3:
         return True
+    if is_prose_or_paragraph_title(t):
+        return True
+    # Rejeita ruído de scanner, CamScanner, marcas d'água e emails
+    if re.search(r"\b(?:camscanner|scanned\s+by|digitalizado\s+por)\b", t, re.I):
+        return True
+    if re.search(r"[\w\.-]+@[\w\.-]+\.\w+", t):
+        return True
+    # Volumes e tomos isolados (ex: 'Vol 16', 'Volume 2', 'Tomo 1')
+    if re.match(r"^(?:vol(?:ume)?\.?\s*\d+|tomo\s*\d+|v\.\s*\d+|parte\s*\d+)$", t, re.I):
+        return True
     # Rejeita títulos compostos quase exclusivamente por pontuação/ruído (ex.: '.... ,,...,,._,..')
     letters = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]", t)
     if len(letters) < 2:
         return True
     if len(t) >= 4 and (len(letters) / len(t)) < 0.35:
+        return True
+    # Palavras sem nenhuma vogal (OCR corrompido / ruído, ex: 'ntfc. tmn')
+    vowels = re.findall(r"[aeiouyáéíóúâêîôûãõàèìòùäëïöü]", t, re.I)
+    if len(t) >= 4 and len(letters) >= 4 and len(vowels) == 0:
         return True
     if t.lower() in GENERIC_SINGLE_WORD_TITLES:
         return True
@@ -487,6 +561,7 @@ def parse_filename_extended(pdf_path: str) -> Dict[str, Any]:
         "author": None,
         "year": None,
         "publisher": None,
+        "volume": None,
     }
 
     # Remove generic classification prefix like 'Livro - ', 'Artigo - ', etc.
@@ -494,6 +569,19 @@ def parse_filename_extended(pdf_path: str) -> Dict[str, Any]:
 
     # 1. Calibre / multi-part format separated by ' - '
     parts = [p.strip() for p in cleaned_stem.split(" - ") if p.strip()]
+
+    # Detect and extract volume / tomo part e.g. "Vol 16", "Volume 2", "Tomo 1"
+    vol_found = None
+    remaining_parts = []
+    for p in parts:
+        if not vol_found and re.match(r"^(?:vol(?:ume)?\.?\s*\d+|tomo\s*\d+|v\.\s*\d+)$", p, re.I):
+            vol_found = p
+        else:
+            remaining_parts.append(p)
+    if vol_found:
+        result["volume"] = vol_found
+        parts = remaining_parts
+
     if len(parts) >= 4 and any(re.match(r"^(19|20)\d{2}$", p) for p in parts):
         y_idx = next(i for i, p in enumerate(parts) if re.match(r"^(19|20)\d{2}$", p))
         result["title"] = parts[0]
@@ -578,6 +666,7 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
             continue
         clean_l = re.sub(r"^(?:[A-Za-z]?\d{1,4}(?:\.\d+)?[a-z]?|\d{3})\s+", "", l).strip()
         clean_l = re.sub(r",\s*\d{4}-.*$", "", clean_l).strip()
+        clean_l = re.sub(r"\s*\([^)]*\)", "", clean_l).strip()
         m_auth = re.match(
             r"^([A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõçA-ZÁÉÍÓÚÂÊÔÃÕÇ\s-]+,\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇa-záéíóúâêôãõç\.\s-]+)$",
             clean_l,
@@ -591,26 +680,34 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
 
     target_lines = lines[auth_idx + 1:] if auth_idx != -1 else lines
 
-    # Filter out publisher address/boilerplate lines
+    # Filter out publisher address, masthead, and boilerplate lines
     filtered_target = []
     for l in target_lines:
-        if any(h in l.lower() for h in [
+        low_l = l.lower().strip()
+        if any(h in low_l for h in [
             "e-mail:", "fone", "fax", "rua ", "cep ", "copyright", "todos os direitos",
             "ficha catalogr", "biblioteca", "sindicato nacional", "nenhuma parte", "dados de odinright",
-            "catalogação na publicação:"
+            "catalogação na publicação", "catalogaçao na publicaçao", "dados internacionais de cataloga",
+            "cip-brasil", "camara brasileira", "câmara brasileira",
+            "gerente editorial", "coordenador", "assistente editorial",
+            "capa:", "preparação de originais", "leitura final", "projeto gráfico", "produção digital",
+            "colaboraram nesta edição", "editoração", "direitos reservados", "lei n", "artmed editora",
+            "©",
         ]):
+            continue
+        if re.match(r"^[A-Za-z]?\d{1,4}[a-z]?$", l.strip()):
             continue
         filtered_target.append(l)
 
     joined = " ".join(filtered_target)
-    # Strip leading Cutter if attached to first word or standalone e.g. N494, 302 T83, A496e, B521p
+    # Strip leading Cutter if attached to first word or standalone e.g. N494, 302 T83, A496e, B521p, I59
     joined = re.sub(r"^(?:\d{3}\s+)?[A-Za-z]?\d{1,4}(?:\.\d+)?[a-z]?\s+", "", joined)
     joined = re.sub(r"\b\d{2}-\d{4,5}\b", "", joined)
 
     # Truncate joined at the boundary of subject tracings, secondary entries, ISBN, original title, CDD/CDU, or legal notes
     # ISBD description ends before these elements
     isbd_boundary = re.search(
-        r"(?:\bTítulo original:|\bISBN(?:-1[03])?[:\s]|\b\d{2}-\d{4,5}\b|\b1\.\s+(?!(?:ed\b|edi[çc][ãa]o\b))[A-ZÁÉÍÓÚÂÊÔÃÕÇ]|\bI\.\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ]|\bCDD|\bCDU|\bÍndices para catálogo|\bDireitos de tradução|\bTodos os direitos)",
+        r"(?:\bTítulo original:|\bTradu[çc][ãa]o\s+(?:de|por)[:\s]|\be-PUB\b|\bISBN(?:-1[03])?[:\s]|\b\d{2}-\d{4,5}\b|\b1\.\s+(?!(?:ed\b|edi[çc][ãa]o\b))[A-ZÁÉÍÓÚÂÊÔÃÕÇ]|\bI\.\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ]|\bCDD|\bCDU|\bÍndices para catálogo|\bDireitos de tradução|\bTodos os direitos)",
         joined,
         re.I,
     )
@@ -631,11 +728,11 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
     raw_title = sanitize_title_candidate(raw_title)
     if is_invalid_or_disclaimer_title(raw_title):
         raw_title = None
-    sub_title = sanitize_title_candidate(m_body.group(2).strip()) if m_body.group(2) else None
+    sub_title = sanitize_subtitle_candidate(m_body.group(2).strip()) if m_body.group(2) else None
     if raw_title and len(raw_title.split()) == 1 and sub_title and ":" in sub_title:
         sp = sub_title.split(":", 1)
         raw_title = f"{raw_title}: {sp[0].strip()}"
-        sub_title = sp[1].strip()
+        sub_title = sanitize_subtitle_candidate(sp[1].strip())
 
     resp = m_body.group(3).strip()
     ed = m_body.group(4).strip() if m_body.group(4) else None
@@ -652,17 +749,26 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
         except ValueError:
             pass
 
+    # Detect editorial role
+    papel_autoria = None
+    if re.search(r"\b(?:organiza[çc][ãa]o|organizad(?:or|ores|ora|oras))\b", resp, re.I):
+        papel_autoria = "organizador"
+    elif re.search(r"\b(?:coordena[çc][ãa]o|coordenad(?:or|ores|ora|oras))\b", resp, re.I):
+        papel_autoria = "coordenador"
+
     # Strip translators and technical reviewers from responsibility
     resp_clean = re.sub(r"\[?\s*(?:tradu[çc][ãa]o(?:\s+de|\s+por)?|revis[ãa]o(?:\s+t[ée]cnica)?(?:\s+de)?|apresenta[çc][ãa]o(?:\s+de)?|ilustra[çc][õo]es(?:\s+de)?|pref[áa]cio(?:\s+de)?).*?\]?", "", resp, flags=re.I).strip()
-    resp_clean = re.sub(r"^(?:organizad(?:or|ores|ora|oras)|edit(?:or|ores|ora|oras)|coord(?:enador|enadores)?|autores?)[:,\s]+", "", resp_clean, flags=re.I).strip()
+    resp_clean = re.sub(r"^(?:organiza[çc][ãa]o|organizad(?:or|ores|ora|oras)|edit(?:or|ores|ora|oras)|coord(?:enador|enadores)?|autores?)[:,\s]+", "", resp_clean, flags=re.I).strip()
     first_resp = resp_clean.split(";")[0].strip()
     has_et_al = "[et al" in first_resp.lower() or "... [et al" in first_resp.lower() or "..." in first_resp
     first_resp_clean = re.sub(r"\s*\.{2,}\s*\[et al\.?\]|\s*\[et al\.?\]|\.\.\..*$", "", first_resp, flags=re.I).strip()
-    resp_authors = [
-        strip_author_prefixes(a.strip())
-        for a in first_resp_clean.split(",")
-        if len(a.strip()) > 3 and not is_invalid_or_disclaimer_title(a.strip())
-    ]
+    author_parts = re.split(r",|\se\s|\sand\s", first_resp_clean)
+    resp_authors = []
+    for a in author_parts:
+        a_clean = re.sub(r"\b(?:organiza[çc][ãa]o|organizad(?:or|ores|ora|oras)|coordena[çc][ãa]o|coordenad(?:or|ores)?)\b[:,\s]*", "", a, flags=re.I).strip()
+        a_clean = strip_author_prefixes(a_clean)
+        if len(a_clean) > 3 and not is_invalid_or_disclaimer_title(a_clean):
+            resp_authors.append(a_clean)
 
     authors_list = []
     if resp_authors:
@@ -727,6 +833,7 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
         "title": raw_title,
         "subtitle": sub_title,
         "authors": authors_list,
+        "papel_autoria": papel_autoria,
         "edition": ed,
         "city": city,
         "publisher": pub,
@@ -737,6 +844,31 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
         "cip_year": cip_year,
         "reimpressao": reimpressao,
     }
+
+
+def parse_article_header_citation(text: str) -> Optional[Dict[str, Any]]:
+    """Extrai informações de citação de cabeçalho de artigo (periódico, volume, número, páginas, ano)."""
+    if not text:
+        return None
+    # Se for apenas menção a curso, período histórico etc., não é cabeçalho de periódico
+    if re.search(r"\b(?:curso\s+no|semin[áa]rio|per[íi]odo|coll[èe]ge\s+de\s+france)\b", text, re.I):
+        return None
+    res: Dict[str, Any] = {}
+    m_vol = re.search(r"\bv(?:ol|\.)?[:\s]*(\d+)\b", text, re.I)
+    if m_vol:
+        res["volume"] = m_vol.group(1)
+    m_num = re.search(r"\bn(?:[úu]m|o|\.)?[:\s]*(\d+)\b", text, re.I)
+    if m_num:
+        res["number"] = m_num.group(1)
+    m_pg = re.search(r"\bp(?:[áa]g|p|\.)?[:\s]*(\d+[-–]\d+)\b", text, re.I)
+    if m_pg:
+        res["pages"] = m_pg.group(1)
+    # Ano: evitar intervalos de anos como 1974-1975
+    if not re.search(r"\b(19\d{2}|20\d{2})[-–/](19\d{2}|20\d{2})\b", text):
+        m_yr = re.search(r"\b(19\d{2}|20\d{2})\b", text)
+        if m_yr:
+            res["year"] = int(m_yr.group(1))
+    return res if res else None
 
 
 def parse_academic_thesis(text: str) -> Optional[Dict[str, Any]]:
@@ -901,6 +1033,8 @@ def extract_candidate_metadata(
                         if cip_meta.get("authors"):
                             candidates.raw_authors = cip_meta["authors"]
                             candidates.author_source = "ficha_catalografica"
+                        if cip_meta.get("papel_autoria"):
+                            candidates.papel_autoria = cip_meta["papel_autoria"]
                         if cip_meta.get("publisher"):
                             candidates.raw_publisher = cip_meta["publisher"]
                             candidates.publisher_source = "ficha_catalografica"
@@ -1013,6 +1147,8 @@ def extract_candidate_metadata(
                 if cip_meta.get("authors"):
                     candidates.raw_authors = cip_meta["authors"]
                     candidates.author_source = "ficha_catalografica"
+                if cip_meta.get("papel_autoria"):
+                    candidates.papel_autoria = cip_meta["papel_autoria"]
                 if cip_meta.get("publisher"):
                     candidates.raw_publisher = cip_meta["publisher"]
                     candidates.publisher_source = "ficha_catalografica"
@@ -1048,6 +1184,8 @@ def extract_candidate_metadata(
             if cip_meta.get("authors"):
                 candidates.raw_authors = cip_meta["authors"]
                 candidates.author_source = "ficha_catalografica"
+            if cip_meta.get("papel_autoria"):
+                candidates.papel_autoria = cip_meta["papel_autoria"]
             if cip_meta.get("publisher"):
                 candidates.raw_publisher = cip_meta["publisher"]
                 candidates.publisher_source = "ficha_catalografica"
@@ -1306,11 +1444,74 @@ def extract_candidate_metadata(
     if candidates.raw_title and ":" in candidates.raw_title and not candidates.raw_subtitle:
         parts = candidates.raw_title.split(":", 1)
         candidates.raw_title = parts[0].strip()
-        candidates.raw_subtitle = parts[1].strip()
+        candidates.raw_subtitle = sanitize_subtitle_candidate(parts[1].strip())
+
+    if candidates.raw_subtitle:
+        candidates.raw_subtitle = sanitize_subtitle_candidate(candidates.raw_subtitle)
 
     # Strip author prefixes from all authors
     if candidates.raw_authors:
         candidates.raw_authors = [strip_author_prefixes(a) for a in candidates.raw_authors if a.strip()]
+
+    # Popula candidatos detalhados e originais para rastreabilidade e auditoria (Passo 2)
+    candidatos_det: Dict[str, CandidatoMetadado] = {}
+    candidatos_orig: Dict[str, Any] = {}
+
+    if candidates.raw_title:
+        orig = candidates.title_source or "texto_nativo"
+        conf = 0.95 if orig == "ficha_catalografica" else (0.85 if orig == "resumo_academico" else 0.70)
+        candidatos_det["titulo"] = CandidatoMetadado(campo="titulo", valor=candidates.raw_title, origem=orig, confianca=conf, valor_original=candidates.raw_title)
+        candidatos_orig["titulo"] = candidates.raw_title
+
+    if candidates.raw_subtitle:
+        candidatos_det["subtitulo"] = CandidatoMetadado(campo="subtitulo", valor=candidates.raw_subtitle, origem=candidates.title_source or "ficha_catalografica", confianca=0.90, valor_original=candidates.raw_subtitle)
+        candidatos_orig["subtitulo"] = candidates.raw_subtitle
+
+    if candidates.raw_authors:
+        orig = candidates.author_source or "texto_nativo"
+        conf = 0.95 if orig == "ficha_catalografica" else 0.75
+        candidatos_det["autores"] = CandidatoMetadado(campo="autores", valor=candidates.raw_authors, origem=orig, confianca=conf, valor_original=candidates.raw_authors)
+        candidatos_orig["autores"] = candidates.raw_authors
+
+    if candidates.isbn:
+        orig = candidates.isbn_source or "ficha_catalografica"
+        conf = 0.98 if orig in ("ficha_catalografica", "cabecalho") else 0.80
+        candidatos_det["isbn"] = CandidatoMetadado(campo="isbn", valor=candidates.isbn, origem=orig, confianca=conf, valor_original=candidates.isbn)
+        candidatos_orig["isbn"] = candidates.isbn
+
+    if candidates.doi:
+        orig = candidates.doi_source or "cabecalho"
+        candidatos_det["doi"] = CandidatoMetadado(campo="doi", valor=candidates.doi, origem=orig, confianca=0.98, valor_original=candidates.doi)
+        candidatos_orig["doi"] = candidates.doi
+
+    if candidates.issn:
+        orig = candidates.issn_source or "cabecalho"
+        candidatos_det["issn"] = CandidatoMetadado(campo="issn", valor=candidates.issn, origem=orig, confianca=0.95, valor_original=candidates.issn)
+        candidatos_orig["issn"] = candidates.issn
+
+    if candidates.raw_publisher:
+        orig = candidates.publisher_source or "texto_nativo"
+        conf = 0.95 if orig == "ficha_catalografica" else 0.70
+        candidatos_det["editora"] = CandidatoMetadado(campo="editora", valor=candidates.raw_publisher, origem=orig, confianca=conf, valor_original=candidates.raw_publisher)
+        candidatos_orig["editora"] = candidates.raw_publisher
+
+    if candidates.raw_year:
+        orig = candidates.year_source or "ficha_catalografica"
+        conf = 0.95 if orig == "ficha_catalografica" else 0.70
+        candidatos_det["ano"] = CandidatoMetadado(campo="ano", valor=candidates.raw_year, origem=orig, confianca=conf, valor_original=candidates.raw_year)
+        candidatos_orig["ano"] = candidates.raw_year
+
+    if candidates.raw_city:
+        orig = candidates.city_source or "ficha_catalografica"
+        candidatos_det["local"] = CandidatoMetadado(campo="local", valor=candidates.raw_city, origem=orig, confianca=0.90, valor_original=candidates.raw_city)
+        candidatos_orig["local"] = candidates.raw_city
+
+    if candidates.raw_edition:
+        candidatos_det["edicao"] = CandidatoMetadado(campo="edicao", valor=candidates.raw_edition, origem="ficha_catalografica", confianca=0.90, valor_original=candidates.raw_edition)
+        candidatos_orig["edicao"] = candidates.raw_edition
+
+    candidates.candidatos_detalhados = candidatos_det
+    candidates.candidatos_originais = candidatos_orig
 
     return candidates
 
@@ -1335,40 +1536,32 @@ class JevClassifier:
                     stacklevel=2,
                 )
         self.api_key = api_key or os.getenv("TYPESAFE_API_KEY")
-        self.modo = (modo or "auto").strip().lower()
-        if self.modo in ("remoto", "typesafe", "remote", "jev_remoto"):
+        raw_modo = (modo or "jev_remoto").strip().lower()
+        if raw_modo in ("remoto", "typesafe", "remote", "jev_remoto"):
             self.modo = "jev_remoto"
-        elif self.modo in ("local", "deterministico", "heuristico"):
+        elif raw_modo in ("local", "deterministico", "heuristico"):
             self.modo = "local"
         else:
-            self.modo = "auto"
+            self.modo = "jev_remoto"
 
         if self.modo == "jev_remoto" and not self.api_key:
             from .config import ErroDeConfiguracao
             raise ErroDeConfiguracao(
-                "Modo classificador remoto exclusivo ('jev_remoto') selecionado, mas TYPESAFE_API_KEY não foi configurada."
+                "Modo padrão e obrigatório JEV remoto ('jev_remoto') selecionado, "
+                "mas TYPESAFE_API_KEY não foi configurada no ambiente nem no arquivo .env."
             )
 
         self._cache_path = cache_file or cache_path or Path.home() / ".cache" / "organizador_pdf" / "jev_cache.json"
         self._cache: Dict[str, Any] = {}
-        self._load_cache()
+        # Caching desativado: JEV remoto obrigatório realiza chamada remota nova em cada processamento
 
     def _load_cache(self) -> None:
-        try:
-            if self._cache_path.exists():
-                import json
-                self._cache = json.loads(self._cache_path.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.debug("Não foi possível carregar cache do Jev: %s", e)
-            self._cache = {}
+        """Desativado: JEV remoto obrigatório não lê cache."""
+        self._cache = {}
 
     def _save_cache(self) -> None:
-        try:
-            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
-            import json
-            self._cache_path.write_text(json.dumps(self._cache, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as e:
-            logger.debug("Não foi possível persistir cache do Jev: %s", e)
+        """Desativado: JEV remoto obrigatório não persiste cache."""
+        pass
 
     @staticmethod
     def _compute_fingerprint(text: str, total_pages: int) -> str:
@@ -1417,50 +1610,31 @@ class JevClassifier:
                 "Dica: use uma ferramenta de OCR (ex.: ocrmypdf) para adicionar camada de texto antes de catalogar."
             )
 
-        # 1. Modo remoto exclusivo ('jev_remoto')
+        # 1. Modo remoto obrigatório ('jev_remoto') - Padrão do sistema
         if self.modo == "jev_remoto":
             if not self.api_key:
                 from .config import ErroDeConfiguracao
                 raise ErroDeConfiguracao(
-                    "Modo remoto exclusivo ('jev_remoto') selecionado, mas TYPESAFE_API_KEY não foi configurada."
+                    "Modo padrão obrigatório JEV remoto ('jev_remoto') selecionado, "
+                    "mas TYPESAFE_API_KEY não foi configurada."
                 )
             try:
                 import typesafe_sdk  # noqa: F401
-            except ModuleNotFoundError:
+            except (ModuleNotFoundError, ImportError):
                 raise ErroDeClassificacaoRemota(
-                    "Modo remoto exclusivo ('jev_remoto') selecionado, mas o pacote 'typesafe-sdk' "
+                    "Modo obrigatório JEV remoto ('jev_remoto') selecionado, mas o pacote 'typesafe-sdk' "
                     "não está instalado. Instale com: pip install '.[typesafe]'"
                 )
 
-            # Idempotência: verifica cache local para evitar reenvio cobrado após erro de gravação
-            fingerprint = self._compute_fingerprint(combined_text, total_pages)
-            if fingerprint in self._cache:
-                logger.info("Reutilizando classificação Jev em cache para %s.", Path(pdf_path).name)
-                cached = self._cache[fingerprint]
-                raw_data = dict(cached.get("raw_jev_data", {}))
-                raw_data["cached"] = True
-                return JevValidationResult(
-                    classification=cached["classification"],
-                    classification_confidence=cached["confidence"],
-                    probabilities=cached["probabilities"],
-                    candidates=candidates,
-                    provider="typesafe",
-                    raw_jev_data=raw_data,
-                )
-
+            # Executa chamada remota nova a cada classificação (sem cache em disco ou memória)
             try:
                 res = self._run_jev_sdk(combined_text, candidates, total_pages)
-                self._cache[fingerprint] = {
-                    "classification": res.classification,
-                    "confidence": res.classification_confidence,
-                    "probabilities": res.probabilities,
-                    "raw_jev_data": res.raw_jev_data,
-                }
-                self._save_cache()
                 return res
             except Exception as e:
-                logger.error("Falha irrecuperável na chamada remota TypeSafe AI em modo exclusivo: %s", e)
-                raise ErroDeClassificacaoRemota(f"Falha na chamada ao serviço remoto TypeSafe AI: {e}") from e
+                logger.error("Falha irrecuperável na chamada remota TypeSafe AI em modo obrigatório: %s", e)
+                raise ErroDeClassificacaoRemota(
+                    f"Falha na chamada ao serviço remoto TypeSafe AI: {e}"
+                ) from e
 
         # 2. Modo estritamente local
         elif self.modo == "local":
@@ -1551,6 +1725,22 @@ class JevClassifier:
                     "outros": "Documento não enquadrado nas categorias anteriores",
                 },
             ),
+            "thematic_area": Choice(
+                instructions=(
+                    "Classifique a macroárea temática do documento: "
+                    "saude, humanas, educacao, sociais_aplicadas, exatas_e_tecnologia, biologicas, linguistica_artes, outros."
+                ),
+                criteria={
+                    "saude": "Ciências da Saúde, Medicina, Enfermagem, Farmácia, Odontologia, Saúde Coletiva",
+                    "humanas": "Ciências Humanas, Psicologia, Filosofia, História, Teologia, Sociologia, Antropologia",
+                    "educacao": "Educação, Pedagogia, Ensino-Aprendizagem, Didática e Políticas Educacionais",
+                    "sociais_aplicadas": "Direito, Administração, Economia, Ciência da Informação, Comunicação",
+                    "exatas_e_tecnologia": "Ciências Exatas, Matemática, Computação, Engenharias e Tecnologia",
+                    "biologicas": "Ciências Biológicas, Ecologia, Meio Ambiente, Zoologia, Botânica",
+                    "linguistica_artes": "Linguística, Letras, Literatura, Artes Visuais, Música",
+                    "outros": "Outras áreas ou assunto indeterminado",
+                },
+            ),
             "has_valid_title": Noul(instructions="O título candidato representa com precisão o documento?"),
             "has_valid_authors": Noul(instructions="A autoria candidata reflete os autores reais do documento?"),
             "has_valid_publisher": Noul(instructions="A editora/instituição identificada é legítima?"),
@@ -1573,6 +1763,33 @@ class JevClassifier:
                 chosen_class = val  # type: ignore
             chosen_confidence = float(getattr(choice_obj, "confidence", 0.95))
 
+        area_obj = response.choices.get("thematic_area")
+        map_assuntos = {
+            "saude": ("Ciências da Saúde", "Saúde Geral"),
+            "humanas": ("Ciências Humanas", "Geral"),
+            "educacao": ("Educação", "Educação Geral"),
+            "sociais_aplicadas": ("Ciências Sociais Aplicadas", "Geral"),
+            "exatas_e_tecnologia": ("Ciências Exatas e da Terra", "Tecnologia"),
+            "biologicas": ("Ciências Biológicas", "Biologia Geral"),
+            "linguistica_artes": ("Linguística, Letras e Artes", "Letras"),
+            "outros": ("Outros", "Geral"),
+        }
+        chosen_assunto = "Outros"
+        chosen_subarea = "Geral"
+        chosen_subj_conf = 0.85
+        if area_obj:
+            val_a = str(area_obj.choice).lower().strip()
+            if val_a in map_assuntos:
+                chosen_assunto, chosen_subarea = map_assuntos[val_a]
+            else:
+                chosen_assunto = val_a.title()
+            chosen_subj_conf = float(getattr(area_obj, "confidence", 0.85))
+
+        justificativa = (
+            f"Classificação Jev (TypeSafe remoto): Tipo '{chosen_class}' (confiança {chosen_confidence:.0%}) "
+            f"e Assunto '{chosen_assunto}' / '{chosen_subarea}' (confiança {chosen_subj_conf:.0%})."
+        )
+
         probabilities = {
             "title": float(response.nouls["has_valid_title"].noul) if "has_valid_title" in response.nouls else 0.0,
             "authors": float(response.nouls["has_valid_authors"].noul) if "has_valid_authors" in response.nouls else 0.0,
@@ -1585,10 +1802,21 @@ class JevClassifier:
         return JevValidationResult(
             classification=chosen_class,
             classification_confidence=chosen_confidence,
+            assunto=chosen_assunto,
+            subarea=chosen_subarea,
+            justificativa=justificativa,
+            subject_confidence=chosen_subj_conf,
             probabilities=probabilities,
             candidates=candidates,
             provider="typesafe",
-            raw_jev_data={"choice": chosen_class, "confidence": chosen_confidence, "nouls": probabilities},
+            raw_jev_data={
+                "choice": chosen_class,
+                "confidence": chosen_confidence,
+                "assunto": chosen_assunto,
+                "subarea": chosen_subarea,
+                "justificativa": justificativa,
+                "nouls": probabilities,
+            },
         )
 
     def _run_calibrated_fallback(
@@ -1778,9 +2006,45 @@ class JevClassifier:
             "issn": issn_prob,
         }
 
+        # Infere área temática e subárea (Passo 3 do fluxo)
+        from .metadata_api import infer_thematic_area
+        area_res = infer_thematic_area(
+            title=candidates.raw_title,
+            subtitle=candidates.raw_subtitle,
+            authors=candidates.raw_authors,
+            sample_text=text,
+            cand_area=candidates.raw_area,
+            return_rule=True,
+        )
+        assunto, subarea, regra_tematica = area_res if len(area_res) == 3 else (area_res[0], area_res[1], "heuristica_padrao")
+        subj_confidence = 0.90 if regra_tematica != "fallback_default" else 0.40
+
+        # Monta justificativa explícita e auditável (Passo 3)
+        evidencias_tipo = []
+        if candidates.doi:
+            evidencias_tipo.append(f"DOI identificado ({candidates.doi})")
+        if candidates.isbn:
+            evidencias_tipo.append(f"ISBN identificado ({candidates.isbn})")
+        if candidates.issn:
+            evidencias_tipo.append(f"ISSN identificado ({candidates.issn})")
+        if any(w in lower_text for w in ["ficha catalográfica", "cip-brasil", "catalogação na publicação"]):
+            evidencias_tipo.append("Ficha catalográfica CIP detectada")
+        if total_pages > 0:
+            evidencias_tipo.append(f"Extensão de {total_pages} páginas")
+
+        texto_evidencias = "; ".join(evidencias_tipo) if evidencias_tipo else "Marcadores estruturais e lexicais"
+        justificativa = (
+            f"Classificado como '{best_class}' (confiança {confidence:.0%}) com base em: {texto_evidencias}. "
+            f"Assunto/Área atribuída: '{assunto}' / '{subarea}' (regra: {regra_tematica})."
+        )
+
         return JevValidationResult(
             classification=best_class,
             classification_confidence=confidence,
+            assunto=assunto,
+            subarea=subarea,
+            justificativa=justificativa,
+            subject_confidence=subj_confidence,
             probabilities=probabilities,
             candidates=candidates,
             provider="deterministico_local",
@@ -1791,6 +2055,9 @@ class JevClassifier:
                 "second_class": second_class,
                 "second_score": round(second_score, 2),
                 "margin": round(margin, 2),
+                "assunto": assunto,
+                "subarea": subarea,
+                "justificativa": justificativa,
             },
         )
 

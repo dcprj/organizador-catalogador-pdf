@@ -75,8 +75,8 @@ def test_converter_yaml_frontmatter():
     assert parsed["editora"] == "Addison-Wesley"
     assert parsed["edicao"] == "2. ed."
     assert parsed["ano"] == 2018
-    assert parsed["isbn"] == "9780134757599"
     assert parsed["identificadores"]["isbn"] == "9780134757599"
+    assert "isbn" not in parsed
     assert parsed["tipo_documento"] == "livro"
     # Ensure duplicate English keys are NOT present in canonical schema 2.0
     for english_key in ["title", "authors", "publisher", "year", "classification"]:

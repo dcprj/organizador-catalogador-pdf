@@ -66,6 +66,7 @@ def test_cli_execution_e2e(tmp_path: Path, sample_pdf_generator):
 
     pages = [
         "Apostila de Redes de Computadores\n"
+        "Autor: Prof. Carlos Eduardo\n"
         "Material didático do curso\n"
         "Notas de aula e roteiro de laboratório...\n"
     ]

@@ -224,9 +224,10 @@ def gerar_markdown(
         "titulo": metadados.titulo,
         "subtitulo": metadados.subtitulo,
         "autores": metadados.autores,
-        "autor_principal": metadados.autor_para_nome,
+        "autor_principal": metadados.autor_principal or metadados.autor_para_nome,
+        "papel_autoria": getattr(metadados, "papel_autoria", "autor"),
         "editora": editora_val,
-        "periodico": periodico_val if is_artigo else None,
+        "periodico": periodico_val,
         "ano": metadados.ano,
         "local": metadados.local,
         "area_principal": metadados.area_principal,
@@ -236,9 +237,6 @@ def gerar_markdown(
             "doi": metadados.identificadores.doi or "",
             "issn": metadados.identificadores.issn or "",
         },
-        "isbn": metadados.identificadores.isbn,
-        "issn": metadados.identificadores.issn,
-        "doi": metadados.identificadores.doi,
         "referencia_abnt": metadados.referencia_abnt,
         "tags": tags,
         "arquivo_origem": arquivo_origem.name if arquivo_origem else None,
@@ -259,17 +257,20 @@ def gerar_markdown(
         "reimpressao": getattr(metadados, "reimpressao", None),
         "isbn_source": getattr(metadados, "isbn_source", None),
         "isbn_verified": getattr(metadados, "isbn_verified", False),
+        "status_por_provedor": getattr(metadados, "status_por_provedor", {}),
+        "regra_classificacao_tematica": getattr(metadados, "regra_classificacao_tematica", None),
         "needs_review": metadados.needs_review,
         "review_reasons": metadados.review_reasons,
         "source_apis": metadados.source_apis,
     }
-    if is_artigo:
-        if getattr(metadados, "volume", None):
-            frontmatter["volume"] = metadados.volume
-        if getattr(metadados, "number", None):
-            frontmatter["numero"] = metadados.number
-        if getattr(metadados, "pages", None):
-            frontmatter["paginas"] = metadados.pages
+    if getattr(metadados, "volume", None):
+        frontmatter["volume"] = metadados.volume
+    if getattr(metadados, "number", None):
+        frontmatter["numero"] = metadados.number
+    if getattr(metadados, "pages", None):
+        frontmatter["paginas"] = metadados.pages
+    if getattr(metadados, "justificativa_classificacao_tematica", None):
+        frontmatter["justificativa_classificacao_tematica"] = metadados.justificativa_classificacao_tematica
 
     yaml_texto = yaml.safe_dump(
         frontmatter, allow_unicode=True, sort_keys=False, default_flow_style=False
@@ -359,6 +360,108 @@ def organizar(
                     destino_md.unlink(missing_ok=True)
                 raise ErroDeOrganizacao(f"Falha ao transferir PDF de {pdf_origem} para {destino_pdf}: {exc}") from exc
 
+            # 3. Grava o registro estruturado de auditoria e rastreabilidade (Passo 8)
+            auditoria_gravada = False
+            destino_auditoria = destino_pdf.parent / f"{destino_pdf.stem}.auditoria.json"
+            if not metadados.registro_rastreabilidade:
+                from .models import RegistroRastreabilidade
+                metadados.registro_rastreabilidade = RegistroRastreabilidade(
+                    nome_arquivo=destino_pdf.name,
+                    identificador_arquivo="",
+                    decisao_encaminhamento="revisao_manual" if revisao_manual else "organizado",
+                    justificativa_decisao=(
+                        f"Encaminhado para revisão manual: {'; '.join(metadados.review_reasons)}"
+                        if metadados.needs_review
+                        else f"Organizado em {diretorio_pdf}"
+                    ),
+                    avisos=list(metadados.review_reasons),
+                )
+
+            reg = metadados.registro_rastreabilidade
+            if pdf_origem:
+                reg.nome_arquivo = Path(pdf_origem).name
+
+            if not reg.identificador_arquivo:
+                caminho_hash = pdf_origem if (pdf_origem and Path(pdf_origem).exists()) else destino_pdf
+                if caminho_hash and Path(caminho_hash).exists():
+                    import hashlib
+                    with open(caminho_hash, "rb") as f_hash:
+                        reg.identificador_arquivo = hashlib.sha256(f_hash.read()).hexdigest()
+
+            reg.caminho_final = str(destino_pdf)
+            reg.decisao_encaminhamento = (
+                "revisao_manual" if revisao_manual else "organizado"
+            )
+            reg.classificador_remoto_consultado = getattr(metadados, "classificador_remoto_consultado", False)
+            reg.amostra_remota_enviada = getattr(metadados, "amostra_remota_enviada", False)
+            reg.tamanho_amostra_remota = getattr(metadados, "tamanho_amostra_remota", 0)
+            reg.tamanho_amostra_local = getattr(metadados, "tamanho_amostra_local", 0)
+            reg.motivo_bloqueio_privacidade = getattr(metadados, "motivo_bloqueio_privacidade", None)
+            reg.identidade_confirmada = getattr(metadados, "identidade_confirmada", False)
+            reg.identidade_corroborada_fonte = getattr(metadados, "identidade_corroborada_fonte", False)
+            reg.identidade_plausivel_local = getattr(metadados, "identidade_plausivel_local", False)
+            reg.evidencia_identidade = getattr(metadados, "evidencia_identidade", "")
+            reg.status_busca_externa = getattr(metadados, "status_busca_externa", "nao_iniciada")
+            reg.metadados_completos = getattr(metadados, "metadados_completos", False)
+            reg.tipo_documental_confiante = getattr(metadados, "tipo_documental_confiante", False)
+            reg.assunto_confiante = getattr(metadados, "assunto_confiante", False)
+            reg.integridade_arquivo_ok = getattr(metadados, "integridade_arquivo_ok", True)
+            reg.busca_externa_esgotada = getattr(metadados, "busca_externa_esgotada", False)
+            reg.revisao_manual_necessaria = getattr(metadados, "revisao_manual_necessaria", revisao_manual)
+            reg.motivo_revisao_manual = getattr(metadados, "motivo_revisao_manual", None)
+            reg.fontes_pendentes = getattr(metadados, "fontes_pendentes", [])
+            reg.campos_irresolvidos = getattr(metadados, "campos_irresolvidos", [])
+            reg.jev_chamada_nova = getattr(metadados, "jev_chamada_nova", True)
+            reg.jev_status = getattr(metadados, "jev_status", "concluida")
+
+            # Sincroniza e garante completude dos valores finais selecionados na auditoria
+            vf = reg.valores_finais_selecionados
+            campos_finais = {
+                "titulo": metadados.titulo or metadados.title,
+                "subtitulo": metadados.subtitulo or metadados.subtitle,
+                "autores": metadados.autores or metadados.authors,
+                "ano": metadados.ano or metadados.year,
+                "editora": metadados.editora or metadados.publisher,
+                "periodico": metadados.periodico or metadados.journal,
+                "local": metadados.local or metadados.city,
+                "edicao": metadados.edition,
+                "isbn": metadados.identificadores.isbn,
+                "doi": metadados.identificadores.doi,
+                "issn": metadados.identificadores.issn,
+                "area": metadados.area_principal,
+                "subarea": metadados.subarea,
+                "tipo_documento": metadados.classification,
+                "referencia_abnt": metadados.referencia_abnt,
+            }
+            for campo, val in campos_finais.items():
+                if val:
+                    if campo not in vf or not vf[campo].get("valor_escolhido"):
+                        vf[campo] = {
+                            "valor_escolhido": val,
+                            "valor": val,
+                            "fonte": "decisao_final",
+                            "origem": "decisao_final",
+                            "evidencia": "Consolidado na gravação da auditoria",
+                            "confianca": metadados.confidence,
+                        }
+                    else:
+                        vf[campo]["valor_escolhido"] = val
+                        vf[campo]["valor"] = val
+
+            import json
+            try:
+                tmp_auditoria = destino_auditoria.with_name(f"{destino_auditoria.name}.{os.getpid()}.tmp")
+                tmp_auditoria.write_text(
+                    json.dumps(metadados.registro_rastreabilidade.model_dump(), indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                os.replace(tmp_auditoria, destino_auditoria)
+                auditoria_gravada = True
+            except Exception as exc:
+                if tmp_auditoria.exists():
+                    tmp_auditoria.unlink(missing_ok=True)
+                logger.warning("Falha ao gravar arquivo de auditoria em %s: %s", destino_auditoria, exc)
+
     except ErroDeOrganizacao:
         raise
     except Exception as exc:
@@ -370,7 +473,6 @@ def organizar(
         markdown_destino=destino_md,
         simulado=False,
     )
-
 
 class PipelineOrganizer:
     """Orquestrador completo de pipeline para PDFs."""
@@ -385,7 +487,7 @@ class PipelineOrganizer:
         max_caracteres: int = 30000,
         estrutura: str = "plana",
         typesafe_api_key: Optional[str] = None,
-        classificador_modo: str = "auto",
+        classificador_modo: str = "jev_remoto",
         **kwargs,
     ):
         if kwargs:

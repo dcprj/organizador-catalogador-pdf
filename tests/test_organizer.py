@@ -141,7 +141,8 @@ class TestGerarMarkdown:
         assert dados["titulo"] == "Em Busca de Sentido"
         assert dados["autores"] == ["Frankl, Viktor E."]
         assert dados["ano"] == 2019
-        assert dados["isbn"] == "978-85-326-0871-3"
+        assert dados["identificadores"]["isbn"] == "978-85-326-0871-3"
+        assert "isbn" not in dados
         assert dados["total_paginas"] == 10
         assert "area/psicologia" in dados["tags"]
 

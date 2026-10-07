@@ -152,7 +152,7 @@ def processar(
     classificador: Optional[str] = typer.Option(
         "remoto",
         "--classificador",
-        help="Modo de classificação: 'remoto'/'jev_remoto' (padrão: exclusivo TypeSafe remoto JEV), 'auto' (TypeSafe com fallback local), ou 'local' (apenas heurísticas locais).",
+        help="Modo de classificação: 'remoto'/'jev_remoto' (padrão oficial: exclusivo TypeSafe remoto JEV) ou 'local' (apenas heurísticas determinísticas locais).",
     ),
     version: Optional[bool] = typer.Option(
         None,
@@ -426,11 +426,11 @@ def _cabecalho(
     estrutura: str = "cnpq",
     quarantine: bool = True,
     enriquecimento_online: bool = True,
-    classificador: Optional[str] = "auto",
+    classificador: Optional[str] = "jev_remoto",
     max_paginas: int = 10,
     max_caracteres: int = 30000,
 ) -> None:
-    modo_cls = (classificador or "auto").strip().lower()
+    modo_cls = (classificador or "jev_remoto").strip().lower()
     has_typesafe = bool(os.getenv("TYPESAFE_API_KEY"))
     sdk_installed = False
     try:
@@ -440,21 +440,14 @@ def _cabecalho(
         pass
 
     if modo_cls in ("remoto", "jev_remoto"):
-        classificador_desc = "JEV remoto — TypeSafe AI (modo exclusivo; fallback local desativado)"
+        classificador_desc = "JEV remoto — TypeSafe AI (modo exclusivo padrão; fallback local desativado)"
         transmissao_jev_desc = "[bold cyan]Ativa[/] (amostra textual até 3.000 caracteres via TypeSafe AI)"
     elif modo_cls == "local":
         classificador_desc = "JEV local — Heurísticas determinísticas calibradas (zero rede)"
         transmissao_jev_desc = "[bold green]Inativa[/] (execução 100% local, zero dados transmitidos)"
-    else:  # auto
-        if has_typesafe and sdk_installed:
-            classificador_desc = "JEV híbrido — TypeSafe AI remoto com fallback local calibrado"
-            transmissao_jev_desc = "[bold cyan]Ativa[/] (amostra textual via TypeSafe AI se necessário)"
-        elif has_typesafe and not sdk_installed:
-            classificador_desc = "JEV local — Heurísticas calibradas (chave detectada mas typesafe-sdk não instalado)"
-            transmissao_jev_desc = "[bold green]Inativa[/] (execução 100% local)"
-        else:
-            classificador_desc = "JEV local — Heurísticas determinísticas calibradas (sem chave remota)"
-            transmissao_jev_desc = "[bold green]Inativa[/] (execução 100% local)"
+    else:
+        classificador_desc = f"JEV ({classificador})"
+        transmissao_jev_desc = "[bold cyan]Ativa[/]"
 
     if enriquecimento_online:
         bibliografia_desc = "[bold cyan]Ativas[/] (Brasil API, Google Books, Crossref, OpenAlex — apenas metadados/IDs)"

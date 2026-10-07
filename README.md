@@ -1,157 +1,171 @@
 # Organizador e Catalogador Inteligente de PDFs
 
-Ferramenta de linha de comando de alta precisão que processa lotes de PDFs, extrai metadados bibliográficos estruturados de forma determinística, gera arquivos Markdown companheiros (`.md`) com frontmatter YAML e referências ABNT (NBR 6023:2018), e organiza os arquivos em uma árvore de diretórios padronizada.
-
-A partir da versão **v0.4.0**, o projeto adota uma arquitetura determinística unificada:
-- **Classificador Bibliográfico Jev (Núcleo do Sistema)**:
-  - **Modo 'auto' (Padrão)**: utiliza validação semântica TypeSafe AI se `TYPESAFE_API_KEY` estiver configurada e `typesafe-sdk` instalado; caso contrário, executa com heurísticas locais calibradas.
-  - **Modo 'local'**: garante operação 100% offline e privada, ultra-rápida, sem consumo de rede ou chaves externas.
-  - **Modo 'remoto' / 'jev_remoto'**: modo exclusivo TypeSafe AI remoto. Exige chave e SDK, falhando com erro explícito (`ErroDeConfiguracao` ou `ErroDeClassificacaoRemota`) sem fallback silencioso para heurísticas locais.
-  - **Cache Idempotente**: requisições remotas bem-sucedidas são salvas em cache local por fingerprint textual (SHA-256), evitando cobranças ou submissões externas duplicadas após falhas locais de escrita ou retomada.
-  - **Vocabulário Ampliado**: suporta Artigos Científicos, Livros, Capítulos de Livros, Teses/Dissertações, Revistas, Apostilas, Relatórios e Trabalhos em Eventos.
-- **Validação Rigorosa de Identificadores**:
-  - DOIs localizados em seções bibliográficas/referências ou em contextos de citação textual (`in:`, `apud`, etc.) são descartados e não são atribuídos à obra principal.
-  - Origem da evidência do DOI (`doi_source`) e do classificador (`provedor_classificador`) são persistidos no frontmatter do Markdown.
-- **Enriquecimento Bibliográfico em Bases Públicas (Configurável)**:
-  - Consulta bases abertas e gratuitas (Brasil API / CBL para ISBN, Crossref para DOI, OpenAlex, Google Books, OpenLibrary) utilizando apenas identificadores ou título (o arquivo PDF e o texto completo **nunca** são transmitidos).
-  - Pode ser completamente desativado definindo `ORGPDF_VERIFICAR_ONLINE=false` no arquivo `.env`.
-- **Formatação ABNT NBR 6023:2018 Estrita**: manipulação precisa de sobrenomes compostos, agnomes familiares (Filho, Neto, Júnior, Sobrinho) e instituições.
-- **Organização Flexível em Diretórios**:
-  - **Hierárquica CNPq (Padrão da CLI)**: `<destino>/<Grande Área>/<Área>/<Tipo>/`
-  - **Plana por Categoria (`--plana` ou `--estrutura plana`)**: `<destino>/<Tipo>/`
-- **Markdown Companheiro Inteligente**: amostragem rápida das primeiras e últimas páginas para metadados (até 30.000 caracteres por padrão), compatível com Obsidian, Logseq e Notion.
-- **Nomenclatura Visual Padronizada**: renomeação uniforme no formato `SOBRENOME, Nome - Título (Ano)`.
-
-```
-destino/
-├── Livros/
-│   ├── FRANKL, Viktor E. - Em Busca de Sentido (2019).pdf
-│   └── FRANKL, Viktor E. - Em Busca de Sentido (2019).md
-├── Artigos Científicos/
-│   ├── SILVA, João; SANTOS, Maria - Aprendizado de Máquina em Saúde (2023).pdf
-│   └── SILVA, João; SANTOS, Maria - Aprendizado de Máquina em Saúde (2023).md
-└── revisao_manual/
-    └── ... (arquivos com possível divergência para conferência)
-```
+Ferramenta de linha de comando de alta precisão que processa lotes de PDFs, extrai metadados bibliográficos estruturados de forma determinística, realiza buscas bibliográficas progressivas e econômicas por tipologia, gera arquivos Markdown companheiros (`.md`) com frontmatter YAML e referências ABNT (NBR 6023:2018), e organiza os arquivos em uma árvore de diretórios padronizada.
 
 ---
 
-## Instalação
+## 🎯 Escopo da Aplicação
+
+- **Tipologias Atendidas**: Livros, artigos científicos, apostilas, teses, dissertações e relatórios técnicos.
+- **Proteção e Limite de Escopo**: A aplicação **não trata dados sensíveis**. Documentos de natureza clínica, confidencial ou com dados pessoais sensíveis não são manipulados pelo sistema. A rotina legada `is_sensitive_clinical_document` foi permanentemente removida da base de código; a delimitação é estabelecida na fronteira operacional da biblioteca (o operador deve alimentar exclusivamente documentos de acervo acadêmico e editorial).
+- **Transparência de Auditoria**: Cada PDF processado gera um arquivo `<nome>.auditoria.json` documentando fontes consultadas, tempos, status por provedor, valores originais vs. selecionados, e as decisões bibliográficas fundamentadas com rastreabilidade de evidência.
+
+---
+
+## 🏗️ Arquitetura e Decisões Técnicas
+
+### 1. Classificador Bibliográfico Jev (TypeSafe AI) — Padrão Remoto Uniforme
+- **Modo Padrão (`jev_remoto`) Unificado**: O padrão é **remoto** em todos os pontos de entrada do sistema (`Config`, `Pipeline`, `PipelineOrganizer`, validador interativo e CLI).
+  - **Com chave configurada (`TYPESAFE_API_KEY`)**: Efetua chamada remota estrita à API da TypeSafe AI / Jev.
+  - **Sem chave configurada**: `Config.validar()` e `JevClassifier` levantam explicitamente `ErroDeConfiguracao` impedindo qualquer fallback silencioso.
+  - **Com SDK ausente (`typesafe-sdk`)**: Levanta `ErroDeClassificacaoRemota` orientando a instalação via `pip install -e ".[typesafe]"`.
+  - **Amostragem Mínima Controlada**: Transmite estritamente até **3.000 caracteres** de texto nativo dos metadados de abertura. O arquivo PDF integral **nunca** é transmitido pela rede.
+  - **Chamada Fresca por PDF (Sem Cache JEV)**: Não há reaproveitamento de cache local de respostas JEV; cada documento gera uma classificação remota limpa.
+- **Modo Local (`local`)**: Executa motor heurístico calibrado determinístico para operação 100% offline, exigindo seleção deliberada via `--classificador local` ou `ORGPDF_CLASSIFICADOR=local`.
+
+### 2. Recuperação de Informação e Biblioteconomia
+
+- **Checksums Estritos**:
+  - Validação matemática de ISBN-10 (módulo 11) e ISBN-13 (módulo 10). Candidatos estruturais são preservados na extração, mas validação e enriquecimento exigem conformidade estrita.
+  - Validação matemática de ISSN-8 (módulo 11, suportando dígito de controle `X`).
+- **Diferenciação em 3 Níveis de Identificadores**:
+  1. *Extraído*: padrão textual localizado no PDF.
+  2. *Validado*: dígito verificador matemático confirmado.
+  3. *Confirmado para a Obra*: verificado junto a registro oficial externo ou fichas catalográficas da mesma edição.
+- **Plausibilidade Local vs. Corroboração por Fonte**:
+  - `identidade_plausivel_local`: Título consistente e autoria válida extraídos diretamente da estrutura do PDF (sem validação externa).
+  - `identidade_corroborada_fonte`: Identidade atestada por autoridade bibliográfica externa (CBL, Crossref, DataCite, Google Books) ou por Ficha Catalográfica formal (CIP/AACR2).
+  - `evidencia_identidade`: Campo textual que explicita qual base ou documento sustentou a decisão de identidade.
+- **Critério Rigoroso de Busca Externa Esgotada**:
+  - `busca_externa_esgotada` é `true` **exclusivamente** quando a busca online estava ativa, fontes pertinentes foram efetivamente consultadas e não restaram erros técnicos de conexão.
+  - Se nenhuma fonte foi consultada (ex.: documento sem identificador e sem título válido para consulta), a busca é marcada como `incompleta_sem_consultas` e `busca_externa_esgotada: false`.
+- **Rastreabilidade de Cache de APIs Bibliográficas**:
+  - Respostas obtidas do cache bibliográfico em disco são obrigatoriamente registradas com `cache_hit: true` e `origem_resposta: "cache_disco"`, distinguindo-as de chamadas remotas ao vivo (`origem_resposta: "rede_remota"`).
+  - O cache pode ser totalmente desativado definindo `ORGPDF_CACHE_BIBLIOGRAFICO=false` (ou `cache_bibliografico=False` em `Config`).
+
+### 3. Matriz de APIs Bibliográficas Externas (Limites Oficiais)
+
+| Fonte | Campos Principais | Autenticação / Requisitos | Limites / Custos Oficiais | Documentação Oficial |
+| :--- | :--- | :--- | :--- | :--- |
+| **TypeSafe AI (Jev)** | Tipologia, Área/Subárea CNPq | `TYPESAFE_API_KEY` | Amostra até 3.000 chars | [TypeSafe AI](https://typesafe.ai) |
+| **Crossref** | DOI, Artigo, Autores, Periódico, ISSN | Gratuito (Email em User-Agent) | Rate limits dinâmicos via headers (`X-Rate-Limit-Limit`) | [Crossref API Docs](https://www.crossref.org/documentation/retrieve-metadata/rest-api/access-and-authentication/) |
+| **DataCite** | DOI, Teses, Repositórios acadêmicos | Gratuito / Público | API REST aberta e gratuita | [DataCite API](https://support.datacite.org/docs/api) |
+| **Brasil API / CBL** | ISBN, Livros nacionais, Editora, Ano | Gratuito / Sem chave | Acesso público | [Brasil API](https://brasilapi.com.br/) |
+| **OpenLibrary** | ISBN, Livros internacionais, Local | Gratuito / Sem chave | Sem autenticação | [OpenLibrary Developer](https://openlibrary.org/developers/api) |
+| **Google Books** | ISBN, Título, Autores, Categorias | Chave opcional (`GOOGLE_BOOKS_API_KEY`) | ~1.000 req/dia livre | [Google Books API](https://developers.google.com/books) |
+| **OpenAlex** | Artigos, Teses, Periódicos por título | Gratuito (Email em User-Agent) | Cortesia diária de até $1/dia (taxa de requisições de cortesia) | [OpenAlex Pricing](https://help.openalex.org/access/pricing/) |
+| **SerpApi** | Google Scholar fallback por título | `SERPAPI_API_KEY` | 250 buscas/mês no plano Free | [SerpApi Pricing](https://serpapi.com/pricing) |
+
+### 4. Redução de Encaminhamentos Prematuros à Revisão Manual
+A decisão de encaminhamento foi desacoplada de avisos meramente informativos. O sistema separa as seguintes decisões bibliográficas independentes:
+1. `identidade_confirmada`: Obra corroborada por autoridade externa ou CIP formal.
+2. `identidade_plausivel_local`: Obra com título e autoria sólidos no PDF, permitindo organização automática segura.
+3. `metadados_completos`: Presença de todos os campos essenciais por tipo documental (título, autor, ano, editora/periódico). A ausência de cidade resulta em notação ABNT `[S. l.]` e **não** encaminha para quarentena.
+4. `tipo_documental_confiante`: Classificação Jev acima do limiar de incerteza (>= 0.50).
+5. `assunto_confiante`: Taxonomia temática CNPq resolvida (não genérica "Outros/Geral").
+6. `integridade_arquivo_ok`: Arquivo não corrompido e contagem de páginas compatível com obra integral.
+7. `busca_externa_esgotada`: Todas as fontes pertinentes foram consultadas sem pendências técnicas de conexão/limite.
+8. `revisao_manual_necessaria`: Apenas acionada quando houver incerteza real de identidade, tipologia duvidosa, conflito irreconciliável entre fontes ou integridade física comprometida.
+
+### 5. ABNT NBR 6023:2018 Estrita
+- Manipulação precisa de sobrenomes compostos, agnomes familiares (Filho, Neto, Júnior, Sobrinho) e instituições.
+- Tratamento de ausência de localidade (`[S. l.]`), editora (`[s. n.]`) ou ambos (`[S. l.: s. n.]`).
+- Omissão de ISBN na referência textual de livros, mantendo-o apenas nos metadados estruturados (frontmatter YAML).
+
+---
+
+## 📦 Instalação
 
 Requer **Python 3.10 ou superior** (recomendado Python 3.12).
 
-### Instalação Básica (100% Local / Heurísticas Jev)
-
 ```bash
 # Clone ou acesse o repositório
-git clone https://github.com/dcprj/organizador-catalogador-pdf.git
 cd organizador-catalogador-pdf
 
 # Crie e ative o ambiente virtual
 python3 -m venv .venv
 source .venv/bin/activate       # No Windows: .venv\Scripts\activate
 
-# Instalação padrão
-pip install -e .
-```
-
-### Instalação com Suporte TypeSafe AI (Modo Remoto Exclusivo)
-
-Para ambientes que utilizam a classificação remota via TypeSafe AI:
-```bash
+# Instalação completa com suporte a TypeSafe AI
 pip install -e ".[typesafe]"
-```
-Configure a chave de API no ambiente ou arquivo `.env`:
-```bash
-export TYPESAFE_API_KEY="sua_chave_typesafe"
-```
-Quando executado com `--classificador remoto` (ou `--classificador jev_remoto`), o sistema opera em modo remoto estrito: se a chave não estiver configurada ou o pacote `typesafe-sdk` não estiver instalado, a execução falhará imediatamente com erro claro (`ErroDeConfiguracao`), sem fallback silencioso para heurísticas locais.
 
-Para desenvolvimento e execução da suíte completa de testes:
-```bash
+# Ou instalação de desenvolvimento com suite de testes
 pip install -e ".[dev]"
+```
+
+Configure sua chave de API no arquivo `.env`:
+```bash
+cp .env.example .env
+# Edite .env e adicione sua chave: TYPESAFE_API_KEY=sua_chave_aqui
 ```
 
 ---
 
-## Uso
+## 🚀 Uso
 
-O comando oficial é **`organizador-pdf`** (ou `python -m organizador_pdf`). O script `python main.py` também está disponível como atalho de compatibilidade, encaminhando para o mesmo pipeline.
+O comando oficial é **`organizador-pdf`** (ou `python -m organizador_pdf`), com atalho via `python main.py`.
 
-### Exemplos Rápidos
+### Exemplos de Uso
 
 ```bash
-# 1. Simulação (dry-run): analisa os PDFs e exibe a árvore sem alterar disco
+# 1. Simulação prévia (dry-run): analisa os PDFs e exibe o plano sem alterar o disco
 organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --dry-run
 
-# 2. Execução padrão (copia arquivos para a árvore hierárquica CNPq)
+# 2. Execução padrão (copia arquivos para a árvore hierárquica CNPq com Jev Remoto)
 organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca
 
-# 3. Organização em estrutura plana por categoria (<destino>/<Tipo>/)
+# 3. Execução offline determinística local
+organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --classificador local
+
+# 4. Organização em estrutura plana por categoria (<destino>/<Tipo>/)
 organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --plana
 
-# 4. Mover arquivos originais em vez de copiar, salvando os .md em subpasta espelho
-organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --mover --subpasta-md Markdown
+# 5. Mover arquivos originais em vez de copiar
+organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --mover
 
-# 5. Processamento paralelo acelerado (múltiplos workers)
+# 6. Processamento paralelo acelerado (4 workers)
 organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --paralelo 4
 
-# 6. Modo interativo passo a passo (validação e edição assistida de metadados)
+# 7. Modo interativo passo a passo (confirmação visual de metadados)
 organizador-pdf -i ~/Downloads/meus_pdfs -o ~/Biblioteca --interactive
-
-# 7. Retomada resiliente após interrupção (Ctrl+C ou fechamento do terminal)
-organizador-pdf --resume
 ```
 
 ### Opções da Linha de Comando
 
 | Opção | Padrão | Descrição |
 | :--- | :--- | :--- |
-| `--origem` / `--input` / `-i` | *obrigatório* | Diretório de origem contendo os arquivos PDF |
-| `--destino` / `--output` / `-o` | *obrigatório* | Diretório raiz de destino da biblioteca organizada |
-| `--estrutura` | `cnpq` | Modelo de diretórios: `cnpq` (árvore taxonômica) ou `plana` (apenas categoria) |
-| `--plana` | `False` | Atalho para organizar em estrutura plana (`--estrutura plana`) |
-| `--classificador` | `auto` | Modo do classificador: `auto`, `local`, ou `remoto` / `jev_remoto` |
-| `--dry-run` | `False` | Executa o pipeline sem realizar alterações em disco |
-| `--resume` | `False` | Retoma o lote pendente exatamente de onde parou |
-| `--recursive` / `-r` | `True` | Varredura recursiva em subpastas (`--no-recursive` desativa) |
-| `--mover` | `False` | Move o arquivo PDF original em vez de copiar (padrão seguro: cópia) |
-| `--subpasta-md` | `None` | Grava os arquivos `.md` em subpasta espelho |
-| `--paralelo` / `-j` | `1` | Número de workers concorrentes para processar o lote |
-| `--quarantine` | `True` | Roteia itens com divergência para `revisao_manual/` |
-| `--limite` / `-n` | `None` | Limita a quantidade máxima de arquivos processados no lote |
+| `--origem` / `--input` / `-i` | *obrigatório* | Diretório de origem com arquivos PDF |
+| `--destino` / `--output` / `-o` | *obrigatório* | Diretório de destino da biblioteca organizada |
+| `--estrutura` | `cnpq` | Modelo de diretórios: `cnpq` (hierárquico) ou `plana` (categoria) |
+| `--plana` | `False` | Atalho para organizar em estrutura plana |
+| `--classificador` | `remoto` | Modo do classificador: `remoto` / `jev_remoto` (padrão obrigatório), ou `local` |
+| `--dry-run` | `False` | Simula o pipeline sem gravar no disco |
+| `--resume` | `False` | Retoma o lote pendente a partir do checkpoint salvo |
+| `--recursive` / `-r` | `True` | Varredura recursiva em subpastas |
+| `--mover` | `False` | Move o arquivo PDF original em vez de copiar |
+| `--subpasta-md` | `None` | Grava arquivos `.md` em subpasta espelho |
+| `--paralelo` / `-j` | `1` | Número de processos concorrentes |
+| `--quarantine` | `True` | Roteia itens com incerteza de identidade para `revisao_manual/` |
 | `--interactive` / `--validate` | `False` | Modo interativo passo a passo com confirmação de metadados |
-| `--log` | `erros.log` | Arquivo para registro detalhado de erros |
-| `--verbose` / `-v` | `False` | Habilita logs informativos detalhados no console |
-| `--version` | — | Exibe a versão instalada da CLI |
+| `--verbose` / `-v` | `False` | Habilita logs informativos detalhados |
 
 ---
 
-## Modo Interativo e Diagnóstico
+## 🧪 Suíte de Testes
 
-Ao acionar `--interactive` (ou `--validate`), o sistema apresenta cada PDF passo a passo no terminal:
-1. Inspeção de páginas e camada de texto nativo detectada.
-2. Exibição dos candidatos preliminares (Título, Autores, Ano, Editora, CIP, ISBN, DOI).
-3. Raciocínio detalhado da classificação Jev com pontuações calibradas por categoria.
-4. Consulta em tempo real a APIs bibliográficas com indicação de correspondência.
-5. Confirmação imediata ou modo de edição manual dos campos antes da gravação.
-
----
-
-## Suíte de Testes
-
-Os testes são automatizados via `pytest` e operam com dublês de teste, sem depender de rede nem de credenciais externas:
+A suíte completa possui **301 testes automatizados** e pode ser executada offline:
 
 ```bash
-# Executar todos os testes unitários e de integração
 pytest
+```
 
-# Executar com relatório de cobertura detalhado
-pytest --cov=organizador_pdf --cov-report=term-missing
+Para executar especificamente a bateria de testes de Biblioteconomia, Auditoria e Uniformidade Remota:
+```bash
+pytest tests/test_auditoria_biblioteconomia.py tests/test_audit_remediation.py tests/test_config.py -v
 ```
 
 ---
 
-## Licença
+## 📄 Licença
 
 Distribuído sob os termos da licença MIT. Consulte o arquivo `LICENSE` para mais detalhes.

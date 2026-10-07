@@ -142,19 +142,53 @@ def _verificar_doi(
         # só significa que não dá para verificar.
         return metadados, None
 
+def _comparar_com_metadados(metadados: Metadados, titulo_real: str, autores_reais: str) -> tuple[bool, bool]:
+    """Retorna (compativel, tem_evidencia_comparavel)."""
+    from .metadata_api import is_title_relevant, is_author_compatible
+    titulo_cand = metadados.titulo or ""
+    autores_cand = metadados.autores or ([metadados.autor_principal] if metadados.autor_principal else [])
+
+    titulo_match = is_title_relevant(titulo_cand, titulo_real) if (titulo_cand and titulo_real) else False
+    autor_match = is_author_compatible(autores_cand, [autores_reais]) if (autores_cand and autores_reais) else False
+
+    tem_evidencia = bool(titulo_real.strip() or autores_reais.strip())
+    # Compatível se o título confere; se o título na API for diferente, é divergência
+    if titulo_real.strip():
+        compativel = titulo_match
+    else:
+        compativel = autor_match
+    return compativel, tem_evidencia
+
+
+def _verificar_doi(
+    cliente: httpx.Client, doi: str, metadados: Metadados
+) -> tuple[Metadados, Optional[str]]:
+    # DOIs podem conter parênteses, `%` e outros caracteres que precisam de
+    # escape na URL — preserva a barra literal (separa prefixo/sufixo do DOI).
+    doi_escapado = quote(_normalizar_doi(doi), safe="/")
+    try:
+        resposta = cliente.get(CROSSREF_URL.format(doi=doi_escapado))
+    except httpx.HTTPError as exc:
+        logger.debug("Verificação de DOI indisponível (%s); seguindo sem ela.", exc)
+        return metadados, None
+
+    if resposta.status_code != 200:
+        # 404 (não indexado) ou qualquer outro erro: não é evidência de nada,
+        # só significa que não dá para verificar.
+        return metadados, None
+
     try:
         dados = resposta.json().get("message", {})
     except ValueError:
         return metadados, None
 
-    titulo_real = " ".join(dados.get("title") or [])
+    titulo_real = " ".join(dados.get("title") or []).strip()
     autores_reais = " ".join(
         f"{a.get('given', '')} {a.get('family', '')}".strip() for a in dados.get("author") or []
-    )
+    ).strip()
 
-    if not (
-        _bate(metadados.titulo, titulo_real) or _bate(metadados.autor_principal or "", autores_reais)
-    ):
+    compativel, tem_evidencia = _comparar_com_metadados(metadados, titulo_real, autores_reais)
+    if tem_evidencia and not compativel:
         return metadados, _mensagem_divergencia("DOI", doi, "Crossref", titulo_real, autores_reais)
 
     enriquecidos = _preencher_lacunas(
@@ -188,12 +222,11 @@ def _verificar_isbn(
     if not dados:
         return metadados, None  # não catalogado — cobertura incompleta, não é erro
 
-    titulo_real = dados.get("title", "")
-    autores_reais = " ".join(a.get("name", "") for a in dados.get("authors") or [])
+    titulo_real = (dados.get("title") or "").strip()
+    autores_reais = " ".join(a.get("name", "") for a in dados.get("authors") or []).strip()
 
-    if not (
-        _bate(metadados.titulo, titulo_real) or _bate(metadados.autor_principal or "", autores_reais)
-    ):
+    compativel, tem_evidencia = _comparar_com_metadados(metadados, titulo_real, autores_reais)
+    if tem_evidencia and not compativel:
         return metadados, _mensagem_divergencia(
             "ISBN", isbn, "Open Library", titulo_real, autores_reais
         )

@@ -32,9 +32,9 @@ def format_single_author_abnt(author_name: str) -> str:
     if not clean:
         return ""
 
-    # Strip prefixes like 'Professor:', 'Prof.', 'Dr.', 'Dra.', 'Organizadores,', etc.
+    # Strip prefixes like 'Professor:', 'Prof.', 'Dr.', 'Dra.', 'Organizadores,', 'Organização', etc.
     clean = re.sub(
-        r"^(?:prof(?:essor|a)?|dr[a-z]?|ph\.?d\.?|msc\.?|coord(?:enador)?|orientador[a-z]?|organizad(?:or|ores)[a-z]?)[:\.\s]+",
+        r"^(?:prof(?:essor|a)?|dr[a-z]?|ph\.?d\.?|msc\.?|coord(?:enador|enação)?|orientador[a-z]?|organiza[çc][aã]o|organizad(?:or|ores|ora|oras)[a-z]?|org\.?|coord\.?|ed\.?)[:\.\s]+",
         "",
         clean,
         flags=re.IGNORECASE,
@@ -69,12 +69,13 @@ def format_single_author_abnt(author_name: str) -> str:
     return f"{last}, {first_names}" if first_names else last
 
 
-def format_authors_abnt(authors: List[str]) -> str:
+def format_authors_abnt(authors: List[str], papel: str = "autor") -> str:
     """Format a list of authors following ABNT NBR 6023 rules.
 
     - 1 to 3 authors: all listed, separated by semicolon.
     - 4 or more: first author followed by 'et al.'
     - 'et al.' in raw input triggers truncated citation.
+    - Suporta sufixo de papel bibliográfico: (org.), (coord.), (ed.).
     """
     if not authors:
         return ""
@@ -82,7 +83,7 @@ def format_authors_abnt(authors: List[str]) -> str:
     # Clean empty authors or placeholder tokens
     clean_authors = [
         a.strip() for a in authors
-        if a.strip() and not re.search(r"^(?:et\s+al\.?|\[et\s+al\.?\]|\.\.\.|organizad|coord)", a.strip(), re.I)
+        if a.strip() and not re.search(r"^(?:et\s+al\.?|\[et\s+al\.?\]|\.\.\.|organizad|coord|organiza[çc][aã]o)", a.strip(), re.I)
     ]
     if not clean_authors:
         return ""
@@ -92,13 +93,23 @@ def format_authors_abnt(authors: List[str]) -> str:
         or any(re.search(r"\bet\s+al\b", a, re.I) for a in authors)
     )
 
+    suffix = ""
+    p_low = (papel or "autor").lower().strip()
+    if "organizador" in p_low or p_low in ("org", "org."):
+        suffix = " (org.)"
+    elif "coordenador" in p_low or p_low in ("coord", "coord."):
+        suffix = " (coord.)"
+    elif "editor" in p_low or p_low in ("ed", "ed."):
+        suffix = " (ed.)"
+
     if len(clean_authors) >= 4 or has_raw_et_al:
         first = format_single_author_abnt(clean_authors[0])
         first = re.sub(r"\s+et\s+al\.?$", "", first, flags=re.I).strip()
-        return f"{first} et al."
+        return f"{first} et al.{suffix}"
 
     formatted = [format_single_author_abnt(a) for a in clean_authors]
-    return "; ".join(formatted)
+    res = "; ".join(formatted)
+    return f"{res}{suffix}" if res else ""
 
 
 class ABNTFormatter:
@@ -127,6 +138,8 @@ class ABNTFormatter:
         res = re.sub(r"\s{2,}", " ", res)
         return res.strip()
 
+    format_reference = format
+
     @classmethod
     def _format_thesis(cls, m: PublicationMetadata) -> str:
         """Format thesis / dissertation reference (ABNT NBR 6023:2018):
@@ -141,9 +154,10 @@ class ABNTFormatter:
 
         parts.append(f"{title_part}.")
 
-        year_str = str(m.year) if m.year else "[20--]"
-        institution = m.publisher or "[Instituição não identificada]"
-        city = m.city or "[S. l.]"
+        year_val = m.year or getattr(m, "ano", None) or getattr(m, "cip_year", None)
+        year_str = str(year_val) if year_val else "[20--]"
+        institution = m.publisher or getattr(m, "editora", None) or getattr(m, "editora_ou_periodico", None) or "[Instituição não identificada]"
+        city = m.city or getattr(m, "local", None) or "[S. l.]"
 
         parts.append(f"Tese / Dissertação – {institution}, {city}, {year_str}.")
 
@@ -156,11 +170,27 @@ class ABNTFormatter:
         return " ".join(parts)
 
     @classmethod
+    def _format_edition(cls, edition: str) -> str:
+        """Formata a edição segundo a ABNT NBR 6023:2025 (Seção 8.3: ex.: '2. ed.', '5. ed.')."""
+        ed_raw = edition.strip()
+        if not ed_raw:
+            return ""
+        if "ed" in ed_raw.lower():
+            return ed_raw if ed_raw.endswith(".") else f"{ed_raw}."
+        if ed_raw.isdigit():
+            return f"{ed_raw}. ed."
+        if re.match(r"^\d+\.$", ed_raw):
+            return f"{ed_raw} ed."
+        return f"{ed_raw} ed."
+
+    @classmethod
     def _format_book(cls, m: PublicationMetadata) -> str:
         """Format book reference:
-        AUTHOR(S). **Title**: subtitle. Edition. City: Publisher, Year.
+        AUTHOR(S). **Title**: subtitle. Edition. City: Publisher, Year. [Reprint note].
+        Consistent with ABNT NBR 6023:2025 (Seção 8.3 e Seção 8.11).
         """
-        authors_str = format_authors_abnt(m.authors)
+        papel = getattr(m, "papel_autoria", "autor") or "autor"
+        authors_str = format_authors_abnt(m.authors, papel=papel)
         title_part = cls._build_title_part(m.title, m.subtitle, bold_main=True, has_authors=bool(authors_str))
 
         parts = []
@@ -170,13 +200,39 @@ class ABNTFormatter:
         parts.append(f"{title_part}.")
 
         if m.edition:
-            ed_str = m.edition if "ed." in m.edition.lower() else f"{m.edition} ed."
-            parts.append(f"{ed_str}.")
+            ed_str = cls._format_edition(m.edition)
+            if ed_str:
+                parts.append(ed_str)
 
-        city = m.city or "[S. l.]"
-        publisher = m.publisher or "[s. n.]"
-        year_str = str(m.year) if m.year else "[20--]"
-        parts.append(f"{city}: {publisher}, {year_str}.")
+        city = m.city or getattr(m, "local", None) or "[S. l.]"
+        publisher = m.publisher or getattr(m, "editora", None) or getattr(m, "editora_ou_periodico", None) or "[s. n.]"
+
+        # ABNT NBR 6023:2025: Reimpressões pertencem à mesma edição (Seção 8.3).
+        # Havendo ano da edição original (CIP) distinto do ano da reimpressão física,
+        # o ano da edição acompanha a editora e a reimpressão entra como nota complementar (Seção 8.11).
+        cip_y = getattr(m, "cip_year", None)
+        effective_year = m.year or getattr(m, "ano", None) or cip_y
+
+        if m.reimpressao and cip_y and cip_y != effective_year:
+            parts.append(f"{city}: {publisher}, {cip_y}.")
+            reimp_text = m.reimpressao.strip()
+            m_reimp = re.match(r"^(\d+)[ªa.]?\s*reimpress[ãa]o[,\s]+(\d{4})$", reimp_text, re.I)
+            if m_reimp:
+                nota_reimp = f"{m_reimp.group(1)}. reimpr. {m_reimp.group(2)}"
+            else:
+                nota_reimp = reimp_text
+            parts.append(f"{nota_reimp.rstrip('.')}.")
+        else:
+            year_str = str(effective_year) if effective_year else "[20--]"
+            parts.append(f"{city}: {publisher}, {year_str}.")
+            if m.reimpressao:
+                reimp_text = m.reimpressao.strip()
+                m_reimp = re.match(r"^(\d+)[ªa.]?\s*reimpress[ãa]o[,\s]+(\d{4})$", reimp_text, re.I)
+                if m_reimp:
+                    nota_reimp = f"{m_reimp.group(1)}. reimpr. {m_reimp.group(2)}"
+                else:
+                    nota_reimp = reimp_text
+                parts.append(f"{nota_reimp.rstrip('.')}.")
 
         return " ".join(parts)
 
@@ -202,15 +258,16 @@ class ABNTFormatter:
             rest = f" {tokens[1]}" if len(tokens) > 1 else ""
             parts.append(f"{first}{rest}.")
 
-        journal = m.journal or m.publisher
+        journal = m.journal or getattr(m, "periodico", None) or m.publisher or getattr(m, "editora_ou_periodico", None)
         if journal:
             journal_bold = f"**{journal}**"
             loc_parts = [journal_bold]
         else:
             loc_parts = ["[S. l.: s. n.]"]
 
-        if m.city:
-            loc_parts.append(m.city)
+        city = m.city or getattr(m, "local", None)
+        if city:
+            loc_parts.append(city)
         if m.volume:
             vol_str = m.volume if "v." in m.volume.lower() else f"v. {m.volume}"
             loc_parts.append(vol_str)
@@ -221,7 +278,8 @@ class ABNTFormatter:
             pg_str = m.pages if "p." in m.pages.lower() else f"p. {m.pages}"
             loc_parts.append(pg_str)
 
-        year_str = str(m.year) if m.year else "[20--]"
+        year_val = m.year or getattr(m, "ano", None) or getattr(m, "cip_year", None)
+        year_str = str(year_val) if year_val else "[20--]"
         loc_parts.append(year_str)
 
         parts.append(", ".join(loc_parts) + ".")
@@ -242,7 +300,7 @@ class ABNTFormatter:
         if m.subtitle:
             title_str = f"{title_str}: {m.subtitle.strip()}"
 
-        magazine_name = m.journal or m.publisher or "Revista"
+        magazine_name = m.journal or getattr(m, "periodico", None) or m.publisher or getattr(m, "editora_ou_periodico", None) or "Revista"
         parts = []
         if authors_str:
             parts.append(f"{authors_str}.")
@@ -254,8 +312,9 @@ class ABNTFormatter:
             parts.append(f"{first}{rest}.")
 
         parts.append(f"**{magazine_name}**,")
-        city = m.city or "[S. l.]"
-        year_str = str(m.year) if m.year else "[20--]"
+        city = m.city or getattr(m, "local", None) or "[S. l.]"
+        year_val = m.year or getattr(m, "ano", None) or getattr(m, "cip_year", None)
+        year_str = str(year_val) if year_val else "[20--]"
         parts.append(f"{city}, {year_str}.")
 
         return " ".join(parts)
@@ -275,12 +334,14 @@ class ABNTFormatter:
         parts.append(f"{title_part}.")
 
         if m.edition:
-            ed_str = m.edition if "ed." in m.edition.lower() else f"{m.edition} ed."
-            parts.append(f"{ed_str}.")
+            ed_str = cls._format_edition(m.edition)
+            if ed_str:
+                parts.append(ed_str)
 
-        city = m.city or "[S. l.]"
-        institution = m.publisher or "Instituição de Ensino"
-        year_str = str(m.year) if m.year else "[20--]"
+        city = m.city or getattr(m, "local", None) or "[S. l.]"
+        institution = m.publisher or getattr(m, "editora", None) or getattr(m, "editora_ou_periodico", None) or "Instituição de Ensino"
+        year_val = m.year or getattr(m, "ano", None) or getattr(m, "cip_year", None)
+        year_str = str(year_val) if year_val else "[20--]"
         parts.append(f"{city}: {institution}, {year_str}.")
         parts.append("(Apostila).")
 
@@ -297,10 +358,37 @@ class ABNTFormatter:
             parts.append(f"{authors_str}.")
         parts.append(f"{title_part}.")
 
-        city = m.city or "[S. l.]"
-        publisher = m.publisher or "[s. n.]"
-        year_str = str(m.year) if m.year else "[20--]"
-        parts.append(f"{city}: {publisher}, {year_str}.")
+        if m.edition:
+            ed_str = cls._format_edition(m.edition)
+            if ed_str:
+                parts.append(ed_str)
+
+        city = m.city or getattr(m, "local", None) or "[S. l.]"
+        publisher = m.publisher or getattr(m, "editora", None) or getattr(m, "editora_ou_periodico", None) or "[s. n.]"
+
+        cip_y = getattr(m, "cip_year", None)
+        effective_year = m.year or getattr(m, "ano", None) or cip_y
+
+        if m.reimpressao and cip_y and cip_y != effective_year:
+            parts.append(f"{city}: {publisher}, {cip_y}.")
+            reimp_text = m.reimpressao.strip()
+            m_reimp = re.match(r"^(\d+)[ªa.]?\s*reimpress[ãa]o[,\s]+(\d{4})$", reimp_text, re.I)
+            if m_reimp:
+                nota_reimp = f"{m_reimp.group(1)}. reimpr. {m_reimp.group(2)}"
+            else:
+                nota_reimp = reimp_text
+            parts.append(f"{nota_reimp.rstrip('.')}.")
+        else:
+            year_str = str(effective_year) if effective_year else "[20--]"
+            parts.append(f"{city}: {publisher}, {year_str}.")
+            if m.reimpressao:
+                reimp_text = m.reimpressao.strip()
+                m_reimp = re.match(r"^(\d+)[ªa.]?\s*reimpress[ãa]o[,\s]+(\d{4})$", reimp_text, re.I)
+                if m_reimp:
+                    nota_reimp = f"{m_reimp.group(1)}. reimpr. {m_reimp.group(2)}"
+                else:
+                    nota_reimp = reimp_text
+                parts.append(f"{nota_reimp.rstrip('.')}.")
 
         return " ".join(parts)
 
