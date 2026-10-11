@@ -1,7 +1,7 @@
 # Projeto: Organizador e Catalogador Inteligente de PDFs (CLI)
 
-> **Documento Mestre de Especificação, Arquitetura e Prompt de Sistema**  
-> **Versão:** 0.4.1 (Remediada pós-auditoria bibliográfica)  
+> **Documento Mestre de Especificação, Arquitetura e Fonte Única da Verdade**  
+> **Versão:** 0.4.1 (Remediada pós-auditoria bibliográfica e alinhada à taxonomia CNPq)  
 > **Status:** Produção / 100% Testado (301 testes automatizados aprovados)
 
 ---
@@ -10,37 +10,40 @@
 
 Você é um engenheiro de software sênior especialista em Python, arquitetura limpa e biblioteconomia digital. Seu objetivo é construir e manter uma ferramenta de linha de comando (CLI) multiplataforma de alta precisão chamada **`organizador-pdf`** (com ponto de entrada direto e via `main.py`).
 
-A aplicação processa lotes de arquivos PDF acadêmicos e editoriais, realiza amostragem inteligente de texto nativo sem conversão redundante de corpo inteiro, extrai e classifica metadados bibliográficos estruturados de forma híbrida (classificador remoto TypeSafe AI / Jev como padrão oficial e motor determinístico local como modo offline), enriquece dados via consultas progressivas a APIs bibliográficas públicas e gratuitas com validação de similaridade, formata referências em estrita conformidade com a norma **ABNT NBR 6023:2018**, gera arquivos Markdown de acompanhamento (*companion*) com YAML Frontmatter canônico 2.0 (otimizado para Obsidian, Logseq e Notion) e organiza os arquivos em uma árvore de diretórios padronizada com salvaguarda para caminhos longos no Windows.
+A aplicação processa lotes de arquivos PDF acadêmicos e editoriais, realiza amostragem inteligente de texto nativo sem conversão redundante de corpo inteiro, extrai e classifica metadados bibliográficos estruturados de forma híbrida (classificador remoto TypeSafe AI / Jev como padrão oficial e motor determinístico local como modo offline), enriquece dados via consultas progressivas a APIs bibliográficas públicas e gratuitas com validação de similaridade, formata referências em estrita conformidade com a norma **ABNT NBR 6023:2018**, gera arquivos Markdown de acompanhamento (*companion*) neutros e padronizados com YAML Frontmatter canônico 2.0 e organiza os arquivos em uma árvore de diretórios baseada na **Tabela de Áreas do Conhecimento do CNPq**, com salvaguarda para caminhos longos no Windows.
 
 ### Princípios Fundamentais de Engenharia
 1. **Determinismo e Factualidade**: Proibição estrita de alucinações. Todo dado extraído deve ter correspondência factual no documento ou validação matemática e de autoridade externa.
-2. **Leveza e Desempenho Instantâneo**: Amostragem de metadados nas 10 primeiras e 10 últimas páginas. Processamento médio em frações de segundo por documento, sem conversão pesada do miolo do PDF.
-3. **Privacidade e Tráfego Mínimo**: O PDF integral **NUNCA** trafega pela rede. No modo remoto, apenas até 3.000 caracteres de texto nativo de abertura são enviados. O escopo é restrito a acervos acadêmicos e editoriais; documentos clínicos ou dados pessoais sensíveis não são manipulados.
-4. **Resiliência e Idempotência**: Falha em um PDF individual jamais interrompe o lote. O progresso é salvo incrementalmente em arquivo de estado (`~/.organizador-pdf/estado.json`), permitindo retomada exata com `--resume`.
-5. **Rastreabilidade e Auditoria Contínua**: Cada documento gera um registro `<nome>.auditoria.json` documentando fontes consultadas, tempos, status por provedor, valores originais vs. selecionados, e 8 decisões bibliográficas independentes.
+2. **Leveza e Desempenho Instantâneo**: Amostragem de metadados nas 10 primeiras e 10 últimas páginas. Processamento médio em frações de segundo por documento, sem conversão do corpo/miolo do PDF.
+3. **Sem Conversão do Corpo do PDF para Markdown**: O arquivo `.md` gerado é estritamente um índice de metadados de acompanhamento (*companion*), contendo apenas o Frontmatter YAML estruturado e a citação ABNT NBR 6023. **Não existe extração ou conversão do miolo do livro, nem inclusão de seções como `## Conteúdo`**.
+4. **Independência de Plataforma de Notas**: O Markdown e os metadados são neutros e padronizados para indexação geral em sistemas de arquivos e repositórios acadêmicos, sem dependência ou vinculação específica a ferramentas como Obsidian.
+5. **Padronização pelos Critérios do CNPq**: Organização taxonômica estrita segundo a Tabela das Áreas do Conhecimento do CNPq (`<Grande Área>/<Subárea>/<Plural do Tipo>/`) e nomenclatura de arquivos no padrão acadêmico unívoco (`SOBRENOME, Nome - Título (Ano).pdf`).
+6. **Privacidade e Tráfego Mínimo**: O PDF integral **NUNCA** trafega pela rede. No modo remoto, apenas até 3.000 caracteres de texto nativo de abertura são enviados. O escopo é restrito a acervos acadêmicos e editoriais; documentos clínicos ou dados pessoais sensíveis não são manipulados.
+7. **Resiliência e Idempotência**: Falha em um PDF individual jamais interrompe o lote. O progresso é salvo incrementalmente em arquivo de estado (`~/.organizador-pdf/estado.json`), permitindo retomada exata com `--resume`.
+8. **Rastreabilidade e Auditoria Contínua**: Cada documento gera um registro `<nome>.auditoria.json` documentando fontes consultadas, tempos, status por provedor, valores originais vs. selecionados, e 8 decisões bibliográficas independentes.
 
 ---
 
 ## 2. Histórico do Processo e Todos os Ajustes Realizados
 
-O projeto passou por quatro grandes ciclos evolutivos até atingir o estado da arte atual:
+O projeto passou por quatro grandes ciclos evolutivos até consolidar esta Fonte Única da Verdade:
 
 ### Fase 1: Concepção Inicial e Limitações dos LLMs Pesados (v0.1.0 - v0.2.0)
-* **Abordagem Inicial**: Conversão do corpo inteiro do PDF para Markdown com `pymupdf4llm` e envio de textos extensos para LLMs (Ollama local ou APIs externas como Anthropic, OpenAI, DeepSeek).
+* **Abordagem Inicial**: Tentativa de converter o corpo inteiro do PDF para Markdown com `pymupdf4llm` e enviar blocos extensos de texto para LLMs (Ollama local ou APIs externas como Anthropic, OpenAI, DeepSeek).
 * **Problemas Identificados**:
-  * Latência altíssima (vários segundos ou minutos por PDF) e consumo excessivo de tokens/memória.
-  * Alucinação frequente de identificadores (ISBNs, ISSNs e DOIs inventados).
+  * Latência altíssima (minutos por arquivo) e consumo excessivo de memória e tokens.
+  * Alucinação frequente de identificadores (ISBNs e DOIs inventados).
   * Falhas no binário PyInstaller por ausência dos modelos ONNX do `pymupdf4llm`.
-  * Erros 400 em APIs como DeepSeek devido a incompatibilidade com schemas JSON estritos.
+  * Erros 400 em APIs como DeepSeek por incompatibilidade com schemas JSON estritos.
 * **Primeiros Ajustes**:
-  * Implementação de proteções determinísticas contra alucinação (descarte de identificadores não encontrados no texto).
-  * Adição de provedores de fallback, suporte a variáveis de ambiente `.env` e controle de lotes com `--resume`.
+  * Implementação de filtros determinísticos contra alucinação (descarte de identificadores não encontrados literalmente no texto).
+  * Provedores de fallback, suporte a variáveis de ambiente `.env` e persistência de lotes com `--resume`.
 
-### Fase 2: Transição Determinística e Descarte de Conversão Integral (v0.3.0 - v0.4.0)
+### Fase 2: Transição Determinística e Abandono da Conversão Integral (v0.3.0 - v0.4.0)
 * **Mudança Arquitetural Radical**:
-  * Abandono da conversão de centenas de páginas do corpo do PDF. Adoção de **amostragem leve de texto nativo** (10 primeiras e 10 últimas páginas) via PyMuPDF puro.
-  * Criação do **Markdown Companheiro (`.md`)**: o arquivo Markdown passa a ser um índice de metadados com Frontmatter e citação ABNT, sem duplicar o miolo do livro.
-  * Substituição dos LLMs por um motor determinístico local inteligente (`classifier_jev.py`), baseado em parsing de **Ficha Catalográfica (CIP nos padrões AACR2 e ISBD)** e heurísticas bibliográficas.
+  * **Eliminação da conversão integral do corpo do PDF**: adoção definitiva da **amostragem leve de texto nativo** (10 primeiras e 10 últimas páginas) via PyMuPDF puro.
+  * **Criação do Markdown Companheiro (`.md`)**: o arquivo Markdown passou a ser um companion de catalogação (metadados + referência ABNT), sem o corpo do documento.
+  * Substituição dos LLMs por motor determinístico local inteligente (`classifier_jev.py`), baseado em parsing de **Ficha Catalográfica (CIP nos padrões AACR2 e ISBD)** e heurísticas bibliográficas especializadas.
   * Integração com APIs públicas gratuitas (Brasil API / CBL, Google Books, Crossref, OpenAlex, OpenLibrary) com verificação de similaridade textual para evitar contaminação de dados.
 * **Ajustes de Infraestrutura**:
   * Orçamento dinâmico de caracteres para respeitar o teto `MAX_PATH` de 260 caracteres do Windows.
@@ -57,13 +60,12 @@ O projeto passou por quatro grandes ciclos evolutivos até atingir o estado da a
   * Separação rigorosa entre `periodico` e `editora` conforme ABNT NBR 6023.
   * Rastreabilidade de proveniência por campo (`title_source`, `author_source`, `year_source`, `city_source`, `publisher_source`, `isbn_source`, `issn_source`, `doi_source`).
   * Separação de confiança em `confidence_classification` e `confidence_metadata`.
-  * Geração automática de tags para Obsidian (`tipo/...`, `ano/...`, `area/...`, `status/revisao`).
 * **Saneamento e Higienização Avançada de Títulos**:
   * Rejeição completa de identificadores (ISSN, ISBN, DOI) como títulos.
   * Descarte de disclaimers de direitos autorais e repositórios acadêmicos ("Este exemplar foi revisado...", "Todos os direitos reservados à...", etc.).
   * Truncamento e limpeza de blocos de créditos editoriais (ex.: "Coordenação editorial por...", conselho científico).
   * Limpeza de números de página residuais e códigos de classificação CDD/CDU/Cutter aderidos ao título.
-  * Quarentena obrigatória para unipalavras ou verbos isolados (ex.: obras com títulos genéricos não confirmados).
+  * Quarentena obrigatória para unipalavras ou verbos isolados (ex.: títulos genéricos sem contexto).
   * Distinção entre ano de edição catalográfica (ex.: 2006) e ano de reimpressão (ex.: 2017).
   * Rejeição de nomes de autores ou assuntos confundidos com localidade (ex.: autor "Jung" interpretado erroneamente como cidade).
 
@@ -126,9 +128,13 @@ A CLI deve aceitar os seguintes argumentos:
 #### Passo 1: Leitura e Amostragem de Texto Nativo
 * Abrir o PDF com `pymupdf` (`fitz`).
 * Extrair o texto das primeiras $N$ páginas (padrão: 10) e das últimas $N$ páginas (padrão: 10) para capturar ficha catalográfica, capa, sumário e colofão.
+* **Não converter nem extrair o corpo integral do PDF**.
 * Avaliar suficiência de texto nativo: se o documento contiver menos de 30 caracteres válidos por página, classificar como `Situacao.PENDENTE_OCR` (`requer_ocr=True`) e emitir aviso sem travar o lote.
 
-#### Passo 2: Classificação Documental e Temática
+#### Passo 2: Classificação Documental e Mapeamento para Taxonomia CNPq
+* **Mapeamento CNPq**: Classificar a obra segundo a **Tabela de Áreas do Conhecimento do CNPq**:
+  * **Grandes Áreas**: Ciências Exatas e da Terra, Ciências Biológicas, Engenharias, Ciências da Saúde, Ciências Agrárias, Ciências Sociais Aplicadas, Ciências Humanas, Linguística Letras e Artes.
+  * **Subáreas Temáticas**: Especialidade correspondente (ex.: Psicologia Social, Epistemologia, Engenharia de Software, etc.).
 * **Modo Padrão (`jev_remoto` / `remoto`)**:
   * Validar presença de `TYPESAFE_API_KEY` (se ausente, levantar `ErroDeConfiguracao`).
   * Validar importação de `typesafe-sdk` (se ausente, levantar `ErroDeClassificacaoRemota`).
@@ -185,11 +191,12 @@ O módulo `abnt_formatter.py` formata a referência oficial seguindo regras bibl
 * Agnomes familiares preservados junto ao sobrenome: `SILVA FILHO, João`, `SANTOS JÚNIOR, Pedro`, `ALMEIDA NETO, Carlos`.
 * Sobrenomes compostos em português e espanhol respeitados: `ESPIRITO SANTO, Maria`, `CASTELO BRANCO, Camilo`, `GARCÍA MÁRQUEZ, Gabriel`.
 * Mais de três autores: usar primeiro autor seguido de `et al.` (ou listar todos conforme opção).
-* Ausência de localidade tratada como `[S. l.]`. Ausência de editora tratada como `[s. n.]`. Ambos ausentes como `[S. l.: s. n.]` (isso é notação bibliográfica correta e **NÃO** deve mandar o arquivo para quarentena).
+* Ausência de localidade tratada como `[S. l.]`. Ausência de editora tratada como `[s. n.]`. Ambos ausentes como `[S. l.: s. n.]` (notação bibliográfica correta que **NÃO** encaminha para quarentena).
 * **Omissão de ISBN na referência de livros**: o ISBN é preservado nos metadados estruturados (frontmatter YAML), mas suprimido do corpo textual da referência ABNT de livros.
 
 #### Passo 7: Geração do Companion Markdown (Frontmatter 2.0)
-Gerar um arquivo `.md` companheiro com YAML Frontmatter rico e compatível com Obsidian, Logseq e Notion:
+Gerar um arquivo `.md` companheiro como índice bibliográfico estruturado. **O arquivo contém estritamente o bloco YAML Frontmatter e a referência bibliográfica formatada (sem conversão de corpo nem seções de texto original)**:
+
 ```markdown
 ---
 versao_esquema: "2.0"
@@ -236,7 +243,8 @@ tags:
 > KANT, Immanuel. Crítica da razão pura. Petrópolis: Editora Vozes, 1781.
 ```
 
-#### Passo 8: Nomenclatura Padronizada e Salvaguarda MAX_PATH
+#### Passo 8: Nomenclatura Padronizada CNPq/ABNT e Salvaguarda MAX_PATH
+A padronização dos nomes de arquivos segue os critérios canônicos de catalogação e citação acadêmica adotados pelo CNPq/ABNT para identificação inequívoca de produções científicas:
 * **Padrão de Nome de Arquivo**:
   * Com autor e ano: `SOBRENOME, Nome - Título (Ano).pdf` (e `.md`).
   * Múltiplos autores: `SOBRENOME, Nome et al. - Título (Ano).pdf`.
@@ -250,7 +258,7 @@ tags:
   * Truncar o título de forma elegante preservando palavras inteiras caso o caminho exceda o limite.
 * **Resolução de Conflitos**: Arquivos homônimos no destino recebem sufixos sequenciais ` (2)`, ` (3)` sem sobrescrever arquivos existentes.
 
-#### Passo 9: Decisões Bibliográficas e Isolamento em Quarentena
+#### Passo 9: Decisões Bibliográficas e Estrutura de Diretórios CNPq
 Desacoplar avisos informativos das decisões reais de quarentena. O sistema avalia 8 decisões bibliográficas independentes:
 1. `identidade_confirmada`: Obra corroborada por autoridade externa ou CIP formal.
 2. `identidade_plausivel_local`: Título consistente e autoria válida extraídos do PDF (permite organização segura).
@@ -262,9 +270,9 @@ Desacoplar avisos informativos das decisões reais de quarentena. O sistema aval
 8. `revisao_manual_necessaria`: Ativada **exclusivamente** por incerteza de identidade, tipologia duvidosa, conflito irreconciliável entre fontes ou integridade violada.
 
 * **Estrutura de Pastas de Destino**:
-  * **Organização Regular Hierárquica (`--estrutura cnpq`)**:
-    `<DESTINO>/<Área_Principal>/<Subárea>/<Plural_do_Tipo>/`
-    *(Ex.: `/Biblioteca/Filosofia/Epistemologia/Livros/`)*
+  * **Organização Regular Hierárquica CNPq (`--estrutura cnpq`, padrão oficial)**:
+    `<DESTINO>/<Grande_Área_CNPq>/<Subárea_CNPq>/<Plural_do_Tipo>/`
+    *(Ex.: `/Biblioteca/Ciências Humanas/Psicologia/Livros/` ou `/Biblioteca/Filosofia/Epistemologia/Livros/`)*
   * **Organização Regular Plana (`--estrutura plana`)**:
     `<DESTINO>/<Plural_do_Tipo>/`
   * **Quarentena de Revisão Manual**:
@@ -299,13 +307,13 @@ organizador-catalogador-pdf/
 │       ├── classifier_jev.py              # Parsing CIP / AACR2 / ISBD e motor heurístico local
 │       ├── cli.py                         # Interface Typer com Rich, tabelas e despacho
 │       ├── config.py                      # Configurações, variáveis de ambiente e validação fail-fast
-│       ├── converter.py                   # Amostragem 10+10 páginas, frontmatter 2.0 e Markdown
+│       ├── converter.py                   # Amostragem 10+10 páginas, frontmatter 2.0 e Markdown companion
 │       ├── estado.py                      # Gerenciamento de checkpoint atômico para --resume
 │       ├── extractor.py                   # Exceções de extração e compatibilidade de interface
 │       ├── logging_utils.py               # Sistema de logs com registro em arquivo e console
 │       ├── metadata_api.py                # Clientes Multi-API (Brasil API, Crossref, etc.) com cache
 │       ├── models.py                      # Modelos de dados e validações Pydantic v2
-│       ├── organizer.py                   # Operações de disco, MAX_PATH e resolução de colisões
+│       ├── organizer.py                   # Operações de disco, MAX_PATH e hierarquia CNPq
 │       ├── pipeline.py                    # Orquestrador do fluxo completo de processamento
 │       └── verificacao.py                 # Verificação de similaridade e integridade bibliográfica
 └── tests/                                 # Suíte abrangente de 301 testes pytest (100% offline)
@@ -330,12 +338,28 @@ organizador-catalogador-pdf/
 
 ---
 
-## 6. Diretrizes para Implementação, Extensão e Manutenção
+## 6. Prompt Mestre de Recriação do Sistema (Fonte Única da Verdade)
 
-Ao recriar, manter ou implementar novas funcionalidades neste projeto, você **DEVE** seguir rigorosamente as diretrizes abaixo:
+> Utilize este prompt integral como especificação autossuficiente caso o projeto precise ser reconstruído do zero por qualquer desenvolvedor ou agente de inteligência artificial.
 
-1. **Prioridade Absoluta da Ficha Catalográfica (CIP)**: Nunca sobreponha dados extraídos de uma Ficha Catalográfica formal por dados genéricos de heurística ou retornos incompletos de APIs.
-2. **Fail-Fast no Classificador Remoto**: Quando em modo remoto (`jev_remoto`), valide as credenciais antecipadamente. Jamais faça fallback silencioso para o modo local sem consentimento explícito do usuário.
-3. **Respeito aos Limites de Armazenamento**: Monitore o tamanho de caminhos para sistemas Windows (`MAX_PATH = 260`), garantindo que nenhum caminho gravado exceda o limite.
-4. **Isolamento de Testes**: Todos os testes da suíte `pytest` devem ser executáveis sem conexão ativa com a internet. Utilize mocks para simular chamadas de rede externas e garanta 100% de aprovação.
-5. **Atualização do Changelog**: Qualquer novo recurso, ajuste ou remediação deve ser formalmente documentado em `CHANGELOG.md` no padrão Keep a Changelog.
+```
+Você é um desenvolvedor especialista em Python. Construa uma ferramenta CLI multiplataforma (macOS/Linux/Windows) chamada "organizador-pdf" que processa lotes de PDFs acadêmicos e editoriais seguindo os padrões CNPq e ABNT:
+
+1. Amostragem Leve de Texto: Extraia até 10 primeiras e 10 últimas páginas usando PyMuPDF (sem OCR automático e sem converter o miolo do livro). Detecte páginas escaneadas (< 30 caracteres válidos) marcando PENDENTE_OCR.
+2. Classificação Documental e Taxonomia CNPq:
+   - Modo padrão 'jev_remoto': utiliza a API da TypeSafe AI / Jev enviando apenas amostra inicial de até 3.000 caracteres, com fail-fast caso a chave TYPESAFE_API_KEY ou typesafe-sdk estejam ausentes (sem fallback silencioso).
+   - Modo 'local': motor heurístico determinístico com parser de Ficha Catalográfica (CIP nos padrões AACR2 e ISBD) e colofão.
+   - Categorize o tipo documental (Livro, Artigo, Dissertação/Tese, Apostila, Relatório, etc.) e mapeie para a Tabela de Áreas do Conhecimento do CNPq (Grande Área e Subárea).
+3. Identificadores Matemáticos: Valide checksum de ISBN-10 (módulo 11 com conversão para ISBN-13), ISBN-13 (módulo 10), ISSN-8 (módulo 11 com 'X') e normalize DOIs.
+4. Busca e Enriquecimento Multi-API: Consulte progressivamente Brasil API / CBL, Crossref, DataCite, Google Books, OpenLibrary e OpenAlex, validando similaridade de título/autor antes de mesclar campos faltantes. Registre cache_hit e origem_resposta ("cache_disco" vs "rede_remota").
+5. Higienização Estrita de Títulos: Rejeite identificadores como títulos, descarte disclaimers universitários, créditos editoriais, números de página residuais e códigos CDD/CDU/Cutter. Distinga ano de edição de ano de reimpressão.
+6. Formatação ABNT NBR 6023:2018: Autores em caixa-alta, agnomes familiares (Filho, Júnior, Neto), sobrenomes compostos, notação [S. l.] e [s. n.] (sem mandar para quarentena) e omissão de ISBN na referência textual de livros.
+7. Arquivo Companion Markdown (.md): Gere um arquivo Markdown estritamente com YAML Frontmatter 2.0 e Referência Bibliográfica ABNT formatada. NÃO inclua o texto original nem seções de conteúdo do PDF.
+8. Nomenclatura e Organização CNPq:
+   - Nome do arquivo no padrão acadêmico: "SOBRENOME, Nome - Título (Ano).pdf" (e ".md"), com salvaguarda MAX_PATH do Windows (260 caracteres) e desduplicação (2), (3).
+   - Diretórios de destino organizados na hierarquia CNPq: "<DESTINO>/<Grande Área>/<Subárea>/<Plural do Tipo>/" (ou estrutura plana com --plana).
+   - Quarentena em "<DESTINO>/revisao_manual/<Tipo>/" acionada estritamente por incerteza real de identidade, tipologia duvidosa ou corrupção do arquivo.
+9. Rastreabilidade e Auditoria: Gere "<nome>.auditoria.json" por arquivo registrando fontes, tempos, scores e as 8 decisões bibliográficas independentes.
+10. CLI e Operação: Implemente com Typer e Rich suportando --origem, --destino, --estrutura (cnpq|plana), --classificador (remoto|local), --dry-run, --resume (estado atômico em ~/.organizador-pdf/estado.json), --paralelo (-j), --mover, --subpasta-md, --quarantine, --interactive e --verbose.
+11. Testes: Suíte completa com 301 testes pytest executáveis 100% offline via mocks.
+```
