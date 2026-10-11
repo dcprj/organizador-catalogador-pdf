@@ -1,8 +1,9 @@
-"""Ponto de entrada da CLI."""
+"""Ponto de entrada da CLI (organizador-pdf)."""
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -23,7 +24,7 @@ from rich.table import Table
 from rich.tree import Tree
 
 from . import __version__
-from .config import Config, ErroDeConfiguracao, Provedor
+from .config import Config, ErroDeConfiguracao
 from .converter import ErroDeConversao, listar_pdfs
 from .estado import EstadoDeExecucao, ParametrosSalvos
 from .extractor import ErroFatalDeAPI
@@ -36,8 +37,8 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
     help=(
-        "Converte PDFs em Markdown, extrai metadados bibliográficos com um LLM "
-        "e organiza os arquivos em <DESTINO>/<AREA>/<SUBAREA>/<TIPO>/."
+        "Organizador e Catalogador de PDFs determinístico com ABNT NBR 6023, "
+        "extração de Ficha Catalográfica (CIP), enriquecimento em APIs públicas e Markdown companion."
     ),
 )
 
@@ -55,6 +56,7 @@ def processar(
     origem: Optional[Path] = typer.Option(
         None,
         "--origem",
+        "--input",
         "-i",
         help="Diretório contendo os PDFs a processar. Obrigatório, exceto com --resume.",
         exists=True,
@@ -65,6 +67,7 @@ def processar(
     destino: Optional[Path] = typer.Option(
         None,
         "--destino",
+        "--output",
         "-o",
         help="Diretório raiz onde os arquivos organizados serão salvos. Obrigatório, exceto com --resume.",
         file_okay=False,
@@ -80,17 +83,14 @@ def processar(
         "--resume",
         help=(
             "Retoma o último lote interrompido: reaplica os parâmetros da "
-            "execução anterior (exceto --apikey/--apikey-fallback, nunca "
-            "persistidas) e pula os arquivos já concluídos, com sucesso ou "
-            "falha. Demais opções desta chamada são ignoradas. Sem short "
-            "flag: -r já é --recursive."
+            "execução anterior e pula os arquivos já concluídos."
         ),
     ),
     recursive: bool = typer.Option(
         True,
         "--recursive/--no-recursive",
         "-r/-R",
-        help="Buscar PDFs também nas subpastas da origem.",
+        help="Buscar PDFs também nas subpastas da origem (padrão: ligado).",
     ),
     mover: bool = typer.Option(
         False,
@@ -102,219 +102,258 @@ def processar(
         "--subpasta-md",
         help="Grava os .md em uma subpasta espelho (ex.: 'Markdown').",
     ),
-    modelo: Optional[str] = typer.Option(
-        None,
-        "--modelo",
-        "-m",
-        help=(
-            "Modelo do Ollama a usar; tem precedência sobre ORGPDF_MODELO. "
-            "Precisa já estar baixado (`ollama pull <modelo>`)."
-        ),
-    ),
-    ollama_url: Optional[str] = typer.Option(
-        None,
-        "--ollama-url",
-        help="Endereço do servidor Ollama. Padrão: http://localhost:11434.",
-    ),
-    provedor: Optional[Provedor] = typer.Option(
-        None,
-        "--provedor",
-        "-p",
-        help=(
-            "Provedor do LLM. Padrão: ollama (local, grátis, privado). Os "
-            "demais são pagos, opcionais, e exigem --apikey."
-        ),
-    ),
-    api_key: Optional[str] = typer.Option(
-        None,
-        "--apikey",
-        "-k",
-        help=(
-            "Chave de API do provedor pago escolhido (ignorada com --provedor "
-            "ollama). Em máquina compartilhada, prefira ORGPDF_<PROVEDOR>_API_KEY "
-            "no .env em vez desta flag — ela fica visível no histórico do shell "
-            "e na lista de processos."
-        ),
-    ),
-    provedor_fallback: Optional[Provedor] = typer.Option(
-        None,
-        "--provedor-fallback",
-        help=(
-            "Provedor pago acionado só quando a extração do --provedor principal "
-            "falhar ou sair com aviso de divergência. Desligado por padrão — "
-            "nenhuma chamada extra é feita sem isto. Exige --modelo-fallback e "
-            "uma chave de API (mesmas variáveis ORGPDF_<PROVEDOR>_API_KEY)."
-        ),
-    ),
-    modelo_fallback: Optional[str] = typer.Option(
-        None,
-        "--modelo-fallback",
-        help="Modelo do provedor de fallback. Obrigatório se --provedor-fallback for usado.",
-    ),
-    api_key_fallback: Optional[str] = typer.Option(
-        None,
-        "--apikey-fallback",
-        help="Chave de API do provedor de fallback (mesmas ressalvas de --apikey).",
-    ),
-    max_paginas: Optional[int] = typer.Option(
-        None,
-        "--max-paginas",
-        min=1,
-        help=(
-            "Quantas páginas iniciais do PDF são enviadas ao modelo. "
-            "Padrão: 6 (ou ORGPDF_MAX_PAGINAS)."
-        ),
-    ),
-    max_caracteres: Optional[int] = typer.Option(
-        None,
-        "--max-caracteres",
-        min=1,
-        help=(
-            "Teto de caracteres do trecho enviado ao modelo. "
-            "Padrão: 15000 (ou ORGPDF_MAX_CARACTERES)."
-        ),
-    ),
-    limite: Optional[int] = typer.Option(
-        None,
-        "--limite",
-        "-n",
-        min=1,
-        help="Processa no máximo N arquivos (útil para testar o custo do lote).",
+    quarantine: bool = typer.Option(
+        True,
+        "--quarantine/--no-quarantine",
+        help="Direciona arquivos com avisos de divergência ou baixa confiança para revisao_manual/ (padrão: ligado).",
     ),
     paralelo: int = typer.Option(
         1,
         "--paralelo",
         "-j",
         min=1,
-        help=(
-            "Quantos arquivos processar em paralelo (threads). Padrão: 1 "
-            "(sequencial, como sempre foi). Só compensa com provedor pago "
-            "remoto — o Ollama local não ganha nada rodando em paralelo, "
-            "pode até piorar por disputa de CPU/RAM."
-        ),
+        max=32,
+        help="Número de arquivos processados simultaneamente (padrão: 1).",
+    ),
+    limite: Optional[int] = typer.Option(
+        None,
+        "--limite",
+        "-n",
+        min=1,
+        help="Processa no máximo N arquivos da fila (útil para testes rápidos).",
     ),
     arquivo_log: Path = typer.Option(
         Path("erros.log"),
         "--log",
-        help="Arquivo onde os erros são registrados.",
+        help="Arquivo onde falhas e avisos detalhados serão registrados.",
     ),
-    env_file: Optional[Path] = typer.Option(
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Exibe mensagens detalhadas no terminal.",
+    ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "--validate",
+        help="Executa em modo interativo de validação passo a passo com confirmação de metadados em tempo real.",
+    ),
+    estrutura: str = typer.Option(
+        "cnpq",
+        "--estrutura",
+        help="Estrutura de organização das pastas: 'cnpq' (hierárquica CNPq) ou 'plana' (por categoria).",
+    ),
+    plana: bool = typer.Option(
+        False,
+        "--plana",
+        help="Atalho para organização em pasta plana por categoria (<destino>/<tipo>/).",
+    ),
+    classificador: Optional[str] = typer.Option(
+        "remoto",
+        "--classificador",
+        help="Modo de classificação: 'remoto'/'jev_remoto' (padrão oficial: exclusivo TypeSafe remoto JEV) ou 'local' (apenas heurísticas determinísticas locais).",
+    ),
+    version: Optional[bool] = typer.Option(
         None,
-        "--env",
-        help="Caminho de um arquivo .env alternativo.",
-    ),
-    verboso: bool = typer.Option(False, "--verbose", "-v", help="Log detalhado."),
-    _: bool = typer.Option(
-        False, "--version", callback=_versao, is_eager=True, help="Mostra a versão."
+        "--version",
+        callback=_versao,
+        is_eager=True,
+        help="Exibe a versão do organizador-pdf e sai.",
     ),
 ) -> None:
-    """Processa em lote os PDFs de --origem e organiza em --destino."""
-    console_log = configurar_logs(arquivo_log, verboso=verboso)
+    """Executa a catalogação e organização do lote de PDFs."""
+    configurar_logs(arquivo_log=arquivo_log, verbose=verbose)
+    config = Config.do_ambiente(classificador=classificador)
+    enriquecimento_online = config.verificar_online
 
+    if plana:
+        estrutura = "plana"
+
+    if estrutura not in ("cnpq", "plana"):
+        saida.print(f"[bold red]Opção de estrutura inválida: '{estrutura}'. As opções permitidas são 'cnpq' ou 'plana'.[/]")
+        raise typer.Exit(code=2)
+
+    if interactive:
+        if origem is None or destino is None:
+            saida.print("[bold red]--origem e --destino são obrigatórios para o modo interativo.[/]")
+            raise typer.Exit(code=2)
+        from .interactive_validator import run_interactive_validator
+        cod = run_interactive_validator(
+            input_dir=str(origem.resolve()),
+            output_dir=str(destino.resolve()),
+            interactive=True,
+            move_original=mover,
+            verificar_online=config.verificar_online,
+            max_paginas=config.max_paginas,
+            max_caracteres=config.max_caracteres,
+            estrutura=estrutura,
+            quarantine=quarantine,
+            subpasta_markdown=subpasta_markdown,
+            dry_run=dry_run,
+            classificador=config.classificador,
+        )
+        raise typer.Exit(code=cod)
+
+    # 1. Trata o --resume
     estado: Optional[EstadoDeExecucao] = None
     if resume:
         estado = EstadoDeExecucao.carregar()
         if estado is None:
+            saida.print("[bold red]Nenhuma execução pendente para retomar com --resume.[/]")
+            raise typer.Exit(code=2)
+        origem = Path(estado.parametros.origem)
+        destino = Path(estado.parametros.destino)
+        dry_run = estado.parametros.dry_run
+        recursive = estado.parametros.recursive
+        mover = estado.parametros.mover
+        subpasta_markdown = estado.parametros.subpasta_markdown
+        paralelo = estado.parametros.paralelo or paralelo
+        quarantine = getattr(estado.parametros, "quarantine", quarantine)
+        enriquecimento_online = getattr(estado.parametros, "enriquecimento_online", enriquecimento_online)
+        estrutura = getattr(estado.parametros, "estrutura", "cnpq")
+    else:
+        if plana:
+            estrutura = "plana"
+        if origem is None or destino is None:
+            saida.print("[bold red]--origem e --destino são obrigatórios (ou use --resume).[/]")
+            raise typer.Exit(code=2)
+
+        orig_res = origem.resolve()
+        dest_res = destino.resolve()
+        if orig_res == dest_res:
+            saida.print("[bold red]O diretório de destino não pode ser idêntico ao diretório de origem.[/]")
+            raise typer.Exit(code=2)
+        if recursive and (orig_res in dest_res.parents):
             saida.print(
-                "[bold red]Erro:[/] nenhuma execução pendente para retomar "
-                "(nenhum lote interrompido registrado)."
+                "[bold red]Conflito de diretórios: o diretório de destino não pode estar dentro da origem quando a busca recursiva (-r) está ativada, pois causaria um loop de varredura.[/]"
             )
             raise typer.Exit(code=2)
-        p = estado.parametros
-        origem = Path(p.origem)
-        destino = Path(p.destino)
-        dry_run = p.dry_run
-        recursive = p.recursive
-        mover = p.mover
-        subpasta_markdown = p.subpasta_markdown
-        modelo = p.modelo
-        ollama_url = p.ollama_url
-        provedor = Provedor(p.provedor) if p.provedor else None
-        provedor_fallback = Provedor(p.provedor_fallback) if p.provedor_fallback else None
-        modelo_fallback = p.modelo_fallback
-        saida.print(
-            f"[cyan]Retomando lote anterior ({len(estado.concluidos)} arquivo(s) "
-            f"já concluído(s)): {origem} → {destino}[/]"
-        )
-    elif origem is None or destino is None:
-        saida.print(
-            "[bold red]Erro:[/] --origem e --destino são obrigatórios (ou use --resume)."
-        )
+
+        if not dry_run:
+            estado = EstadoDeExecucao(
+                parametros=ParametrosSalvos(
+                    origem=str(orig_res),
+                    destino=str(dest_res),
+                    dry_run=dry_run,
+                    recursive=recursive,
+                    mover=mover,
+                    subpasta_markdown=subpasta_markdown,
+                    paralelo=paralelo,
+                    quarantine=quarantine,
+                    enriquecimento_online=enriquecimento_online,
+                    estrutura=estrutura,
+                    max_paginas=config.max_paginas,
+                    max_caracteres=config.max_caracteres,
+                )
+            )
+
+    # 2. Lista os PDFs
+    try:
+        todos_pdfs = listar_pdfs(origem, recursivo=recursive)
+    except ErroDeConversao as exc:
+        saida.print(f"[bold red]{exc}[/]")
         raise typer.Exit(code=2)
 
-    try:
-        config = Config.do_ambiente(
-            env_file,
-            modelo=modelo,
-            ollama_url=ollama_url,
-            provedor=provedor.value if provedor else None,
-            api_key=api_key,
-            provedor_fallback=provedor_fallback.value if provedor_fallback else None,
-            modelo_fallback=modelo_fallback,
-            api_key_fallback=api_key_fallback,
-            max_paginas=max_paginas,
-            max_caracteres=max_caracteres,
-        )
-    except ErroDeConfiguracao as exc:
-        saida.print(f"[bold red]Erro de configuração:[/] {exc}")
-        raise typer.Exit(code=2) from exc
+    if not todos_pdfs:
+        saida.print(f"[yellow]Nenhum arquivo PDF encontrado em {origem.resolve()}[/]")
+        raise typer.Exit(code=0)
 
-    try:
-        pdfs = listar_pdfs(origem, recursivo=recursive)
-    except ErroDeConversao as exc:
-        saida.print(f"[bold red]Erro:[/] {exc}")
-        raise typer.Exit(code=2) from exc
-
-    if estado is not None and estado.concluidos:
-        pdfs = [p for p in pdfs if str(p.resolve()) not in estado.concluidos]
-
-    if not pdfs:
-        if resume:
-            saida.print("[green]Nada a retomar — todos os arquivos já haviam sido processados.[/]")
-            EstadoDeExecucao.limpar()
-            raise typer.Exit(code=0)
-        saida.print(f"[yellow]Nenhum PDF encontrado em {origem}.[/]")
-        raise typer.Exit(code=1)
+    # Filtra os já concluídos com sucesso com --resume
+    if estado is not None and resume:
+        sucessos_anteriores = estado.sucessos
+        falhas_anteriores = set(estado.falhas.keys())
+        pdfs = [p for p in todos_pdfs if str(p.resolve()) not in sucessos_anteriores]
+        pulados = len(todos_pdfs) - len(pdfs)
+        if pulados:
+            saida.print(f"[dim]{pulados} arquivo(s) pulado(s) pois já foram concluídos com sucesso.[/]")
+        retentados = sum(1 for p in pdfs if str(p.resolve()) in falhas_anteriores)
+        if retentados:
+            saida.print(f"[yellow]{retentados} arquivo(s) com falha anterior serão retentados.[/]")
+    else:
+        pdfs = todos_pdfs
 
     if limite:
         pdfs = pdfs[:limite]
 
-    # Rastreamento de progresso fica de fora do dry-run: é só uma prévia, não
-    # um lote real, então não faz sentido retomá-lo depois.
-    rastrear_estado = not dry_run
-    if rastrear_estado:
-        parametros_atuais = ParametrosSalvos(
-            origem=str(origem),
-            destino=str(destino),
-            dry_run=dry_run,
-            recursive=recursive,
-            mover=mover,
-            subpasta_markdown=subpasta_markdown,
-            modelo=modelo,
-            ollama_url=ollama_url,
-            provedor=provedor.value if provedor else None,
-            provedor_fallback=provedor_fallback.value if provedor_fallback else None,
-            modelo_fallback=modelo_fallback,
-        )
-        if estado is None:
-            estado = EstadoDeExecucao(parametros=parametros_atuais)
-        else:
-            estado.parametros = parametros_atuais
-        estado.salvar()
+    if not pdfs:
+        saida.print("[green]Todos os arquivos já foram concluídos com sucesso.[/]")
+        if estado is not None:
+            EstadoDeExecucao.limpar()
+        raise typer.Exit(code=0)
 
-    _cabecalho(config, origem, destino, pdfs, dry_run=dry_run, mover=mover, paralelo=paralelo)
+    # 3. Cabeçalho de Execução
+    _cabecalho(
+        origem=origem,
+        destino=destino,
+        pdfs=pdfs,
+        dry_run=dry_run,
+        mover=mover,
+        paralelo=paralelo,
+        estrutura=estrutura,
+        quarantine=quarantine,
+        enriquecimento_online=enriquecimento_online,
+        classificador=config.classificador,
+        max_paginas=getattr(config, "max_paginas", 10),
+        max_caracteres=getattr(config, "max_caracteres", 30000),
+    )
 
     opcoes = OpcoesDoPipeline(
         destino=destino,
         dry_run=dry_run,
         mover=mover,
         subpasta_markdown=subpasta_markdown,
+        quarantine=quarantine,
+        enriquecimento_online=enriquecimento_online,
+        estrutura=estrutura,
+    )
+    pipeline = Pipeline(config=config, opcoes=opcoes)
+
+    # 4. Processamento com barra de progresso
+    resultados_dict, interrompido = _executar_lote(
+        pdfs,
+        pipeline=pipeline,
+        estado=estado if not dry_run else None,
+        paralelo=paralelo,
     )
 
-    pipeline = Pipeline(config, opcoes)
+    # Mantém a ordem original da lista
+    resultados = [resultados_dict[p] for p in pdfs if p in resultados_dict]
 
-    resultados: list[ResultadoDoArquivo] = []
+    # 5. Relatório e Resumo
+    _relatorio(resultados, destino, dry_run=dry_run, arquivo_log=arquivo_log)
+
+    if interrompido:
+        saida.print(f"\n[bold yellow]Lote interrompido ({interrompido}). Use --resume para continuar.[/]")
+        raise typer.Exit(code=2)
+
+    if estado is not None and not dry_run:
+        todos_resolvidos = {str(p.resolve()) for p in todos_pdfs}
+        restantes = todos_resolvidos - estado.sucessos
+        if not restantes and not estado.falhas:
+            EstadoDeExecucao.limpar()
+        elif limite and restantes:
+            saida.print(
+                f"[dim]Lote parcial concluído ({len(resultados)} processados). "
+                f"Estado preservado para os {len(restantes)} restantes com --resume.[/]"
+            )
+
+    tem_falhas = any(not r.ok for r in resultados)
+    if tem_falhas:
+        raise typer.Exit(code=1)
+
+
+def _executar_lote(
+    pdfs: list[Path],
+    *,
+    pipeline: Pipeline,
+    estado: Optional[EstadoDeExecucao],
+    paralelo: int,
+) -> tuple[dict[Path, ResultadoDoArquivo], Optional[str]]:
+    resultados: dict[Path, ResultadoDoArquivo] = {}
     interrompido: Optional[str] = None
+    lock_estado = threading.Lock()
+    lock_progresso = threading.Lock()
 
     with Progress(
         SpinnerColumn(),
@@ -322,131 +361,61 @@ def processar(
         BarColumn(),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
-        console=console_log,
-        transient=True,
+        console=saida,
     ) as progresso:
-        tarefa = progresso.add_task("Processando PDFs", total=len(pdfs))
+        tarefa = progresso.add_task("Processando PDFs...", total=len(pdfs))
 
-        if paralelo <= 1:
-            for pdf in pdfs:
-                progresso.update(tarefa, description=f"Processando {pdf.name[:45]}")
-                try:
-                    resultados.append(pipeline.processar_arquivo(pdf))
-                except ErroFatalDeAPI as exc:
-                    # Vale para todos os arquivos; insistir só gastaria tempo.
-                    interrompido = str(exc)
-                    logger.error("Lote interrompido: %s", exc)
-                    break
-                except KeyboardInterrupt:
-                    interrompido = "interrompido pelo usuário"
-                    break
-                if rastrear_estado:
-                    # Sucesso e falha definitiva contam como concluído — só o
-                    # arquivo em andamento no momento de uma interrupção fica
-                    # de fora, para ser retomado depois com --resume.
-                    estado.marcar_concluido(pdf)
-                progresso.advance(tarefa)
-        else:
-            progresso.update(
-                tarefa, description=f"Processando (até {paralelo} em paralelo)"
-            )
-            resultados_por_pdf, interrompido = _processar_em_paralelo(
-                pipeline,
-                pdfs,
-                paralelo=paralelo,
-                progresso=progresso,
-                tarefa=tarefa,
-                estado=estado if rastrear_estado else None,
-            )
-            # Ordem de conclusão em paralelo não é a ordem original da lista
-            # — reordena pra o relatório final sair determinístico.
-            resultados = [resultados_por_pdf[pdf] for pdf in pdfs if pdf in resultados_por_pdf]
+        with ThreadPoolExecutor(max_workers=paralelo) as executor:
+            fila = list(pdfs)
+            em_andamento = {}
 
-    if rastrear_estado and not interrompido:
-        EstadoDeExecucao.limpar()
+            def submeter_proximo():
+                if fila and interrompido is None:
+                    pdf = fila.pop(0)
+                    em_andamento[executor.submit(pipeline.processar_arquivo, pdf)] = pdf
 
-    _relatorio(resultados, destino, dry_run=dry_run, arquivo_log=arquivo_log)
+            for _ in range(min(paralelo, len(fila))):
+                submeter_proximo()
 
-    if interrompido:
-        restantes = len(pdfs) - len(resultados)
-        saida.print(
-            f"\n[bold red]Lote interrompido:[/] {interrompido}\n"
-            f"{restantes} arquivo(s) não chegaram a ser processados."
-        )
-        raise typer.Exit(code=2)
-
-    houve_falha = any(not r.ok for r in resultados)
-    raise typer.Exit(code=1 if houve_falha else 0)
-
-
-def _processar_em_paralelo(
-    pipeline: Pipeline,
-    pdfs: list[Path],
-    *,
-    paralelo: int,
-    progresso: Progress,
-    tarefa: Any,  # rich.progress.TaskID
-    estado: Optional[EstadoDeExecucao],
-) -> tuple[dict[Path, ResultadoDoArquivo], Optional[str]]:
-    """Processa vários arquivos ao mesmo tempo, no máximo `paralelo` em voo.
-
-    Janela deslizante (não "manda tudo de uma vez"): cada conclusão libera
-    espaço pra puxar o próximo da fila. Isso importa pra `ErroFatalDeAPI` —
-    ao detectá-lo, para de puxar trabalho novo imediatamente, então no
-    máximo `paralelo - 1` chamadas extras (as que já estavam em voo)
-    terminam, não o lote inteiro.
-    """
-    resultados: dict[Path, ResultadoDoArquivo] = {}
-    interrompido: Optional[str] = None
-    lock_estado = threading.Lock()
-    lock_progresso = threading.Lock()
-    fila = list(pdfs)
-    em_andamento: dict[Any, Path] = {}
-
-    with ThreadPoolExecutor(max_workers=paralelo) as executor:
-
-        def submeter_proximo() -> None:
-            if fila:
-                pdf = fila.pop(0)
-                em_andamento[executor.submit(pipeline.processar_arquivo, pdf)] = pdf
-
-        for _ in range(min(paralelo, len(fila))):
-            submeter_proximo()
-
-        try:
-            while em_andamento:
-                concluidos = wait(list(em_andamento.keys()), return_when=FIRST_COMPLETED).done
-                for futuro in concluidos:
-                    pdf = em_andamento.pop(futuro)
-                    try:
-                        resultado = futuro.result()
-                    except ErroFatalDeAPI as exc:
+            try:
+                while em_andamento:
+                    concluidos = wait(list(em_andamento.keys()), return_when=FIRST_COMPLETED).done
+                    for futuro in concluidos:
+                        pdf = em_andamento.pop(futuro)
+                        try:
+                            resultado = futuro.result()
+                        except ErroFatalDeAPI as exc:
+                            if interrompido is None:
+                                interrompido = str(exc)
+                                logger.error("Lote interrompido: %s", exc)
+                            continue
+                        except Exception as exc:
+                            logger.error("Erro fatal no arquivo %s: %s", pdf.name, exc)
+                            resultado = ResultadoDoArquivo(
+                                origem=pdf,
+                                situacao=Situacao.FALHA,
+                                erro=str(exc),
+                                etapa="execução de thread",
+                            )
+                        resultados[pdf] = resultado
+                        if estado is not None:
+                            with lock_estado:
+                                if resultado.ok:
+                                    estado.marcar_sucesso(pdf)
+                                else:
+                                    estado.marcar_falha(pdf, resultado.erro or "Falha no processamento")
+                        with lock_progresso:
+                            progresso.advance(tarefa)
                         if interrompido is None:
-                            interrompido = str(exc)
-                            logger.error("Lote interrompido: %s", exc)
-                        continue
-                    resultados[pdf] = resultado
-                    if estado is not None:
-                        with lock_estado:
-                            estado.marcar_concluido(pdf)
-                    with lock_progresso:
-                        progresso.advance(tarefa)
-                    if interrompido is None:
-                        submeter_proximo()
-        except KeyboardInterrupt:
-            if interrompido is None:
-                interrompido = "interrompido pelo usuário"
-            # Não recolhe os futuros ainda em voo — não dá pra abortar uma
-            # requisição HTTP já em andamento. O `with` acima aguarda eles
-            # terminarem antes de sair, mas nenhum outro é iniciado; o que
-            # não chegar a ser coletado aqui fica de fora de `resultados` e
-            # `estado`, então --resume os retoma depois.
+                            submeter_proximo()
+            except KeyboardInterrupt:
+                if interrompido is None:
+                    interrompido = "interrompido pelo usuário"
 
     return resultados, interrompido
 
 
 def _cabecalho(
-    config: Config,
     origem: Path,
     destino: Path,
     pdfs: list[Path],
@@ -454,33 +423,66 @@ def _cabecalho(
     dry_run: bool,
     mover: bool,
     paralelo: int = 1,
+    estrutura: str = "cnpq",
+    quarantine: bool = True,
+    enriquecimento_online: bool = True,
+    classificador: Optional[str] = "jev_remoto",
+    max_paginas: int = 10,
+    max_caracteres: int = 30000,
 ) -> None:
-    if config.provedor is Provedor.OLLAMA:
-        linha_modelo = f"[bold]Modelo:[/]  {config.modelo}  [dim](Ollama em {config.ollama_url})[/]"
+    modo_cls = (classificador or "jev_remoto").strip().lower()
+    has_typesafe = bool(os.getenv("TYPESAFE_API_KEY"))
+    sdk_installed = False
+    try:
+        import typesafe_sdk  # noqa: F401
+        sdk_installed = True
+    except Exception:
+        pass
+
+    if modo_cls in ("remoto", "jev_remoto"):
+        classificador_desc = "JEV remoto — TypeSafe AI (modo exclusivo padrão; fallback local desativado)"
+        transmissao_jev_desc = "[bold cyan]Ativa[/] (amostra textual até 3.000 caracteres via TypeSafe AI)"
+    elif modo_cls == "local":
+        classificador_desc = "JEV local — Heurísticas determinísticas calibradas (zero rede)"
+        transmissao_jev_desc = "[bold green]Inativa[/] (execução 100% local, zero dados transmitidos)"
     else:
-        linha_modelo = (
-            f"[bold]Modelo:[/]  {config.modelo}  "
-            f"[dim](provedor pago: {config.provedor.value})[/]"
-        )
+        classificador_desc = f"JEV ({classificador})"
+        transmissao_jev_desc = "[bold cyan]Ativa[/]"
+
+    if enriquecimento_online:
+        bibliografia_desc = "[bold cyan]Ativas[/] (Brasil API, Google Books, Crossref, OpenAlex — apenas metadados/IDs)"
+    else:
+        bibliografia_desc = "[dim]Desativadas[/] (zero consultas a bases externas)"
+
+    if modo_cls == "local" and not enriquecimento_online:
+        rede_geral = "[bold green]100% Offline (Zero Tráfego de Rede)[/]"
+    elif modo_cls in ("remoto", "jev_remoto") and not enriquecimento_online:
+        rede_geral = "[bold yellow]Classificação Remota JEV Ativa / Consultas Bibliográficas Desativadas[/]"
+    elif enriquecimento_online and modo_cls == "local":
+        rede_geral = "[bold yellow]Classificação Local (Zero Envio do PDF) / Consultas Bibliográficas Ativas[/]"
+    else:
+        rede_geral = "[bold cyan]Online (Classificação JEV e Consultas Bibliográficas)[/]"
+
+    quarentena_desc = (
+        "Ativa (documentos de baixa confiança ou divergência vão para revisao_manual/)"
+        if quarantine
+        else "Desativada"
+    )
     linhas = [
-        f"[bold]Origem:[/]  {origem.resolve()}",
-        f"[bold]Destino:[/] {destino.resolve()}",
-        f"[bold]PDFs:[/]    {len(pdfs)}",
-        linha_modelo,
-    ]
-    if config.provedor_fallback is not None:
-        linhas.append(
-            f"[bold]Fallback:[/] {config.modelo_fallback}  "
-            f"[dim](provedor pago: {config.provedor_fallback.value}, só se houver "
-            "falha/aviso)[/]"
-        )
-    linhas += [
-        f"[bold]Análise:[/] {config.max_paginas} primeiras páginas "
-        f"(até {config.max_caracteres} caracteres)",
-        f"[bold]Modo:[/]    " + ("mover" if mover else "copiar"),
+        f"[bold]Origem:[/]            {origem.resolve()}",
+        f"[bold]Destino:[/]           {destino.resolve()}",
+        f"[bold]PDFs:[/]              {len(pdfs)}",
+        f"[bold]Classificador:[/]     {classificador_desc}",
+        f"[bold]Transmissão JEV:[/]   {transmissao_jev_desc}",
+        f"[bold]Bases Bibliog.:[/]    {bibliografia_desc}",
+        f"[bold]Rede / Tráfego:[/]    {rede_geral}",
+        f"[bold]Análise:[/]           {max_paginas} primeiras + {max_paginas} últimas páginas (até {max_caracteres:,} caracteres)",
+        f"[bold]Quarentena:[/]        {quarentena_desc}",
+        f"[bold]Estrutura:[/]         " + ("Plana por categoria (<destino>/<tipo>/)" if estrutura == "plana" else "Hierárquica CNPq (<destino>/<Área>/<Subárea>/<Tipo>/)"),
+        f"[bold]Modo:[/]              " + ("mover" if mover else "copiar"),
     ]
     if paralelo > 1:
-        linhas.append(f"[bold]Paralelo:[/] até {paralelo} arquivo(s) simultâneos")
+        linhas.append(f"[bold]Paralelo:[/]          até {paralelo} arquivo(s) simultâneos")
     if dry_run:
         linhas.append("[bold yellow]DRY-RUN — nenhum arquivo será gravado.[/]")
     saida.print(Panel("\n".join(linhas), title="Organizador de PDF", expand=False))
@@ -494,12 +496,17 @@ def _relatorio(
     arquivo_log: Path,
 ) -> None:
     sucessos = [r for r in resultados if r.ok]
-    falhas = [r for r in resultados if not r.ok]
+    pendentes_ocr = [
+        r for r in resultados
+        if r.situacao is Situacao.PENDENTE_OCR or r.requer_ocr
+    ]
+    falhas = [
+        r for r in resultados
+        if not r.ok and r not in pendentes_ocr
+    ]
 
     if sucessos:
-        titulo = (
-            "Estrutura planejada (dry-run)" if dry_run else "Arquivos organizados"
-        )
+        titulo = "Estrutura planejada (dry-run)" if dry_run else "Arquivos organizados"
         saida.print()
         saida.print(_arvore(sucessos, destino, titulo))
 
@@ -512,7 +519,7 @@ def _relatorio(
         tabela.add_column("Ano", justify="right", max_width=5)
         for resultado in sucessos:
             m = resultado.metadados
-            assert m is not None  # garantido quando a situação não é FALHA
+            assert m is not None
             marcador = "[bold yellow]![/]" if resultado.aviso else ""
             if resultado.usou_fallback:
                 marcador += "[bold cyan]$[/]"
@@ -532,7 +539,7 @@ def _relatorio(
     avisos = [r for r in sucessos if r.aviso]
     if avisos:
         tabela_avisos = Table(
-            title="! Possíveis divergências — confira manualmente",
+            title="! Alertas e Revisão Manual",
             show_lines=False,
             expand=True,
             border_style="yellow",
@@ -544,8 +551,25 @@ def _relatorio(
         saida.print()
         saida.print(tabela_avisos)
 
+    if pendentes_ocr:
+        tabela_escaneados = Table(
+            title="📄 PDFs Digitalizados / Pendentes de OCR (Sem texto nativo)",
+            show_lines=False,
+            expand=True,
+            border_style="magenta",
+        )
+        tabela_escaneados.add_column("Arquivo", overflow="ellipsis", max_width=34)
+        tabela_escaneados.add_column("Diagnóstico e Ação Recomendada", overflow="fold")
+        for resultado in pendentes_ocr:
+            tabela_escaneados.add_row(
+                resultado.origem.name,
+                resultado.erro or "Documento digitalizado sem texto nativo extraível. Execute OCR prévio (ex: ocrmypdf) antes de catalogar.",
+            )
+        saida.print()
+        saida.print(tabela_escaneados)
+
     if falhas:
-        tabela_erros = Table(title="Falhas", show_lines=False, expand=True)
+        tabela_erros = Table(title="Falhas Técnicas de Processamento", show_lines=False, expand=True)
         tabela_erros.add_column("Arquivo", overflow="ellipsis", max_width=34)
         tabela_erros.add_column("Etapa", max_width=22)
         tabela_erros.add_column("Erro", overflow="fold")
@@ -558,30 +582,40 @@ def _relatorio(
 
     simulados = sum(1 for r in resultados if r.situacao is Situacao.SIMULADO)
     gravados = sum(1 for r in resultados if r.situacao is Situacao.SUCESSO)
-    resumo = (
-        f"[green]{gravados} gravado(s)[/] · "
-        f"[cyan]{simulados} simulado(s)[/] · "
-        f"[red]{len(falhas)} falha(s)[/] · {len(resultados)} total"
-    )
+    partes_resumo = [
+        f"[green]{gravados} gravado(s)[/]",
+        f"[cyan]{simulados} simulado(s)[/]",
+    ]
+    if pendentes_ocr:
+        partes_resumo.append(f"[magenta]{len(pendentes_ocr)} pendente(s) de OCR[/]")
+    partes_resumo.append(f"[red]{len(falhas)} falha(s) técnica(s)[/]")
+    partes_resumo.append(f"{len(resultados)} total")
+    resumo = " · ".join(partes_resumo)
+
     if sucessos:
-        locais = sum(1 for r in sucessos if r.provedor_usado == Provedor.OLLAMA.value)
-        pagos = len(sucessos) - locais
-        resumo += f"\n[dim]{locais} extraído(s) localmente (Ollama) · {pagos} via provedor pago[/]"
+        typesafe_count = sum(1 for r in sucessos if getattr(r, "provedor_usado", "") in ("typesafe", "jev_remoto"))
+        locais = len(sucessos) - typesafe_count
+        if typesafe_count == len(sucessos):
+            resumo += f"\n[dim]{typesafe_count} classificado(s) via JEV remoto (TypeSafe AI; fallback local desativado)[/]"
+        elif typesafe_count > 0:
+            resumo += f"\n[dim]{locais} classificado(s) localmente (Jev System One) · {typesafe_count} via TypeSafe AI[/]"
+        else:
+            resumo += f"\n[dim]{len(sucessos)} classificado(s) pelo motor determinístico local (Jev System One)[/]"
     if avisos:
-        resumo += f"\n[yellow]{len(avisos)} com possível divergência — revise antes de confiar cegamente[/]"
-    if falhas or avisos:
+        resumo += f"\n[yellow]{len(avisos)} com possível divergência/revisão manual[/]"
+    if falhas or avisos or pendentes_ocr:
         resumo += f"\nDetalhes em: {arquivo_log.resolve()}"
     saida.print()
     saida.print(Panel(resumo, title="Resumo", expand=False))
 
 
 def _arvore(sucessos: list[ResultadoDoArquivo], destino: Path, titulo: str) -> Tree:
-    """Monta a visualização em árvore dos caminhos de destino."""
     raiz = Tree(f"[bold]{titulo}[/] — {destino.resolve()}")
     nos: dict[Path, Tree] = {}
 
     for resultado in sorted(sucessos, key=lambda r: str(r.pdf_destino)):
-        assert resultado.pdf_destino is not None
+        if resultado.pdf_destino is None:
+            continue
         try:
             relativo = resultado.pdf_destino.parent.relative_to(destino)
         except ValueError:

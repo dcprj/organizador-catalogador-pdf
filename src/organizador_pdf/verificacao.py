@@ -82,18 +82,32 @@ def verificar_identificadores(
     batem, `metadados` pode vir com `editora_ou_periodico`/`ano`/`local`
     preenchidos a partir da API, se estavam nulos (nunca sobrescreve valor
     já existente).
+
+    Pula re-verificações redundantes se `metadados.source_apis` já contiver confirmação
+    autoritativa de APIs para o identificador correspondente.
     """
+    fontes = getattr(metadados, "source_apis", [])
+    ja_verificou_doi = any("(DOI)" in s for s in fontes)
+    ja_verificou_isbn = any("(ISBN)" in s for s in fontes)
+
+    doi = metadados.identificadores.doi
+    isbn = metadados.identificadores.isbn
+
+    precisa_verificar_doi = bool(doi and not ja_verificou_doi)
+    precisa_verificar_isbn = bool(isbn and not ja_verificou_isbn)
+
+    if not precisa_verificar_doi and not precisa_verificar_isbn:
+        return metadados, None
+
     fechar = cliente is None
     cliente = cliente or httpx.Client(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT})
     try:
-        doi = metadados.identificadores.doi
-        if doi:
+        if precisa_verificar_doi and doi:
             metadados, aviso = _verificar_doi(cliente, doi, metadados)
             if aviso:
                 return metadados, aviso
 
-        isbn = metadados.identificadores.isbn
-        if isbn:
+        if precisa_verificar_isbn and isbn:
             metadados, aviso = _verificar_isbn(cliente, isbn, metadados)
             if aviso:
                 return metadados, aviso
@@ -128,19 +142,53 @@ def _verificar_doi(
         # só significa que não dá para verificar.
         return metadados, None
 
+def _comparar_com_metadados(metadados: Metadados, titulo_real: str, autores_reais: str) -> tuple[bool, bool]:
+    """Retorna (compativel, tem_evidencia_comparavel)."""
+    from .metadata_api import is_title_relevant, is_author_compatible
+    titulo_cand = metadados.titulo or ""
+    autores_cand = metadados.autores or ([metadados.autor_principal] if metadados.autor_principal else [])
+
+    titulo_match = is_title_relevant(titulo_cand, titulo_real) if (titulo_cand and titulo_real) else False
+    autor_match = is_author_compatible(autores_cand, [autores_reais]) if (autores_cand and autores_reais) else False
+
+    tem_evidencia = bool(titulo_real.strip() or autores_reais.strip())
+    # Compatível se o título confere; se o título na API for diferente, é divergência
+    if titulo_real.strip():
+        compativel = titulo_match
+    else:
+        compativel = autor_match
+    return compativel, tem_evidencia
+
+
+def _verificar_doi(
+    cliente: httpx.Client, doi: str, metadados: Metadados
+) -> tuple[Metadados, Optional[str]]:
+    # DOIs podem conter parênteses, `%` e outros caracteres que precisam de
+    # escape na URL — preserva a barra literal (separa prefixo/sufixo do DOI).
+    doi_escapado = quote(_normalizar_doi(doi), safe="/")
+    try:
+        resposta = cliente.get(CROSSREF_URL.format(doi=doi_escapado))
+    except httpx.HTTPError as exc:
+        logger.debug("Verificação de DOI indisponível (%s); seguindo sem ela.", exc)
+        return metadados, None
+
+    if resposta.status_code != 200:
+        # 404 (não indexado) ou qualquer outro erro: não é evidência de nada,
+        # só significa que não dá para verificar.
+        return metadados, None
+
     try:
         dados = resposta.json().get("message", {})
     except ValueError:
         return metadados, None
 
-    titulo_real = " ".join(dados.get("title") or [])
+    titulo_real = " ".join(dados.get("title") or []).strip()
     autores_reais = " ".join(
         f"{a.get('given', '')} {a.get('family', '')}".strip() for a in dados.get("author") or []
-    )
+    ).strip()
 
-    if not (
-        _bate(metadados.titulo, titulo_real) or _bate(metadados.autor_principal or "", autores_reais)
-    ):
+    compativel, tem_evidencia = _comparar_com_metadados(metadados, titulo_real, autores_reais)
+    if tem_evidencia and not compativel:
         return metadados, _mensagem_divergencia("DOI", doi, "Crossref", titulo_real, autores_reais)
 
     enriquecidos = _preencher_lacunas(
@@ -174,12 +222,11 @@ def _verificar_isbn(
     if not dados:
         return metadados, None  # não catalogado — cobertura incompleta, não é erro
 
-    titulo_real = dados.get("title", "")
-    autores_reais = " ".join(a.get("name", "") for a in dados.get("authors") or [])
+    titulo_real = (dados.get("title") or "").strip()
+    autores_reais = " ".join(a.get("name", "") for a in dados.get("authors") or []).strip()
 
-    if not (
-        _bate(metadados.titulo, titulo_real) or _bate(metadados.autor_principal or "", autores_reais)
-    ):
+    compativel, tem_evidencia = _comparar_com_metadados(metadados, titulo_real, autores_reais)
+    if tem_evidencia and not compativel:
         return metadados, _mensagem_divergencia(
             "ISBN", isbn, "Open Library", titulo_real, autores_reais
         )
@@ -225,19 +272,20 @@ def _ano_da_data_openlibrary(bruto: Optional[str]) -> Optional[int]:
 def _preencher_lacunas(
     metadados: Metadados, *, editora: str = "", ano: Optional[int] = None, local: str = ""
 ) -> Metadados:
-    """Preenche `editora_ou_periodico`/`ano`/`local` só onde já é `None`.
-
-    Nunca sobrescreve um valor que o LLM já extraiu — só completa o que
-    faltou, e só é chamada depois de confirmar (título/autor batendo) que o
-    identificador é da mesma obra.
-    """
+    """Preenche `editora_ou_periodico`/`ano`/`local` onde é None ou onde o valor atual é comprovadamente inválido/suspeito."""
+    from .classifier_jev import is_suspicious_city
     atualizacoes: dict[str, Any] = {}
     if not metadados.editora_ou_periodico and editora:
         atualizacoes["editora_ou_periodico"] = editora
-    if not metadados.ano and ano:
+
+    ano_invalido = bool(metadados.ano and metadados.ano < 1950 and metadados.identificadores.isbn)
+    if (not metadados.ano or ano_invalido) and ano and ano >= 1900:
         atualizacoes["ano"] = ano
-    if not metadados.local and local:
+
+    local_invalido = bool(metadados.local and is_suspicious_city(metadados.local, metadados.autores, metadados.titulo))
+    if (not metadados.local or local_invalido) and local and not is_suspicious_city(local):
         atualizacoes["local"] = local
+
     if not atualizacoes:
         return metadados
     return metadados.model_copy(update=atualizacoes)

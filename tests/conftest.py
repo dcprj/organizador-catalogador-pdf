@@ -1,10 +1,38 @@
+"""Shared Pytest fixtures and mock utilities."""
+
 from __future__ import annotations
 
 from pathlib import Path
-
 import pytest
+import pymupdf
 
 from organizador_pdf.models import Identificadores, Metadados, TipoPublicacao
+
+
+@pytest.fixture
+def sample_pdf_generator(tmp_path: Path):
+    """Factory fixture to generate synthetic PDFs with selectable native text."""
+    def _create_pdf(
+        filename: str,
+        title: str,
+        text_pages: list,
+        metadata: dict = None,
+    ) -> Path:
+        doc = pymupdf.open()
+        for idx, page_content in enumerate(text_pages, start=1):
+            page = doc.new_page()
+            rect = pymupdf.Rect(50, 50, 550, 750)
+            page.insert_textbox(rect, page_content, fontsize=12)
+
+        if metadata:
+            doc.set_metadata(metadata)
+
+        pdf_path = tmp_path / filename
+        doc.save(str(pdf_path))
+        doc.close()
+        return pdf_path
+
+    return _create_pdf
 
 
 @pytest.fixture
@@ -15,9 +43,6 @@ def metadados() -> Metadados:
         subarea="Logoterapia",
         titulo="Em Busca de Sentido",
         subtitulo="Um psicólogo no campo de concentração",
-        # Formato bibliográfico "Sobrenome, Nome" — o mesmo usado dentro de
-        # referencia_abnt, só sem o SOBRENOME em maiúsculas (regra só da
-        # referência formatada, não do campo de metadados).
         autores=["Frankl, Viktor E."],
         autor_principal="Frankl, Viktor E.",
         editora_ou_periodico="Vozes",
@@ -33,9 +58,7 @@ def metadados() -> Metadados:
 
 @pytest.fixture
 def pdf_de_teste(tmp_path: Path) -> Path:
-    """Gera um PDF real, com texto extraível, para os testes de ponta a ponta."""
-    pymupdf = pytest.importorskip("pymupdf")
-
+    """Gera um PDF real, com texto extraível, para testes."""
     caminho = tmp_path / "origem" / "documento.pdf"
     caminho.parent.mkdir(parents=True, exist_ok=True)
 

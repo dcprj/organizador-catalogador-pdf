@@ -55,7 +55,7 @@ def lote(tmp_path: Path) -> tuple[Path, Path, list[Path]]:
 
 
 def _resultado_sucesso(
-    caminho: Path, *, provedor_usado: str = "ollama", usou_fallback: bool = False
+    caminho: Path, *, provedor_usado: str = "deterministico_local", usou_fallback: bool = False
 ) -> ResultadoDoArquivo:
     return ResultadoDoArquivo(
         origem=caminho,
@@ -154,7 +154,7 @@ class TestInterrupcaoEResume:
         assert resultado.exit_code == 2
         assert "nenhuma execução pendente" in resultado.output.lower()
 
-    def test_falhas_definitivas_nao_sao_retentadas_no_resume(self, lote, monkeypatch):
+    def test_falhas_anteriores_sao_retentadas_no_resume(self, lote, monkeypatch):
         origem, destino, pdfs = lote
 
         def falso_processar(self, caminho: Path) -> ResultadoDoArquivo:
@@ -175,39 +175,64 @@ class TestInterrupcaoEResume:
         segunda = runner.invoke(app, ["--resume"])
 
         assert segunda.exit_code == 0, segunda.output
-        # pdfs[0] falhou definitivamente na 1a execução -> não é retentado
-        assert pdfs[0] not in vistos
-        assert sorted(vistos) == [pdfs[1], pdfs[2]]
+        # pdfs[0] falhou na 1a execução -> deve ser retentado no resume!
+        assert pdfs[0] in vistos
+        assert sorted(vistos) == pdfs
+
+    def test_limite_parcial_preserva_estado_para_resume(self, lote, monkeypatch):
+        origem, destino, pdfs = lote
+        monkeypatch.setattr(Pipeline, "processar_arquivo", lambda self, c: _resultado_sucesso(c))
+
+        # Executa apenas 1 dos 3 arquivos
+        primeira = runner.invoke(app, ["--origem", str(origem), "--destino", str(destino), "--limite", "1"])
+        assert primeira.exit_code == 0
+
+        # O estado NÃO deve ser apagado porque ainda restam 2 arquivos do lote original
+        assert estado_mod.CAMINHO_ESTADO.exists()
+
+        # Retoma o lote restante
+        vistos: list[Path] = []
+        monkeypatch.setattr(
+            Pipeline,
+            "processar_arquivo",
+            lambda self, c: (vistos.append(c), _resultado_sucesso(c))[1],
+        )
+        segunda = runner.invoke(app, ["--resume"])
+        assert segunda.exit_code == 0
+        assert len(vistos) == 2
+        # Agora sim o lote todo foi concluído com sucesso -> estado limpo
+        assert not estado_mod.CAMINHO_ESTADO.exists()
 
 
-class TestEstatisticaLocalVsPago:
-    def test_resumo_mostra_contagem_local_e_pago(self, lote, monkeypatch):
+class TestEstatisticaLocalVsTypeSafe:
+    def test_resumo_mostra_contagem_local_e_typesafe(self, lote, monkeypatch):
         origem, destino, pdfs = lote
 
         def falso_processar(self, caminho: Path) -> ResultadoDoArquivo:
             if caminho == pdfs[2]:
                 return _resultado_sucesso(
-                    caminho, provedor_usado="anthropic", usou_fallback=True
+                    caminho, provedor_usado="typesafe", usou_fallback=False
                 )
-            return _resultado_sucesso(caminho)
+            return _resultado_sucesso(caminho, provedor_usado="deterministico_local")
 
         monkeypatch.setattr(Pipeline, "processar_arquivo", falso_processar)
 
         resultado = runner.invoke(app, ["--origem", str(origem), "--destino", str(destino)])
 
         assert resultado.exit_code == 0, resultado.output
-        assert "2 extraído(s) localmente" in resultado.output
-        assert "1 via provedor pago" in resultado.output
-        # marcador informativo na linha do arquivo que usou fallback
-        assert "$ extraído pelo provedor de fallback" in resultado.output
+        assert "2 classificado(s) localmente (Jev System One)" in resultado.output
+        assert "1 via TypeSafe AI" in resultado.output
 
-    def test_sem_fallback_nenhum_marcador_de_fallback_aparece(self, lote, monkeypatch):
+    def test_sem_typesafe_mostra_apenas_motor_local(self, lote, monkeypatch):
         origem, destino, pdfs = lote
-        monkeypatch.setattr(Pipeline, "processar_arquivo", lambda self, c: _resultado_sucesso(c))
+        monkeypatch.setattr(
+            Pipeline,
+            "processar_arquivo",
+            lambda self, c: _resultado_sucesso(c, provedor_usado="deterministico_local"),
+        )
 
         resultado = runner.invoke(app, ["--origem", str(origem), "--destino", str(destino)])
 
         assert resultado.exit_code == 0, resultado.output
-        assert "3 extraído(s) localmente" in resultado.output
-        assert "0 via provedor pago" in resultado.output
-        assert "extraído pelo provedor de fallback" not in resultado.output
+        assert "3 classificado(s) pelo motor determinístico local (Jev System One)" in resultado.output
+        assert "via TypeSafe AI" not in resultado.output

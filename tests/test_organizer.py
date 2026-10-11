@@ -124,6 +124,11 @@ class TestMontarDiretorio:
         pdf, _ = montar_diretorio(tmp_path, metadados, revisao_manual=False)
         assert "revisao_manual" not in pdf.parts
 
+    def test_estrutura_plana(self, metadados: Metadados, tmp_path: Path):
+        pdf, md = montar_diretorio(tmp_path, metadados, estrutura="plana")
+        assert pdf == tmp_path / "livro"
+        assert md == pdf
+
 
 class TestGerarMarkdown:
     def test_frontmatter_valido_e_secoes(self, metadados: Metadados):
@@ -136,7 +141,8 @@ class TestGerarMarkdown:
         assert dados["titulo"] == "Em Busca de Sentido"
         assert dados["autores"] == ["Frankl, Viktor E."]
         assert dados["ano"] == 2019
-        assert dados["isbn"] == "978-85-326-0871-3"
+        assert dados["identificadores"]["isbn"] == "978-85-326-0871-3"
+        assert "isbn" not in dados
         assert dados["total_paginas"] == 10
         assert "area/psicologia" in dados["tags"]
 
@@ -256,6 +262,33 @@ class TestOrganizar:
         )
 
         assert not origem.exists()
+
+    def test_falha_na_escrita_de_markdown_mantem_pdf_na_origem(
+        self, metadados: Metadados, tmp_path: Path, monkeypatch
+    ):
+        origem = tmp_path / "entrada.pdf"
+        origem.write_bytes(b"%PDF-1.4 fake")
+        destino = tmp_path / "saida"
+
+        orig_write = Path.write_text
+
+        def falso_write(self, *args, **kwargs):
+            if ".tmp" in self.name:
+                raise OSError("Disco cheio")
+            return orig_write(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", falso_write)
+
+        with pytest.raises(ErroDeOrganizacao, match="Falha ao gravar Markdown"):
+            organizar(
+                metadados,
+                pdf_origem=origem,
+                destino=destino,
+                markdown="# md",
+                mover=True,
+            )
+
+        assert origem.exists()
 
     def test_colisao_mantem_pdf_e_md_pareados(self, metadados: Metadados, tmp_path: Path):
         destino = tmp_path / "saida"
