@@ -39,6 +39,7 @@ def format_single_author_abnt(author_name: str) -> str:
         clean,
         flags=re.IGNORECASE,
     ).strip()
+    clean = re.sub(r"(?i)\s+et\s+al\.?$", "", clean).strip()
     clean = clean.strip("\"'“”«»–- ")
 
     # If already in 'LASTNAME, Firstnames' format, validate uppercase
@@ -82,7 +83,7 @@ def format_authors_abnt(authors: List[str], papel: str = "autor") -> str:
 
     # Clean empty authors or placeholder tokens
     clean_authors = [
-        a.strip() for a in authors
+        re.sub(r"(?i)\s+et\s+al\.?$", "", a.strip()).strip() for a in authors
         if a.strip() and not re.search(r"^(?:et\s+al\.?|\[et\s+al\.?\]|\.\.\.|organizad|coord|organiza[çc][aã]o)", a.strip(), re.I)
     ]
     if not clean_authors:

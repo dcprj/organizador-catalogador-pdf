@@ -1,8 +1,8 @@
 # Organizador e Catalogador Inteligente de PDFs — Especificação e Fonte Única da Verdade
 
 > **Documento Mestre Definitivo do Projeto**  
-> **Versão:** 0.4.2 (Motor de Alta Assertividade Bibliográfica baseado em ISBN, ISSN e DOI)  
-> **Status:** Produção / 100% Testado (309 testes automatizados aprovados)  
+> **Versão:** 0.4.3 (Robustez contra Ruído de Diagramação, Normalização Unicode e Autoridade Canônica Bibliográfica)  
+> **Status:** Produção / 100% Testado (313 testes automatizados aprovados)  
 > **Finalidade:** Servir como a Fonte Única da Verdade para documentação, manutenção e recriação integral do sistema.
 
 ---

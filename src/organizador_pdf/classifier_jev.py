@@ -256,6 +256,35 @@ IDENTIFIER_AS_TITLE_PATTERN = re.compile(
     re.I,
 )
 
+# Disclaimers de projetos de digitalização e crowdfunding
+DIGITIZATION_DISCLAIMER_PATTERNS = [
+    re.compile(r"\b(?:voc[êe]\s+pode\s+ajudar|contribuindo\s+de\s+v[áa]rias\s+maneiras|ajude\s+(?:o|a|nosso)|colabore\s+com|apoie\s+(?:o|a|nosso)|doa[çc][õo]es?|crowdfunding)\b", re.I),
+    re.compile(r"\b(?:podendo\s+ajudar|pagar\s+custo|custos?\s+de\s+(?:servidor|hospedagem)|manuten[çc][ãa]o\s+d[oa]\s+(?:biblioteca|site))\b", re.I),
+    re.compile(r"^(?:ou\s+ainda\s+podendo\s+ajudar)\b", re.I),
+    re.compile(r"\b(?:servidores?|compramos\s+para\s+postar|fa[çc]a\s+uma\s+doa[çc][ãa]o|chave\s+pix|fa[çc]a\s+um\s+pix|doar|doe|doando)\b", re.I),
+    re.compile(r"\b(?:a\s+presente\s+obra\s+[eé]\s+disponibilizada|uso\s+parcial\s+em\s+pesquisas|fim\s+exclusivo\s+de\s+compra\s+futura)\b", re.I),
+    re.compile(r"\b(?:dados\s+de\s+odinright|odinright|elivros|elivros\.love|le\s+livros|lelivros|docero|minhateca|livraria\s+p[úu]blica|livros\s+gr[áa]tis)\b", re.I),
+    re.compile(r"\b(?:converted\s+by\s+epubtopdf|epubtopdf|digitalizado\s+por|escaneado\s+por|distribui[çc][aã]o\s+gratuita\s+sem\s+fins\s+comerciais|apenas\s+para\s+uso\s+acad[êe]mico)\b", re.I),
+]
+
+# Indicadores puramente de fascículo / edição / volume
+FASCICULO_TITLE_PATTERN = re.compile(
+    r"^(?:volume\s+\d+|n[úu]mero\s+\d+|vol\.\s*\d+|n[ºo]\.?\s*\d+|fasc[íi]culo\s+\d+|issue\s+\d+|ano\s+\d+)(?:\s*[-–—/]\s*(?:volume\s+\d+|n[úu]mero\s+\d+|vol\.\s*\d+|n[ºo]\.?\s*\d+|fasc[íi]culo\s+\d+|issue\s+\d+|ano\s+\d+))?$",
+    re.I,
+)
+
+# Indicadores puramente de mês e ano de publicação / edição de revista
+MONTH_YEAR_TITLE_PATTERN = re.compile(
+    r"^(?:(?:janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro|jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez|january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}|\d{4}\s+(?:janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro))$",
+    re.I,
+)
+
+# Nomes de operadores técnicos ou softwares descartados como autores de propriedades internas do PDF
+TECHNICAL_OPERATOR_AUTHOR_PATTERN = re.compile(
+    r"\b(?:daidigital|alfred|admin|administrator|guest|owner|propriet[áa]rio|user|usuario|digital|produ[çc][aã]o|diagrama[çc][aã]o|designer|desktop|editora|pagemaker|distiller|corel|indesign|illustrator|photoshop|ghostscript|pdfcreator|acrobat|unknown|desconhecido)\b",
+    re.I,
+)
+
 # Editorial and translation credit dumps at the end of colophon/title blocks
 CREDIT_SPLIT_PATTERN = re.compile(
     r"\s+(?:Tradu[çc][ãa]o(?:\s+de|\s+por)?|Revis[ãa]o(?:\s+t[ée]cnica)?|"
@@ -298,7 +327,9 @@ CITY_BOILERPLATE_REGEX = re.compile(
 )
 
 COMMON_NON_PERSON_NOUNS = {
-    "livro", "livros", "psicologia", "introducao", "introdução", "fundamentos", "jornada",
+    "artigo", "artigos", "revista", "revistas", "periodico", "periódico", "livro", "livros",
+    "psicologia", "psiquiatria", "forense", "pericia", "perícia", "criminologia", "direito",
+    "introducao", "introdução", "fundamentos", "jornada",
     "ensaios", "ensaio", "historia", "história", "manual", "curso", "guia", "mapa",
     "obras", "completas", "teoria", "estudos", "estudo", "tipo", "tipos", "psicologicos",
     "psicológicos", "espirito", "espírito", "arte", "ciencia", "ciência", "arquetipos",
@@ -517,10 +548,12 @@ def is_invalid_or_disclaimer_title(title: Optional[str]) -> bool:
     t = title.strip()
     if len(t) < 3:
         return True
-    if is_prose_or_paragraph_title(t):
+    # Normalização unicode (NFKD) para decompor ligaduras (ex: \ufb01 -> fi) e acentos
+    t_norm = unicodedata.normalize("NFKD", t)
+    if is_prose_or_paragraph_title(t) or is_prose_or_paragraph_title(t_norm):
         return True
     # Rejeita ruído de scanner, CamScanner, marcas d'água e emails
-    if re.search(r"\b(?:camscanner|scanned\s+by|digitalizado\s+por)\b", t, re.I):
+    if re.search(r"\b(?:camscanner|scanned\s+by|digitalizado\s+por)\b", t, re.I) or re.search(r"\b(?:camscanner|scanned\s+by|digitalizado\s+por)\b", t_norm, re.I):
         return True
     if re.search(r"[\w\.-]+@[\w\.-]+\.\w+", t):
         return True
@@ -539,8 +572,16 @@ def is_invalid_or_disclaimer_title(title: Optional[str]) -> bool:
     # Rejeita perguntas retóricas soltas ou legendas (ex.: 'Qual sua interpretação do desenho?')
     if t.endswith("?") and any(t.lower().startswith(p) for p in ("qual ", "como ", "o que ", "por que ", "quem ", "onde ", "quando ")):
         return True
-    # Volumes e tomos isolados (ex: 'Vol 16', 'Volume 2', 'Tomo 1')
+    # Volumes, tomos e fascículos isolados
     if re.match(r"^(?:vol(?:ume)?\.?\s*\d+|tomo\s*\d+|v\.\s*\d+|parte\s*\d+)$", t, re.I):
+        return True
+    if FASCICULO_TITLE_PATTERN.match(t) or FASCICULO_TITLE_PATTERN.match(t_norm):
+        return True
+    # Rejeita cabeçalhos que sejam puramente mês e ano (ex: "DEZEMBRO 1999", "janeiro 2020")
+    if MONTH_YEAR_TITLE_PATTERN.match(t) or MONTH_YEAR_TITLE_PATTERN.match(t_norm):
+        return True
+    # Rejeita disclaimers de projetos de digitalização e crowdfunding
+    if any(pat.search(t) or pat.search(t_norm) for pat in DIGITIZATION_DISCLAIMER_PATTERNS):
         return True
     # Rejeita títulos compostos quase exclusivamente por pontuação/ruído (ex.: '.... ,,...,,._,..')
     letters = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]", t)
@@ -577,6 +618,8 @@ def strip_author_prefixes(author: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     ).strip()
+    # Remove sufixos como et al. ao extrair o autor base
+    cleaned = re.sub(r"(?i)\s+et\s+al\.?$", "", cleaned).strip()
     cleaned = cleaned.strip("\"'“”«»–- ")
     return cleaned
 
@@ -755,7 +798,14 @@ def parse_filename_extended(pdf_path: str) -> Dict[str, Any]:
                 author_formatted = author_raw
             result["author"] = strip_author_prefixes(author_formatted)
 
-        result["title"] = title_raw.rstrip(".")
+        if title_raw:
+            m_yr = re.search(r"\s*[\(\[]((?:19|20)\d{2})[\)\]]$", title_raw)
+            if m_yr:
+                if not result.get("year"):
+                    result["year"] = int(m_yr.group(1))
+                title_raw = title_raw[:m_yr.start()].strip()
+
+        result["title"] = title_raw.rstrip(".") if title_raw else None
         return result
 
     result["title"] = cleaned_stem
@@ -1102,6 +1152,21 @@ def parse_thesis_folha_de_rosto(doc: pymupdf.Document) -> Optional[Dict[str, Any
     return None
 
 
+def parse_cover_title_multiline(doc: pymupdf.Document) -> Optional[Dict[str, Any]]:
+    """Extrai título da folha de rosto canônica, descartando páginas de disclaimer de digitalização."""
+    for page_idx in range(min(6, len(doc))):
+        p_text = doc[page_idx].get_text("text") or ""
+        # Descarta página que contenha marcas de disclaimer de digitalização ou crowdfunding
+        if re.search(r"\b(?:dados\s+de\s+odinright|odinright|elivros|epubtopdf)\b", p_text, re.I):
+            continue
+        lines = [l.strip() for l in p_text.splitlines() if l.strip()]
+        for line in lines:
+            clean = sanitize_title_candidate(line)
+            if clean and not is_invalid_or_disclaimer_title(clean) and len(clean) >= 4:
+                return {"title": clean, "page": page_idx + 1}
+    return None
+
+
 def extract_candidate_metadata(
     sample_text: str,
     pdf_path: Optional[str] = None,
@@ -1111,6 +1176,16 @@ def extract_candidate_metadata(
 ) -> ExtractedCandidates:
     """Extract preliminary metadata candidates from native text, page-by-page CIP, and filename."""
     candidates = ExtractedCandidates(sample_text=sample_text[:4000], total_pages=total_pages)
+
+    # 0. Filename metadata pre-parsing (disponível desde o início para resolução de autoria/título)
+    fn_meta = parse_filename_extended(pdf_path) if pdf_path else {}
+    fn_title = fn_meta.get("title")
+    fn_author = fn_meta.get("author")
+    fn_year = fn_meta.get("year")
+    fn_publisher = fn_meta.get("publisher")
+    candidates.fn_title = fn_title
+    candidates.fn_author = fn_author
+    candidates.pdf_path = pdf_path
 
     # 1. Document structural parsing (CIP card and Thesis Resumo) and front matter - HIGHEST PRIORITY
     head_text = ""
@@ -1134,8 +1209,17 @@ def extract_candidate_metadata(
                 raw_prop_author = pdf_meta.get("author")
                 if raw_prop_author:
                     clean_prop_a = strip_author_prefixes(str(raw_prop_author).strip())
-                    if len(clean_prop_a) >= 3 and not re.search(r"\b(?:microsoft|scanner|print|scan|user|admin|usuario|desconhecido)\b", clean_prop_a, re.I):
-                        pdf_author_cand = clean_prop_a
+                    if (
+                        len(clean_prop_a) >= 3
+                        and not TECHNICAL_OPERATOR_AUTHOR_PATTERN.search(clean_prop_a)
+                        and not re.search(r"\b(?:microsoft|scanner|print|scan)\b", clean_prop_a, re.I)
+                    ):
+                        if len(clean_prop_a.split()) <= 1 and fn_author:
+                            # Se clean_prop_a for palavra única e fn_author estiver disponível no nome do arquivo,
+                            # priorize fn_author ou o texto do artigo
+                            pass
+                        else:
+                            pdf_author_cand = clean_prop_a
 
                 # 1a. Page-by-page CIP extraction
                 for page_idx in range(min(6, total_p)):
@@ -1208,6 +1292,13 @@ def extract_candidate_metadata(
                             candidates.raw_authors = [thesis_rosto["author"]]
                             candidates.author_source = "folha_de_rosto"
 
+                # 1d. Canonical Book Folha de Rosto / Cover title parsing
+                if not candidates.raw_title:
+                    cover_info = parse_cover_title_multiline(doc)
+                    if cover_info and cover_info.get("title"):
+                        candidates.raw_title = cover_info["title"]
+                        candidates.title_source = "folha_de_rosto"
+
                 # 2. Extract DOI and ISSN strictly from front pages (pages 1 to 5)
                 head_text = "\n".join(doc[i].get_text("text") or "" for i in range(min(5, total_p)))
 
@@ -1243,8 +1334,15 @@ def extract_candidate_metadata(
         raw_prop_author = pdf_meta.get("author")
         if raw_prop_author:
             clean_prop_a = strip_author_prefixes(str(raw_prop_author).strip())
-            if len(clean_prop_a) >= 3 and not re.search(r"\b(?:microsoft|scanner|print|scan|user|admin|usuario|desconhecido)\b", clean_prop_a, re.I):
-                pdf_author_cand = clean_prop_a
+            if (
+                len(clean_prop_a) >= 3
+                and not TECHNICAL_OPERATOR_AUTHOR_PATTERN.search(clean_prop_a)
+                and not re.search(r"\b(?:microsoft|scanner|print|scan)\b", clean_prop_a, re.I)
+            ):
+                if len(clean_prop_a.split()) <= 1 and fn_author:
+                    pass
+                else:
+                    pdf_author_cand = clean_prop_a
 
         # Page-by-page CIP parsing from sample text
         split_pages = re.split(r"--- \[Página \d+\] ---", sample_text)
@@ -1386,7 +1484,33 @@ def extract_candidate_metadata(
             candidates.raw_publisher = publisher_match.group(1).strip()
 
     # 8. Fallback to clean lines from native text if title or author is still missing
-    raw_lines = [l.strip() for l in sample_text.splitlines() if l.strip()]
+    # Se a página contiver marcas como "DADOS DE ODINRIGHT", "eLivros", "ePubtoPDF",
+    # descarte o texto dessa página de disclaimer para extração de título.
+    clean_pages_text = []
+    if reabrir_pdf and pdf_path and os.path.exists(pdf_path):
+        try:
+            with pymupdf.open(pdf_path) as doc:
+                for page_idx in range(min(8, len(doc))):
+                    p_txt = doc[page_idx].get_text("text") or ""
+                    if re.search(r"\b(?:dados\s+de\s+odinright|odinright|elivros|epubtopdf)\b", p_txt, re.I):
+                        continue
+                    if p_txt.strip():
+                        clean_pages_text.append(p_txt.strip())
+        except Exception:
+            pass
+
+    if clean_pages_text:
+        text_for_lines = "\n\n".join(clean_pages_text)
+    else:
+        # Fallback para sample_text descartando blocos de disclaimer
+        blocks = re.split(r"--- \[Página \d+\] ---|\n{2,}", sample_text)
+        clean_b = [
+            b for b in blocks
+            if not re.search(r"\b(?:dados\s+de\s+odinright|odinright|elivros|epubtopdf)\b", b, re.I)
+        ]
+        text_for_lines = "\n\n".join(clean_b) if clean_b else sample_text
+
+    raw_lines = [l.strip() for l in text_for_lines.splitlines() if l.strip()]
     meaningful_lines = []
     for line in raw_lines:
         lower_line = line.lower()
@@ -1491,39 +1615,70 @@ def extract_candidate_metadata(
         candidates.raw_title = re.sub(r"\barqueiros\b", "arquétipos", candidates.raw_title, flags=re.I)
 
     if not candidates.raw_authors and pdf_author_cand:
-        candidates.raw_authors = [pdf_author_cand]
-        candidates.author_source = "propriedades_pdf"
+        if len(pdf_author_cand.split()) <= 1 and fn_author:
+            candidates.raw_authors = [fn_author]
+            candidates.author_source = "nome_arquivo"
+        else:
+            candidates.raw_authors = [pdf_author_cand]
+            candidates.author_source = "propriedades_pdf"
 
     # 11. Multi-word filename title priority over single-word, boilerplate or identifier extracted line
     if fn_title:
         fn_title_clean = sanitize_title_candidate(fn_title) or fn_title
-        fn_words = fn_title_clean.split()
+        fn_words = re.split(r"[\s_-]+", fn_title_clean)
         cand_words = (candidates.raw_title or "").split()
         cand_lower = (candidates.raw_title or "").lower()
 
-        deve_usar_fn_title = (
+        cand_is_disclaimer_or_fasciculo = (
             not candidates.raw_title
             or is_invalid_or_disclaimer_title(candidates.raw_title)
+            or any(
+                pat.search(candidates.raw_title) or pat.search(unicodedata.normalize("NFKD", candidates.raw_title))
+                for pat in DIGITIZATION_DISCLAIMER_PATTERNS
+            )
+            or bool(FASCICULO_TITLE_PATTERN.match(candidates.raw_title))
+            or bool(MONTH_YEAR_TITLE_PATTERN.match(candidates.raw_title))
+        )
+
+        deve_usar_fn_title = (
+            cand_is_disclaimer_or_fasciculo
             or candidates.raw_title.startswith("---")
             or "página" in cand_lower
             or len(candidates.raw_title) < 4
             or cand_lower in GENERIC_SINGLE_WORD_TITLES
             or (len(cand_words) <= 1 and len(fn_words) >= 2)
             or (len(cand_words) == 1 and cand_lower in ("criar", "artigo", "livro", "capítulo", "texto"))
-            or (bool(fn_author) and len(fn_words) >= 2 and (candidates.raw_title.endswith(".") or "sobre" in cand_lower or "texto" in cand_lower))
+            or (len(fn_words) >= 2 and (candidates.raw_title.endswith(".") or "sobre" in cand_lower or "texto" in cand_lower or cand_lower.startswith("texto ")))
         )
         if deve_usar_fn_title and not is_invalid_or_disclaimer_title(fn_title_clean):
             candidates.raw_title = fn_title_clean
             candidates.title_source = "nome_arquivo"
+            if cand_is_disclaimer_or_fasciculo and fn_author:
+                candidates.raw_authors = [fn_author]
+                candidates.author_source = "nome_arquivo"
 
     # Verificação de segurança final contra títulos formados por identificadores ou disclaimers
-    if candidates.raw_title and is_invalid_or_disclaimer_title(candidates.raw_title):
+    if candidates.raw_title and (
+        is_invalid_or_disclaimer_title(candidates.raw_title)
+        or any(
+            pat.search(candidates.raw_title) or pat.search(unicodedata.normalize("NFKD", candidates.raw_title))
+            for pat in DIGITIZATION_DISCLAIMER_PATTERNS
+        )
+        or bool(FASCICULO_TITLE_PATTERN.match(candidates.raw_title))
+        or bool(MONTH_YEAR_TITLE_PATTERN.match(candidates.raw_title))
+    ):
         if fn_title and not is_invalid_or_disclaimer_title(fn_title):
             candidates.raw_title = fn_title
             candidates.title_source = "nome_arquivo"
+            if fn_author:
+                candidates.raw_authors = [fn_author]
+                candidates.author_source = "nome_arquivo"
         else:
             candidates.raw_title = None
             candidates.title_source = None
+            if fn_author and not candidates.raw_authors:
+                candidates.raw_authors = [fn_author]
+                candidates.author_source = "nome_arquivo"
 
     if not candidates.raw_authors and fn_author:
         candidates.raw_authors = [fn_author]

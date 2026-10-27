@@ -5,6 +5,25 @@ Todas as mudanças notáveis deste projeto são documentadas aqui.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.3] - 2026-10-27
+
+### Adicionado
+- **Reconciliação Canônica de ISBN sem Falso Conflito**:
+  - Divergências informativas entre texto heurístico de OCR e o registro canônico oficial (Brasil API / CBL) são tratadas como reconciliação canônica, evitando quarentena indevida para livros com ISBN oficial confirmado (resolvendo caso de *A Síndrome do Impostor*).
+- **Descarte de Disclaimers de Digitalização e Crowdfunding**:
+  - Adicionada detecção estrita de disclaimers de projetos de digitalização coletiva (*DADOS DE ODINRIGHT*, *eLivros*, *ePubtoPDF*) e pedidos de doação/custeio (*"servidores"*, *"compramos para postar"*, *"faça uma doação/pix"*).
+  - Pulo automático de páginas de abertura que contenham tais disclaimers, fazendo o extrator avançar diretamente para a folha de rosto canônica (resolvendo caso de Carl Rogers: *De Pessoa para Pessoa*).
+  - Normalização Unicode `NFKD` para neutralizar ligaduras tipográficas (ex.: `ﬁ` -> `fi`).
+- **Filtragem de Autores Técnicos de PDF Metadata**:
+  - Descarte sistemático de operadores de diagramação e nomes de softwares em propriedades internas do PDF (`Daidigital`, `Alfred`, `PageMaker`, `PDFCreator`, etc.).
+  - Priorização de `fn_author` higienizado do nome do arquivo quando a propriedade do PDF for genérica ou unipalavra.
+- **Higienização de Sufixo `et al` nos Metadados e Formatação ABNT**:
+  - Remoção automática de `et al` ao processar nomes de arquivos e propriedades, evitando a duplicação `AL, Sobrenome et et al.` e gerando citações limpas e canônicas.
+- **Bloqueio de Cabeçalhos de Fascículo e Periodicidade**:
+  - Bloqueio estrito de expressões de volume, fascículo e datas (`VOLUME \d+`, `NÚMERO \d+`, `DEZEMBRO 1999`, `MÊS ANO`), permitindo o resgate do título real do artigo (resolvendo caso de *Gonçalves et al*).
+- **Suíte de Testes Expandida**:
+  - Total de **313 testes automatizados** (100% de aprovação na suíte completa).
+
 ## [0.4.2] - 2026-10-27
 
 ### Adicionado

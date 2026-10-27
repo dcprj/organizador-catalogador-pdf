@@ -1609,7 +1609,12 @@ class MetadataEnricher:
             and not (len(t.split()) <= 1 and t_lower in GENERIC_SINGLE_WORD_TITLES)
         )
         tem_autores = bool(metadata.authors)
-        tem_conflitos = len(metadata.conflitos_registrados) > 0
+        # Ignora divergências que representem reconciliação pela base oficial canônica
+        conflitos_reais = [
+            c for c in metadata.conflitos_registrados
+            if not any(padrao in c.lower() for padrao in ("adotado como âncora", "registro canônico adotado", "adotad"))
+        ]
+        tem_conflitos = len(conflitos_reais) > 0
 
         # 1. Identidade Corroborada por Fonte vs. Identidade Plausível Local
         tem_fonte_confirmadora = False
@@ -1635,7 +1640,7 @@ class MetadataEnricher:
 
         # Evidência documental explícita que sustenta a decisão
         if tem_conflitos:
-            evidencia_identidade = f"Identidade não confirmada devido a divergências entre fontes ({'; '.join(metadata.conflitos_registrados)})"
+            evidencia_identidade = f"Identidade não confirmada devido a divergências entre fontes ({'; '.join(conflitos_reais)})"
         elif identidade_corroborada_fonte:
             evidencia_identidade = f"Corroborada por fonte independente: {fonte_confirmadora_desc}"
         elif identidade_plausivel_local:
@@ -1739,7 +1744,7 @@ class MetadataEnricher:
         if not integridade_arquivo_ok:
             motivos_revisao.append("Integridade física do arquivo PDF suspeita (páginas insuficientes ou parcial)")
         if tem_conflitos:
-            motivos_revisao.append(f"Conflito bibliográfico irreconciliável ({'; '.join(metadata.conflitos_registrados)})")
+            motivos_revisao.append(f"Conflito bibliográfico irreconciliável ({'; '.join(conflitos_reais)})")
         if not assunto_confiante and not has_verified_id:
             motivos_revisao.append("Área temática genérica ou desconhecida sem identificador oficial")
         if metadata.needs_review:

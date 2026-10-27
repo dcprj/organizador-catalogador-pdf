@@ -156,3 +156,171 @@ def test_fallback_pelo_nome_do_arquivo_com_autor_e_titulo():
     assert "Carl Gustav Jung" in meta.authors
     assert meta.publisher == "Nova Fronteira"
     assert meta.identifiers.isbn == "9788520932193"
+
+
+# ---------------------------------------------------------------------------
+# 6. Testes das 4 Melhorias: Reconciliação Canônica, Disclaimers, Autores e Fascículos
+# ---------------------------------------------------------------------------
+
+def test_melhoria_1_falso_conflito_isbn_canonico_confirmado():
+    """Caso 'A Síndrome do Impostor': divergência reconciliada pela base oficial canônica não gera quarentena."""
+    enricher = MetadataEnricher(online=True)
+    metadata = PublicationMetadata(
+        title="A Síndrome do Impostor",
+        authors=["Kevin Cokley"],
+        publisher="Editora Planeta",
+        year=2020,
+        city="São Paulo",
+        classification="livro",
+        confidence=0.95,
+        confidence_classification=0.95,
+        confidence_metadata=0.95,
+        identifiers=Identifiers(isbn="9788542217032"),
+        isbn_verified=True,
+    )
+    # Simula divergência reconciliada registrada como âncora canônica
+    metadata.conflitos_registrados.append(
+        "Divergência entre candidato local ('Apostila de Treinamento') e registro canônico confirmado no Brasil API / CBL "
+        "('A Síndrome do Impostor') para ISBN confirmado. Registro canônico adotado como âncora da obra."
+    )
+
+    jev_result = JevValidationResult(
+        classification="livro",
+        classification_confidence=0.95,
+        candidates=ExtractedCandidates(raw_title="A Síndrome do Impostor", isbn="9788542217032"),
+    )
+
+    enricher._evaluate_needs_review(
+        metadata,
+        jev_result=jev_result,
+        sources_consulted=["Brasil API / CBL (ISBN)"],
+    )
+
+    assert metadata.needs_review is False
+    assert metadata.revisao_manual_necessaria is False
+    assert metadata.identidade_confirmada is True
+    assert metadata.identidade_corroborada_fonte is True
+    assert not any("Conflito bibliográfico irreconciliável" in r for r in metadata.review_reasons)
+
+
+def test_melhoria_2_disclaimers_ebooks_e_digitalizacao_coletiva():
+    """Caso 'Carl Rogers': detecção de disclaimers de crowdfunding/digitalização com ligaduras unicode e fallback para folha de rosto/fn_title."""
+    disclaimers = [
+        "Você pode ajudar contribuindo de várias maneiras",
+        "Ajude o nosso crowdfunding",
+        "Dados de Odinright elivros",
+        "elivros.love livros grátis",
+        "converted by epubtopdf",
+        "digitalizado por le livros",
+        "distribuição gratuita sem fins comerciais",
+        "apenas para uso acadêmico",
+        "Ou ainda podendo ajudar \ufb01nanceiramente a pagar custo de servidor",
+        "podendo ajudar a pagar custo de hospedagem",
+        "manutenção da biblioteca e do site",
+        "servidores e obras que compramos para postar, faça uma",
+        "faça uma doação via chave pix",
+        "a presente obra é disponibilizada com fim exclusivo de compra futura",
+    ]
+    for d in disclaimers:
+        assert is_invalid_or_disclaimer_title(d) is True, f"Deveria ter rejeitado: {d}"
+
+    # 1. Quando há página de disclaimer de Odinright/eLivros seguida de folha de rosto canônica (ex: página 4)
+    sample_com_folha_de_rosto = (
+        "DADOS DE ODINRIGHT\n"
+        "eLivros\n"
+        "servidores e obras que compramos para postar, faça uma\n\n"
+        "De PESSOA para PESSOA\n"
+        "Carl R. Rogers"
+    )
+    cands_folha = extract_candidate_metadata(
+        sample_text=sample_com_folha_de_rosto,
+        pdf_path="/caminho/ficticio/De-Pessoa-para-Pessoa-o-Problema-de-Ser-Humano-Carl-Rogers.pdf",
+        reabrir_pdf=False,
+    )
+    assert cands_folha.raw_title == "De PESSOA para PESSOA"
+
+    # 2. Quando o PDF contém apenas o bloco de disclaimer, faz fallback seguro para fn_title
+    sample_text_disclaimer_puro = (
+        "DADOS DE ODINRIGHT\n"
+        "ePubtoPDF\n"
+        "Ou ainda podendo ajudar \ufb01nanceiramente a pagar custo de servidores e obras que compramos para postar, faça uma doação\n"
+        "distribuição gratuita sem fins comerciais"
+    )
+    cands_fn = extract_candidate_metadata(
+        sample_text=sample_text_disclaimer_puro,
+        pdf_path="/caminho/ficticio/De-Pessoa-para-Pessoa-o-Problema-de-Ser-Humano-Carl-Rogers.pdf",
+        reabrir_pdf=False,
+    )
+    assert cands_fn.raw_title == "De-Pessoa-para-Pessoa-o-Problema-de-Ser-Humano-Carl-Rogers"
+    assert cands_fn.title_source == "nome_arquivo"
+
+
+def test_melhoria_3_autores_falsos_propriedades_pdf_vs_nome_arquivo():
+    """Casos 'Morana' e 'Couto': rejeição de operadores técnicos, higienização de 'et al' e formatação ABNT limpa."""
+    from organizador_pdf.abnt_formatter import format_authors_abnt
+
+    # 1. Operador técnico descartado e sufixo 'et al' limpo do autor base
+    cands_op = extract_candidate_metadata(
+        sample_text="Artigo de Psiquiatria Forense\nTexto sobre perícias e laudos.",
+        pdf_path="/caminho/Morana et al - Perícia Psiquiátrica Forense.pdf",
+        reabrir_pdf=False,
+        metadados_embutidos={"author": "daidigital", "title": "Perícia Psiquiátrica Forense"},
+    )
+    assert cands_op.raw_authors == ["Morana"]
+    assert cands_op.author_source == "nome_arquivo"
+    # Garante que format_authors_abnt não gere "AL, Morana et et al."
+    abnt_formatted = format_authors_abnt(cands_op.raw_authors)
+    assert "AL, Morana" not in abnt_formatted
+    assert abnt_formatted == "MORANA"
+
+    # 2. Palavra única nas propriedades ('Couto') vs fn_author ('Couto et al')
+    cands_single = extract_candidate_metadata(
+        sample_text="Artigo sobre Direitos Humanos e Criminologia.",
+        pdf_path="/caminho/Couto et al - Criminologia e Justiça.pdf",
+        reabrir_pdf=False,
+        metadados_embutidos={"author": "Couto", "title": "Criminologia e Justiça"},
+    )
+    assert cands_single.raw_authors == ["Couto"]
+    assert cands_single.author_source == "nome_arquivo"
+    assert format_authors_abnt(cands_single.raw_authors) == "COUTO"
+
+    # 3. Se entrada bruta ainda contiver 'et al', formatador ABNT higieniza sem tratar 'al' como sobrenome
+    assert format_authors_abnt(["Morana et al"]) == "MORANA et al."
+    assert format_authors_abnt(["Couto et al."]) == "COUTO et al."
+
+
+def test_melhoria_4_cabecalho_fasciculo_revista_como_titulo():
+    """Caso 'Gonçalves et al': rejeição de fascículo e mês/ano (ex: 'NÚMERO 6', 'DEZEMBRO 1999') com extração do título real."""
+    fasciculos_e_datas = [
+        "Volume 10 - Número 2",
+        "Vol. 4 / Fascículo 1",
+        "Ano 2021 - Issue 3",
+        "volume 12",
+        "NÚMERO 6",
+        "nº 4",
+        "fascículo 2",
+        "DEZEMBRO 1999",
+        "dezembro 1999",
+        "janeiro 2020",
+        "MARÇO 2015",
+        "October 2018",
+    ]
+    for fd in fasciculos_e_datas:
+        assert is_invalid_or_disclaimer_title(fd) is True, f"Deveria ter rejeitado: {fd}"
+
+    # Simula documento com "NÚMERO 6" na primeira linha e "DEZEMBRO 1999" na segunda linha
+    sample_text = (
+        "NÚMERO 6\n"
+        "DEZEMBRO 1999\n"
+        "Avaliacao de Servico de Atencao a Criancas Vitimas de Violencia Domestica\n"
+        "Texto introdutório sobre o serviço de proteção a menores."
+    )
+    cands = extract_candidate_metadata(
+        sample_text=sample_text,
+        pdf_path="/caminho/Gonçalves et al - Avaliacao de Servico de Atencao a Criancas Vitimas de Violencia Domestica.pdf",
+        reabrir_pdf=False,
+    )
+
+    assert cands.raw_title == "Avaliacao de Servico de Atencao a Criancas Vitimas de Violencia Domestica"
+    assert cands.raw_authors == ["Gonçalves"]
+    assert cands.author_source == "nome_arquivo"
