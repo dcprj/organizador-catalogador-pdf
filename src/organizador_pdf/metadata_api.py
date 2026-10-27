@@ -1333,6 +1333,21 @@ class MetadataEnricher:
                 sample_text=candidates.sample_text if candidates else None,
             )
 
+        # Fallback complementar pelo Nome do Arquivo caso ainda faltem fontes ou campos essenciais
+        if (not sources_consulted or not tem_campos_essenciais_completos(metadata, metadata.classification)):
+            fn_title = getattr(candidates, "fn_title", None)
+            if fn_title and fn_title != clean_title and len(fn_title) >= 4 and not is_invalid_or_disclaimer_title(fn_title):
+                logger.info("Applying Filename Title Search Fallback for '%s' across APIs.", fn_title)
+                fn_authors = [getattr(candidates, "fn_author")] if getattr(candidates, "fn_author", None) else None
+                self._apply_title_fallback(
+                    fn_title,
+                    jev_result.classification,
+                    metadata,
+                    sources_consulted,
+                    sample_text=candidates.sample_text if candidates else None,
+                    query_authors=fn_authors,
+                )
+
         if metadata.area_principal == "Outros" or (metadata.authors and not candidates.raw_authors):
             ap, sa, mr = infer_thematic_area(
                 title=metadata.title,
@@ -1758,6 +1773,7 @@ class MetadataEnricher:
         metadata: PublicationMetadata,
         sources_consulted: List[str],
         sample_text: Optional[str] = None,
+        query_authors: Optional[List[str]] = None,
     ) -> None:
         """Search APIs by title according to publication type priority with relevance and author checks."""
         from .classifier_jev import is_invalid_or_disclaimer_title
@@ -1766,7 +1782,7 @@ class MetadataEnricher:
             logger.info("Ignorando busca não-autoritativa por título inválido ou marca d'água ('%s').", title)
             return
 
-        candidate_authors = metadata.authors or []
+        candidate_authors = metadata.authors or query_authors or []
         clean_t = re.sub(r"[^\w\s]", "", title.lower()).strip()
         if not candidate_authors and (len(clean_t.split()) <= 1 or clean_t in GENERIC_SUBJECT_TITLES):
             logger.info("Ignorando busca não-autoritativa por título genérico ('%s') sem autoria confirmada.", title)
@@ -1774,8 +1790,8 @@ class MetadataEnricher:
 
         variantes = gerar_variantes_de_busca(title, candidate_authors)
         cand_obj = ExtractedCandidates(
-            raw_title=metadata.title or title,
-            raw_authors=metadata.authors,
+            raw_title=metadata.title if (metadata.title and not is_invalid_or_disclaimer_title(metadata.title)) else title,
+            raw_authors=candidate_authors,
             raw_year=metadata.year,
             raw_publisher=metadata.publisher,
             sample_text=sample_text,
@@ -3959,6 +3975,8 @@ class MetadataEnricher:
         if not extra:
             return
 
+        from .classifier_jev import is_likely_person_name, is_invalid_or_disclaimer_title
+
         conf = 0.95 if authoritative else 0.80
 
         # 1. Título
@@ -3983,7 +4001,7 @@ class MetadataEnricher:
                         "confianca": conf,
                         "valor_original": getattr(candidates, "raw_title", None) if candidates else None,
                     }
-            elif base.title in ("Sem Título", "Publicação Sem Título") or len(base.title) < 5:
+            elif base.title in ("Sem Título", "Publicação Sem Título") or len(base.title) < 5 or is_invalid_or_disclaimer_title(base.title):
                 base.title = clean_title
                 base.reconciliacao_campos["titulo"] = {
                     "valor_escolhido": clean_title,
@@ -4292,23 +4310,22 @@ class MetadataEnricher:
                             "confianca": conf,
                         }
 
-        if authoritative:
-            if extra.get("doi") and not base.identifiers.doi:
-                base.identifiers.doi = extra["doi"]
-                base.reconciliacao_campos["doi"] = {
-                    "valor": extra["doi"],
-                    "origem": provider,
-                    "evidencia": f"DOI confirmado na fonte {provider}",
-                    "confianca": conf,
-                }
-            if extra.get("issn") and not base.identifiers.issn:
-                base.identifiers.issn = extra["issn"]
-                base.reconciliacao_campos["issn"] = {
-                    "valor": extra["issn"],
-                    "origem": provider,
-                    "evidencia": f"ISSN confirmado na fonte {provider}",
-                    "confianca": conf,
-                }
+        if extra.get("doi") and not base.identifiers.doi:
+            base.identifiers.doi = extra["doi"]
+            base.reconciliacao_campos["doi"] = {
+                "valor": extra["doi"],
+                "origem": provider,
+                "evidencia": f"DOI {'confirmado' if authoritative else 'obtido'} na fonte {provider}",
+                "confianca": conf,
+            }
+        if extra.get("issn") and not base.identifiers.issn:
+            base.identifiers.issn = extra["issn"]
+            base.reconciliacao_campos["issn"] = {
+                "valor": extra["issn"],
+                "origem": provider,
+                "evidencia": f"ISSN {'confirmado' if authoritative else 'obtido'} na fonte {provider}",
+                "confianca": conf,
+            }
 
         # 12. Área temática
         if extra.get("area") and (not base.area or base.area == "Outros"):

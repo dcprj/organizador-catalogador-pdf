@@ -406,8 +406,8 @@ def converter_pdf(
         if not tem_ocr and not ocr_aplicado:
             estado_ocr = "OCR_INDISPONIVEL"
             motivo_insuficiencia = (
-                f"Texto nativo insuficiente ({caracteres_uteis} caracteres úteis) e OCR local indisponível "
-                f"(rapidocr_onnxruntime não instalado)."
+                f"Texto nativo insuficiente para identificação segura da obra ({caracteres_uteis} caracteres úteis) "
+                f"e OCR local indisponível (rapidocr_onnxruntime não instalado)."
             )
         elif ocr_aplicado:
             estado_ocr = "EXECUTADO"

@@ -133,7 +133,7 @@ def is_valid_isbn(isbn: Optional[str], strict: bool = True) -> bool:
     """Valida formato e opcionalmente dígito verificador (checksum) de ISBN-10 e ISBN-13."""
     if not isbn:
         return False
-    clean = re.sub(r"[\s-]", "", str(isbn)).upper()
+    clean = re.sub(r"[^0-9Xx]", "", str(isbn)).upper()
     if "OCLC" in clean or "EAN" in clean:
         return False
     if len(clean) == 13 and clean.isdigit():
@@ -204,7 +204,7 @@ def is_valid_issn(issn: Optional[str], strict: bool = True) -> bool:
     """Valida formato e opcionalmente dígito verificador (checksum) de ISSN-8."""
     if not issn:
         return False
-    clean = re.sub(r"[\s-]", "", str(issn)).upper()
+    clean = re.sub(r"[^0-9Xx]", "", str(issn)).upper()
     if len(clean) != 8:
         return False
     digits = clean[:-1]
@@ -362,6 +362,10 @@ class ExtractedCandidates(BaseModel):
     candidatos_detalhados: Dict[str, CandidatoMetadado] = Field(default_factory=dict)
     candidatos_originais: Dict[str, Any] = Field(default_factory=dict)
     extracao_texto: Optional[ResultadoExtracaoTexto] = None
+    fn_title: Optional[str] = None
+    fn_author: Optional[str] = None
+    is_isbn_strong: bool = False
+    pdf_path: Optional[str] = None
 
 
 class JevValidationResult(BaseModel):

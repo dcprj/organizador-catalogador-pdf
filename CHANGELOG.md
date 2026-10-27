@@ -5,6 +5,29 @@ Todas as mudanças notáveis deste projeto são documentadas aqui.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.2] - 2026-10-27
+
+### Adicionado
+- **Extração Resiliente de ISBN**:
+  - Suporte completo a variações gráficas e rotulações editoriais (`I.S.B.N.`, `I. S. B. N.`, `ISBN 10`, `ISBN-13`, quebras de linha `ISBN:\n...` e especificadores como `ISBN (impresso):`, `ISBN (versão digital):`, `ISBN (brochura):`).
+  - Suporte nativo a hífens unicode (`–` en-dash, `—` em-dash, `\u2212`) e espaços não-quebráveis (`\xa0`).
+  - Extração de ISBNs autônomos de 13 dígitos iniciados por 978 ou 979 no corpo do texto e colofão.
+- **Extração Universal de ISSN**:
+  - Suporte a `e-ISSN`, `p-ISSN`, `ISSN-L`, `ISSN online`, `ISSN impresso` e quebras de linha em periódicos científicos nacionais e internacionais.
+- **Extração Segura de DOI em Periódicos**:
+  - Remoção de falsos descartes em cabeçalhos de artigos legítimos que trazem paginação e fascículo (`v.`, `n.`, `p.`) adjacentes ao identificador.
+- **Hierarquia Estrita de Autoridade Bibliográfica**:
+  - Identificadores matematicamente validados e confirmados em fontes oficiais (Brasil API / CBL, Crossref, DataCite, Google Books) sobrepõem e corrigem automaticamente quaisquer títulos, subtítulos ou autores heurísticos ruidosos extraídos do PDF.
+- **Fallback Dirigido pelo Nome do Arquivo**:
+  - Recuperação progressiva de registros bibliográficos via busca dirigida nas APIs oficiais usando o título e autor inferidos do nome do arquivo quando o PDF não contém identificador e apresenta texto com características de epígrafe ou disclaimer.
+- **Filtros Reforçados contra Falsos Títulos**:
+  - Rejeição de epígrafes poéticas/devocionais ("Segundo a filosofia budista...", "devem ser acessíveis...").
+  - Rejeição de entidades comerciais com ano ("literare books international ltda, 2021.").
+  - Rejeição de rótulos isolados da catalogação (`(CIP)`, `CIP-BRASIL`, `CDD`, `CDU`, `Título original:`, `Titulooriginalem alemao`).
+  - Rejeição de redes sociais, emails e URLs como títulos.
+- **Suíte de Testes Expandida**:
+  - Inclusão do módulo `tests/test_assertividade_identificadores.py`, totalizando **309 testes automatizados** (100% de aprovação).
+
 ## [Não Lançado]
 
 ### Adicionado

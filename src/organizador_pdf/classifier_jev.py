@@ -44,15 +44,114 @@ class ErroDeClassificacaoRemota(RuntimeError):
 
 # Regular expressions for candidate extraction
 DOI_REGEX = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Za-z0-9]+\b", re.IGNORECASE)
+
+# Robust ISBN: Suporta rótulo I.S.B.N., ISBN-10, ISBN-13, quebras de linha e especificadores como (impresso), (e-book)
 ISBN_REGEX = re.compile(
-    r"\b(?:ISBN(?:-1[03])?[:\s]+([0-9Xx -]{10,17})|(?:97[89][- ]?[0-9]{1,5}[- ]?[0-9]+[- ]?[0-9]+[- ]?[0-9X]))\b",
-    re.IGNORECASE,
+    r"(?i)\b(?:I[\.\s]*S[\.\s]*B[\.\s]*N[\.\s]*(?:-(?:1[03]))?(?:\s*\([^)\n\r]{1,40}\))?[:\s\n\r]*([0-9Xx][0-9Xx \t\-–—]{8,22}[0-9Xx])|(97[89][ \t\-–—]+[0-9]{1,5}[ \t\-–—]+[0-9]+[ \t\-–—]+[0-9]+[ \t\-–—]+[0-9Xx]))\b"
 )
-# Strict ISSN: Must be preceded by ISSN to prevent matching Brazilian phone numbers or historical year spans
+
+# Robust ISSN: Suporta e-ISSN, p-ISSN, ISSN-L, ISSN online/impresso, quebras de linha e espaçamentos
 ISSN_REGEX = re.compile(
-    r"\bISSN(?:\s*\(?[^)\n\r]*\)?)?[:\s]+(\d{4}-\d{3}[\dX])\b",
-    re.IGNORECASE,
+    r"(?i)\b(?:[ep]-?ISSN|ISSN-L|ISSN)(?:\s*\([^)\n\r]{1,40}\))?[:\s\n\r]*(\d{4}[-\s–—]?\d{3}[\dX])\b"
 )
+
+
+def extrair_isbn_confiavel(texto: str) -> Optional[Tuple[str, bool]]:
+    """Extrai ISBN de texto suportando variações de rotulação, hifenação unicode e quebras de linha.
+
+    Retorna tupla (isbn_limpo_13_ou_10, is_strict_checksum).
+    """
+    if not texto:
+        return None
+
+    norm_txt = re.sub(r"[\u2010\u2011\u2012\u2013\u2014\u2212]", "-", texto)
+    norm_txt = norm_txt.replace("\xa0", " ")
+
+    candidatos_validos: List[Tuple[str, bool]] = []
+
+    # 1. Busca por padrões rotulados ou sequências estruturadas
+    for m in ISBN_REGEX.finditer(norm_txt):
+        raw_val = m.group(1) or m.group(2)
+        if not raw_val:
+            continue
+        clean = re.sub(r"[^0-9Xx]", "", raw_val).upper()
+        if len(clean) in (10, 13):
+            if is_valid_isbn(clean, strict=True):
+                candidatos_validos.append((clean, True))
+            elif is_valid_isbn(clean, strict=False):
+                candidatos_validos.append((clean, False))
+
+    # 2. Busca secundária por sequências de 13 dígitos 978/979 contínuas
+    if not candidatos_validos:
+        for m in re.finditer(r"\b(97[89][0-9]{10})\b", norm_txt):
+            clean = m.group(1)
+            if is_valid_isbn(clean, strict=True):
+                candidatos_validos.append((clean, True))
+            elif is_valid_isbn(clean, strict=False):
+                candidatos_validos.append((clean, False))
+
+    if not candidatos_validos:
+        return None
+
+    # Prioriza o que passa no checksum estrito
+    for cand, strict_pass in candidatos_validos:
+        if strict_pass:
+            return cand, True
+    return candidatos_validos[0]
+
+
+def extrair_issn_confiavel(texto: str) -> Optional[str]:
+    """Extrai ISSN de texto suportando e-ISSN, p-ISSN, ISSN-L e formatações variadas."""
+    if not texto:
+        return None
+    norm_txt = re.sub(r"[\u2010\u2011\u2012\u2013\u2014\u2212]", "-", texto)
+    for m in ISSN_REGEX.finditer(norm_txt):
+        raw_val = m.group(1)
+        clean = re.sub(r"[^0-9Xx]", "", raw_val).upper()
+        if len(clean) == 8:
+            formatted = f"{clean[:4]}-{clean[4:]}"
+            if is_valid_issn(clean, strict=True) or is_valid_issn(clean, strict=False):
+                return formatted
+    return None
+
+
+def extrair_doi_confiavel(texto: str, is_thesis: bool = False) -> Optional[str]:
+    """Extrai DOI sem descartar indevidamente o identificador em cabeçalhos de artigos científicos."""
+    if not texto:
+        return None
+
+    ref_split = re.split(r"\n\s*(?:refer[êe]ncias|references|bibliografia|obras\s+citadas)\b", texto, flags=re.I)
+    clean_text = ref_split[0] if ref_split else texto
+
+    dois_encontrados = []
+    for m in DOI_REGEX.finditer(clean_text):
+        raw_doi = m.group(0).rstrip(".;,)")
+        if raw_doi.endswith(")") and "(" not in raw_doi:
+            raw_doi = raw_doi[:-1]
+        norm_d = normalizar_doi(raw_doi)
+        if not norm_d:
+            continue
+
+        start_pos = max(0, m.start() - 120)
+        end_pos = min(len(clean_text), m.end() + 120)
+        context = clean_text[start_pos:end_pos].lower()
+
+        # Contexto estrito de citação bibliográfica de outra obra
+        is_citation_context = any(
+            re.search(pat, context) for pat in [
+                r"\b(?:apud|citado\s+por|citado\s+em)\b",
+                r"\b(?:recuperado\s+de|dispon[íi]vel\s+em|acesso\s+em)\s+https?://",
+            ]
+        )
+        if is_citation_context:
+            continue
+
+        if is_thesis and not any(lbl in context for lbl in ["doi da tese", "doi da disserta", "doi do trabalho", "handle", "reposit"]):
+            continue
+
+        dois_encontrados.append(norm_d)
+
+    return dois_encontrados[0] if dois_encontrados else None
 
 # Ignored lines that pollute title/author candidate extraction
 IGNORED_PATTERNS = [
@@ -400,6 +499,11 @@ def is_prose_or_paragraph_title(text: Optional[str]) -> bool:
         "que se inicia", "embora não", "concentramo-nos", "neste trabalho",
         "o objetivo deste", "apresentamos aqui", "com o objetivo de",
         "experimental. embora",
+        # Epígrafes, notas de agradecimento e disclaimers
+        "segundo a filosofia", "existem quatro formas", "devem ser acessíveis",
+        "incentivou este projeto", "ao leitor", "dedico este", "agradeço a",
+        "agradecemos a", "à minha família", "à memória de", "colocando à disposição",
+        "livros de maior influência", "do presente conteúdo",
     ]
     if any(m in lower for m in prose_markers):
         return True
@@ -419,6 +523,21 @@ def is_invalid_or_disclaimer_title(title: Optional[str]) -> bool:
     if re.search(r"\b(?:camscanner|scanned\s+by|digitalizado\s+por)\b", t, re.I):
         return True
     if re.search(r"[\w\.-]+@[\w\.-]+\.\w+", t):
+        return True
+    # Rejeita URLs, domínios e referências a sites/redes sociais
+    if any(m in t.lower() for m in ("www.", "http://", "https://", ".com.br", ".com/", "@")):
+        return True
+    # Rejeita entidades editoriais/comerciais com ano (ex.: 'literare books international ltda, 2021.')
+    if re.search(r"\b(?:editora|books|publishing|press|ltda|s\.?a\.?)\b.*?\b(19|20)\d{2}\b", t, re.I):
+        return True
+    # Rejeita rótulos da ficha catalográfica ou catalogação na fonte isolados
+    if re.match(r"^\(?\s*(?:cip|cip-brasil|ficha\s+catalogr[áa]fica|cdd|cdu|dados\s+internacionais)\s*\)?$", t, re.I):
+        return True
+    # Rejeita 'Título original' e variações coladas
+    if re.search(r"\b(?:t[íi]tulo\s*original|original\s*title)\b|^titulooriginal", t, re.I):
+        return True
+    # Rejeita perguntas retóricas soltas ou legendas (ex.: 'Qual sua interpretação do desenho?')
+    if t.endswith("?") and any(t.lower().startswith(p) for p in ("qual ", "como ", "o que ", "por que ", "quem ", "onde ", "quando ")):
         return True
     # Volumes e tomos isolados (ex: 'Vol 16', 'Volume 2', 'Tomo 1')
     if re.match(r"^(?:vol(?:ume)?\.?\s*\d+|tomo\s*\d+|v\.\s*\d+|parte\s*\d+)$", t, re.I):
@@ -809,11 +928,9 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
 
     # Extract ISBN if on page
     isbn_val = None
-    m_isbn = re.search(r"ISBN(?:-1[03])?[:\s]+([0-9Xx -]{10,17})", orig_page_text, re.I)
-    if m_isbn:
-        raw_isbn = re.sub(r"[^0-9X]", "", m_isbn.group(1))
-        if len(raw_isbn) in (10, 13) and is_valid_isbn(raw_isbn, strict=False):
-            isbn_val = raw_isbn
+    isbn_res = extrair_isbn_confiavel(orig_page_text)
+    if isbn_res:
+        isbn_val = isbn_res[0]
 
     # Extract subject area from first catalog entry e.g. '1. Neuropsicologia.' or '1. Psicologia clínica.'
     area = None
@@ -1049,6 +1166,7 @@ def extract_candidate_metadata(
                         if cip_meta.get("isbn"):
                             candidates.isbn = cip_meta["isbn"]
                             candidates.isbn_source = "ficha_catalografica"
+                            candidates.is_isbn_strong = True
                         if cip_meta.get("area"):
                             candidates.raw_area = cip_meta["area"]
                         if cip_meta.get("cip_pages"):
@@ -1104,12 +1222,12 @@ def extract_candidate_metadata(
                             "compre agora", "compre já", "comprar livro", "conheça também"
                         ]):
                             continue
-                        m_isbn = re.search(r"\bISBN(?:-1[03])?[:\s]+([0-9Xx -]{10,17})\b", p_txt, re.I)
-                        if m_isbn:
-                            raw_val = m_isbn.group(1)
-                            cleaned_digits = re.sub(r"[^0-9X]", "", raw_val)
-                            if len(cleaned_digits) in (10, 13) and is_valid_isbn(cleaned_digits, strict=False):
-                                candidates.isbn = cleaned_digits
+                        isbn_res = extrair_isbn_confiavel(p_txt)
+                        if isbn_res:
+                            candidates.isbn = isbn_res[0]
+                            candidates.isbn_source = "ultimas_paginas"
+                            candidates.is_isbn_strong = isbn_res[1]
+                            break
         except Exception as e:
             logger.debug("Falha na leitura estrutural PyMuPDF do documento %s: %s", pdf_path, e)
     elif not reabrir_pdf:
@@ -1219,51 +1337,25 @@ def extract_candidate_metadata(
     # Identificação contextual de tese/dissertação para evitar associação indevida de DOIs de terceiros
     thesis_in_progress = bool(parse_academic_thesis(sample_text) or thesis_resumo_found)
 
-    doi_candidates = []
-    for m in DOI_REGEX.finditer(clean_head_text):
-        raw_doi_match = m.group(0).rstrip(".;,")
-        norm_d = normalizar_doi(raw_doi_match)
-        if not norm_d:
-            continue
-        start_pos = max(0, m.start() - 150)
-        end_pos = min(len(clean_head_text), m.end() + 150)
-        context = clean_head_text[start_pos:end_pos].lower()
-        is_citation_context = any(
-            re.search(pat, context) for pat in [
-                r"\b(?:in:|em:|apud|citado\s+por|citado\s+em|p\.\s*\d+[-–]\d+|pp\.\s*\d+|v\.\s*\d+,\s*n\.\s*\d+)\b",
-                r"\b(?:recuperado\s+de|dispon[íi]vel\s+em|acesso\s+em)\b",
-                r"\bet\s+al\.\b",
-            ]
-        )
-        if is_citation_context:
-            logger.debug("Descartando DOI citado em referência ou citação textual: %s", norm_d)
-            continue
-        if thesis_in_progress and not any(lbl in context for lbl in ["doi da tese", "doi da disserta", "doi do trabalho", "handle", "reposit"]):
-            logger.debug("Descartando DOI em monografia/tese (provável artigo citado): %s", norm_d)
-            continue
-        doi_candidates.append(norm_d)
-
-    if doi_candidates:
-        candidates.doi = doi_candidates[0]
+    # Extração de DOI, ISSN e ISBN via rotinas robustas
+    doi_cand = extrair_doi_confiavel(clean_head_text, is_thesis=thesis_in_progress)
+    if doi_cand:
+        candidates.doi = doi_cand
         candidates.doi_source = "cabecalho"
 
     # Extract strict ISSN from front matter
-    issn_match = ISSN_REGEX.search(clean_head_text)
-    if issn_match:
-        issn_cand = issn_match.group(1).strip()
-        if is_valid_issn(issn_cand, strict=False):
-            candidates.issn = issn_cand
-            candidates.issn_source = "cabecalho"
+    issn_cand = extrair_issn_confiavel(clean_head_text)
+    if issn_cand:
+        candidates.issn = issn_cand
+        candidates.issn_source = "cabecalho"
 
     # Extract ISBN from front matter if not already found in CIP
     if not candidates.isbn:
-        isbn_match = re.search(r"\bISBN(?:-1[03])?[:\s]+([0-9Xx -]{10,17})\b", clean_head_text, re.I)
-        if isbn_match:
-            raw_val = isbn_match.group(1)
-            cleaned_digits = re.sub(r"[^0-9X]", "", raw_val)
-            if len(cleaned_digits) in (10, 13) and is_valid_isbn(cleaned_digits, strict=False):
-                candidates.isbn = cleaned_digits
-                candidates.isbn_source = "cabecalho"
+        isbn_res = extrair_isbn_confiavel(clean_head_text)
+        if isbn_res:
+            candidates.isbn = isbn_res[0]
+            candidates.isbn_source = "cabecalho"
+            candidates.is_isbn_strong = isbn_res[1]
 
     # 5. Filename metadata fallback
     fn_meta = parse_filename_extended(pdf_path) if pdf_path else {}
@@ -1271,6 +1363,9 @@ def extract_candidate_metadata(
     fn_author = fn_meta.get("author")
     fn_year = fn_meta.get("year")
     fn_publisher = fn_meta.get("publisher")
+    candidates.fn_title = fn_title
+    candidates.fn_author = fn_author
+    candidates.pdf_path = pdf_path
 
     # 6. Academic thesis detection
     thesis_meta = parse_academic_thesis(sample_text)
