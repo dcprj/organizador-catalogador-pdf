@@ -324,3 +324,90 @@ def test_melhoria_4_cabecalho_fasciculo_revista_como_titulo():
     assert cands.raw_title == "Avaliacao de Servico de Atencao a Criancas Vitimas de Violencia Domestica"
     assert cands.raw_authors == ["Gonçalves"]
     assert cands.author_source == "nome_arquivo"
+
+
+# ---------------------------------------------------------------------------
+# 7. Testes dos 3 Ajustes Cirúrgicos: Underscores, Cabeçalho CIP e Citação de Periódicos
+# ---------------------------------------------------------------------------
+
+def test_ajuste_1_underscores_nome_arquivo():
+    """Underscores no nome do arquivo são substituídos por espaços evitando palavras aglutinadas."""
+    from organizador_pdf.classifier_jev import parse_filename_extended, sanitize_title_candidate
+
+    res1 = parse_filename_extended("/caminho/Casos_Clinicos_em_Saude_Mental.pdf")
+    assert res1["title"] == "Casos Clinicos em Saude Mental"
+
+    res2 = parse_filename_extended("/caminho/Analise_do_comportamento - Skinner.pdf")
+    assert res2["title"] == "Analise do comportamento"
+    assert res2["author"] == "Skinner"
+
+    res3 = parse_filename_extended("/caminho/Skinner - Analise_do_comportamento.pdf")
+    assert res3["title"] == "Analise do comportamento"
+    assert res3["author"] == "Skinner"
+
+    clean_t = sanitize_title_candidate("Casos_Clinicos_em_Saude_Mental")
+    assert clean_t == "Casos Clinicos em Saude Mental"
+
+
+def test_ajuste_2_cabecalho_ficha_cip_como_titulo():
+    """Expressões institucionais da ficha CIP são rejeitadas como título com fallback para fn_title."""
+    from organizador_pdf.classifier_jev import is_invalid_or_disclaimer_title, is_generic_or_structural_title
+
+    cip_headers = [
+        "Câmara Brasileira do Livro, SP, Brasil",
+        "camara brasileira do livro",
+        "Sindicato Nacional dos Editores de Livros, RJ",
+        "Dados Internacionais de Catalogação na Publicação (CIP)",
+        "Catalogação na fonte",
+        "Bibliotecária responsável: Maria Silva CRB-8/1234",
+        "Bibliotecario responsavel",
+    ]
+    for ch in cip_headers:
+        assert is_generic_or_structural_title(ch) is True, f"Deveria ser estrutural: {ch}"
+        assert is_invalid_or_disclaimer_title(ch) is True, f"Deveria ter rejeitado: {ch}"
+
+    # Fallback para fn_title limpo (Caso 'Dupla Excepcionalidade')
+    sample_text = (
+        "Dados Internacionais de Catalogação na Publicação (CIP)\n"
+        "Câmara Brasileira do Livro, SP, Brasil\n"
+        "Texto introdutório sobre altas habilidades e desenvolvimento."
+    )
+    cands = extract_candidate_metadata(
+        sample_text=sample_text,
+        pdf_path="/caminho/Dupla_Excepcionalidade_Altas_Habilidades.pdf",
+        reabrir_pdf=False,
+    )
+    assert cands.raw_title == "Dupla Excepcionalidade Altas Habilidades"
+    assert cands.title_source == "nome_arquivo"
+
+
+def test_ajuste_3_cabecalho_citacao_periodicos_como_titulo():
+    """Cabeçalhos e citações estruturais de periódicos são rejeitados como título com fallback para o artigo."""
+    from organizador_pdf.classifier_jev import is_invalid_or_disclaimer_title, is_generic_or_structural_title
+
+    journal_headers = [
+        "Psicologia em Estudo, Maringá, v. 14, n. 2, p. 301-310, abr./jun. 2009",
+        "psicologia em estudo",
+        "Psicologia Ciência e Profissão, 2011, 31 (2), 240-255",
+        "Arquivos de Neuro-Psiquiatria 2005; 63(3-A): 613-619",
+        "Arq Neuro-Psiquiatr 2005; 63: 613-619",
+        "v. 10, n. 1, p. 20-30",
+        "Vol. 15, No. 2, pp. 100-115",
+    ]
+    for jh in journal_headers:
+        assert is_generic_or_structural_title(jh) is True, f"Deveria ser estrutural: {jh}"
+        assert is_invalid_or_disclaimer_title(jh) is True, f"Deveria ter rejeitado: {jh}"
+
+    # Fallback para fn_title do artigo (Casos Fontana, Monteiro, Biazus, Ferreira Neto)
+    sample_text = (
+        "Psicologia em Estudo, Maringá, v. 14, n. 2, p. 301-310, 2009\n"
+        "Texto introdutório sobre o estudo."
+    )
+    cands = extract_candidate_metadata(
+        sample_text=sample_text,
+        pdf_path="/caminho/Fontana - O Desenvolvimento Moral e a Afetividade.pdf",
+        reabrir_pdf=False,
+    )
+    assert cands.raw_title == "O Desenvolvimento Moral e a Afetividade"
+    assert cands.raw_authors == ["Fontana"]
+    assert cands.title_source == "nome_arquivo"

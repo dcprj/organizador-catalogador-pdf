@@ -759,7 +759,7 @@ class MetadataEnricher:
             backoff_factor=0.3,
             status_forcelist=[500, 502, 503, 504],
             raise_on_status=False,
-            respect_retry_after_header=True,
+            respect_retry_after_header=False,
         )
         adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=20)
         s.mount("https://", adapter)

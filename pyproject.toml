@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "organizador-pdf"
-version = "0.4.3"
+version = "0.4.4"
 description = "CLI multiplataforma que organiza e cataloga PDFs com ABNT NBR 6023, Ficha Catalográfica (CIP), classificador Jev, enriquecimento opcional em APIs públicas e Markdown companion."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -5,6 +5,18 @@ Todas as mudanças notáveis deste projeto são documentadas aqui.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.4] - 2026-10-27
+
+### Corrigido
+- **Eliminação de Congelamento por Header `Retry-After` (OpenAlex 429)**:
+  - Configurado `respect_retry_after_header=False` no adaptador de Retry do `urllib3`, impedindo que respostas HTTP 429 com cabeçalhos `Retry-After` excessivos bloqueiem a execução em chamadas de rede externas.
+- **Higienização de Underscores em Nomes de Arquivo**:
+  - Conversão automática de underscores (`_`) em espaços em `parse_filename_extended` e `sanitize_title_candidate`, impedindo que títulos como `Casos_Clínicos_em_Saúde_Mental` sejam tratados erroneamente como palavras únicas.
+- **Descarte de Cabeçalhos de Citação de Periódicos**:
+  - Bloqueio sistemático de expressões de paginação e fascículo (`v. \d+, n. \d+, p. \d+-\d+`) e cabeçalhos de revistas acadêmicas como títulos de artigos.
+- **Rejeição de Entidades Institucionais de Fichas CIP**:
+  - Bloqueio de expressões como *Câmara Brasileira do Livro* e *Sindicato Nacional dos Editores* como títulos válidos.
+
 ## [0.4.3] - 2026-10-27
 
 ### Adicionado

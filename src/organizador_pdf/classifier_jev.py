@@ -279,6 +279,25 @@ MONTH_YEAR_TITLE_PATTERN = re.compile(
     re.I,
 )
 
+# Expressões institucionais de fichas catalográficas (CIP)
+CIP_INSTITUTIONAL_PATTERN = re.compile(
+    r"\b(?:c[âa]mara\s+brasileira\s+do\s+livro|sindicato\s+nacional\s+dos\s+editores|dados\s+internacionais\s+de\s+cataloga[çc][ãa]o|cataloga[çc][ãa]o\s+na\s+fonte|bibliotec[áa]ri[ao]\s+respons[áa]vel)\b",
+    re.I,
+)
+
+# Citações estruturais de periódicos e nomes de cabeçalho de periódicos
+JOURNAL_CITATION_OR_HEADER_PATTERNS = [
+    re.compile(
+        r"\b(?:v\.\s*\d+|vol\.\s*\d+|n\.\s*\d+|n[ºo]\.?\s*\d+|fasc\.\s*\d+)\b.*\b(?:p\.\s*\d+\s*[-–—/]\s*\d+|pp\.\s*\d+)\b|"
+        r"\b(?:p\.\s*\d+\s*[-–—/]\s*\d+|pp\.\s*\d+)\b.*\b(?:v\.\s*\d+|vol\.\s*\d+|n\.\s*\d+|n[ºo]\.?\s*\d+|fasc\.\s*\d+)\b",
+        re.I,
+    ),
+    re.compile(
+        r"^(?:psicologia\s+em\s+estudo|psicologia\s+ci[êe]ncia\s+e\s+profiss[ãa]o|arq(?:uivos)?\s+(?:de\s+)?neuro[- ]?psiquiatr(?:ia)?)\b",
+        re.I,
+    ),
+]
+
 # Nomes de operadores técnicos ou softwares descartados como autores de propriedades internas do PDF
 TECHNICAL_OPERATOR_AUTHOR_PATTERN = re.compile(
     r"\b(?:daidigital|alfred|admin|administrator|guest|owner|propriet[áa]rio|user|usuario|digital|produ[çc][aã]o|diagrama[çc][aã]o|designer|desktop|editora|pagemaker|distiller|corel|indesign|illustrator|photoshop|ghostscript|pdfcreator|acrobat|unknown|desconhecido)\b",
@@ -329,7 +348,7 @@ CITY_BOILERPLATE_REGEX = re.compile(
 COMMON_NON_PERSON_NOUNS = {
     "artigo", "artigos", "revista", "revistas", "periodico", "periódico", "livro", "livros",
     "psicologia", "psiquiatria", "forense", "pericia", "perícia", "criminologia", "direito",
-    "introducao", "introdução", "fundamentos", "jornada",
+    "introducao", "introdução", "fundamentos", "jornada", "analise", "análise", "comportamento", "comportamentos",
     "ensaios", "ensaio", "historia", "história", "manual", "curso", "guia", "mapa",
     "obras", "completas", "teoria", "estudos", "estudo", "tipo", "tipos", "psicologicos",
     "psicológicos", "espirito", "espírito", "arte", "ciencia", "ciência", "arquetipos",
@@ -382,7 +401,10 @@ def is_likely_person_name(name_cand: str) -> bool:
     if any(unicodedata.normalize("NFKD", w).encode("ascii", "ignore").decode().lower() in COMMON_NON_PERSON_NOUNS for w in words):
         return False
     if len(words) == 1:
-        return cand.title() in ("Jung", "Freud", "Lacan", "Adler", "Kant", "Nietzsche", "Platao", "Aristoteles", "Agostinho")
+        return cand.title() in (
+            "Jung", "Freud", "Lacan", "Adler", "Kant", "Nietzsche", "Platao", "Aristoteles",
+            "Agostinho", "Skinner", "Rogers", "Piaget", "Vygotsky", "Beck", "Foucault", "Fromm", "Frankl"
+        )
     if " e " in cand:
         cand_parts = [p.strip() for p in cand.split(" e ")]
         if len(cand_parts) == 2 and all(is_likely_person_name(p) or (len(p.split()) == 1 and p[0].isupper() and len(p) >= 3) for p in cand_parts):
@@ -462,7 +484,8 @@ def sanitize_title_candidate(title: Optional[str]) -> Optional[str]:
     """Limpa cabeçalhos, marcadores de página, códigos de catalogação e créditos editoriais do título."""
     if not title:
         return None
-    t = title.strip()
+    # Substitui underscores por espaços para evitar aglutinação unipalavra
+    t = title.replace("_", " ").strip()
 
     # 1. Remove marcadores de quebra e página, com ou sem colchete e traços
     t = re.sub(r"^-{3,}\s*\[.*?\]\s*-{3,}\s*", "", t)
@@ -541,6 +564,21 @@ def is_prose_or_paragraph_title(text: Optional[str]) -> bool:
     return False
 
 
+def is_generic_or_structural_title(title: Optional[str]) -> bool:
+    """Verifica se o candidato a título é cabeçalho institucional de ficha CIP ou citação estrutural de periódico."""
+    if not title:
+        return True
+    t = title.strip()
+    t_norm = unicodedata.normalize("NFKD", t)
+    # Rejeita expressões institucionais de fichas catalográficas (CIP)
+    if CIP_INSTITUTIONAL_PATTERN.search(t) or CIP_INSTITUTIONAL_PATTERN.search(t_norm):
+        return True
+    # Rejeita citações estruturais de periódicos e nomes de cabeçalho de periódicos
+    if any(pat.search(t) or pat.search(t_norm) for pat in JOURNAL_CITATION_OR_HEADER_PATTERNS):
+        return True
+    return False
+
+
 def is_invalid_or_disclaimer_title(title: Optional[str]) -> bool:
     """Verifica se o candidato a título é claramente inválido, disclaimer ou identificador."""
     if not title:
@@ -550,6 +588,8 @@ def is_invalid_or_disclaimer_title(title: Optional[str]) -> bool:
         return True
     # Normalização unicode (NFKD) para decompor ligaduras (ex: \ufb01 -> fi) e acentos
     t_norm = unicodedata.normalize("NFKD", t)
+    if is_generic_or_structural_title(t):
+        return True
     if is_prose_or_paragraph_title(t) or is_prose_or_paragraph_title(t_norm):
         return True
     # Rejeita ruído de scanner, CamScanner, marcas d'água e emails
@@ -746,22 +786,22 @@ def parse_filename_extended(pdf_path: str) -> Dict[str, Any]:
 
     if len(parts) >= 4 and any(re.match(r"^(19|20)\d{2}$", p) for p in parts):
         y_idx = next(i for i, p in enumerate(parts) if re.match(r"^(19|20)\d{2}$", p))
-        result["title"] = parts[0]
+        result["title"] = parts[0].replace("_", " ").strip()
         auth = parts[1]
         if ";" in auth:
             auth = auth.split(";")[0].strip()
-        result["author"] = strip_author_prefixes(auth)
+        result["author"] = strip_author_prefixes(auth.replace("_", " "))
         result["year"] = int(parts[y_idx])
         if y_idx + 1 < len(parts):
-            result["publisher"] = parts[y_idx + 1]
+            result["publisher"] = parts[y_idx + 1].replace("_", " ").strip()
         return result
 
     # 2. Pattern: SOBRENOME, Iniciais. Titulo (e.g. 'ANTONIO, M.C.A. A ética do desejo')
     m_inits = re.match(r"^([A-ZÁÉÍÓÚÂÊÔÃÕÇ-]+,\s*[A-Z\.\s]+)\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ“\"].+)$", cleaned_stem)
     if m_inits:
         author_raw, title_raw = m_inits.group(1).strip(), m_inits.group(2).strip()
-        result["title"] = title_raw
-        result["author"] = strip_author_prefixes(author_raw)
+        result["title"] = title_raw.replace("_", " ").strip()
+        result["author"] = strip_author_prefixes(author_raw.replace("_", " "))
         return result
 
     # 3. Pattern: AUTOR1 e AUTOR2-TITULO (e.g. 'BEER e FRANCO-DA_INDISSOCIABILIDADE...')
@@ -777,7 +817,7 @@ def parse_filename_extended(pdf_path: str) -> Dict[str, Any]:
 
     # 4. Standard: Author - Title OR Title - Author
     if len(parts) >= 2:
-        p0, p1 = parts[0].strip(), parts[1].strip()
+        p0, p1 = parts[0].replace("_", " ").strip(), parts[1].replace("_", " ").strip()
         p0_is_p = is_likely_person_name(p0)
         p1_is_p = is_likely_person_name(p1)
 
@@ -805,10 +845,12 @@ def parse_filename_extended(pdf_path: str) -> Dict[str, Any]:
                     result["year"] = int(m_yr.group(1))
                 title_raw = title_raw[:m_yr.start()].strip()
 
-        result["title"] = title_raw.rstrip(".") if title_raw else None
+        result["title"] = title_raw.rstrip(".").replace("_", " ") if title_raw else None
+        if result["author"]:
+            result["author"] = result["author"].replace("_", " ").strip()
         return result
 
-    result["title"] = cleaned_stem
+    result["title"] = cleaned_stem.replace("_", " ").strip()
     return result
 
 

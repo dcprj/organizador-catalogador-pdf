@@ -1,7 +1,7 @@
 # Organizador e Catalogador Inteligente de PDFs — Especificação e Fonte Única da Verdade
 
 > **Documento Mestre Definitivo do Projeto**  
-> **Versão:** 0.4.3 (Robustez contra Ruído de Diagramação, Normalização Unicode e Autoridade Canônica Bibliográfica)  
+> **Versão:** 0.4.4 (Resiliência de Rede em APIs Externas, Higienização de Nomes e Descarte de Citações de Periódicos)  
 > **Status:** Produção / 100% Testado (313 testes automatizados aprovados)  
 > **Finalidade:** Servir como a Fonte Única da Verdade para documentação, manutenção e recriação integral do sistema.
 
