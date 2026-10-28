@@ -543,7 +543,7 @@ def is_prose_or_paragraph_title(text: Optional[str]) -> bool:
         return False
     t = text.strip()
     words = t.split()
-    if len(words) >= 15:
+    if len(words) >= (28 if ":" in t else 22):
         return True
     if re.search(r"\.\s+[A-ZÀ-Ú]", t):  # Frases múltiplas encadeadas
         return True
@@ -610,7 +610,17 @@ def is_invalid_or_disclaimer_title(title: Optional[str]) -> bool:
     if re.search(r"\b(?:t[íi]tulo\s*original|original\s*title)\b|^titulooriginal", t, re.I):
         return True
     # Rejeita perguntas retóricas soltas ou legendas (ex.: 'Qual sua interpretação do desenho?')
-    if t.endswith("?") and any(t.lower().startswith(p) for p in ("qual ", "como ", "o que ", "por que ", "quem ", "onde ", "quando ")):
+    if t.endswith("?") and re.search(
+        r"\b(?:sua|seu|suas|seus|voc[êe]|tu|teu|tua|interpreta[çc][ãa]o\s+do\s+desenho|alternativa\s+correta|assinale|responda)\b",
+        t,
+        re.I,
+    ):
+        return True
+    # Cabeçalhos estruturais de resumo e afiliação institucional (ex.: 'BACKGROUND AND OBJECTIVES')
+    t_low_hdr = t.lower()
+    if t_low_hdr in ("background and objectives", "objectives and methods", "materials and methods") or t_low_hdr.startswith(
+        ("programa de mestrado", "programa de pós-graduação", "programa de pos-graduacao")
+    ):
         return True
     # Volumes, tomos e fascículos isolados
     if re.match(r"^(?:vol(?:ume)?\.?\s*\d+|tomo\s*\d+|v\.\s*\d+|parte\s*\d+)$", t, re.I):
@@ -863,7 +873,7 @@ def _propagar_cip_assuntos(candidates: Any, cip_meta: Dict[str, Any]) -> None:
         candidates.raw_cdd = cip_meta["cdd"]
 
 
-_CDD_CDU_RE = re.compile(r"\bCD[DU]\s*[:\-–]?\s*(\d{3}(?:\.\d+)?)")
+_CDD_CDU_RE = re.compile(r"\bC[DO][DUO]\s*[:\-–]?\s*(\d{3}(?:\.\d+)?)")
 
 
 def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
@@ -891,11 +901,11 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
         clean_l = re.sub(r",\s*\d{4}-.*$", "", clean_l).strip()
         clean_l = re.sub(r"\s*\([^)]*\)", "", clean_l).strip()
         m_auth = re.match(
-            r"^([A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõçA-ZÁÉÍÓÚÂÊÔÃÕÇ\s-]+,\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇa-záéíóúâêôãõç\.\s-]+)$",
+            r"^([A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõçA-ZÁÉÍÓÚÂÊÔÃÕÇ\s-]+\.?,\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇa-záéíóúâêôãõç\.\s-]+)$",
             clean_l,
         )
         if m_auth:
-            cand = m_auth.group(1).rstrip(".").strip()
+            cand = re.sub(r"\.,", ",", m_auth.group(1).rstrip(".").strip())
             if not any(h in cand.lower() for h in ["biblioteca", "sistema", "sindicato", "câmara", "processos", "elaborada"]):
                 auth_name = cand
                 auth_idx = idx
@@ -938,7 +948,7 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
 
     # 2. Match Title / Responsibility . -- Edition . -- City : Publisher , Year (accepts : or , or ; between city and publisher)
     m_body = re.search(
-        r"([A-ZÁÉÍÓÚÂÊÔÃÕÇ\d][^/:]+?)\s*(?:\[recurso[^\]]*\])?\s*(?::\s*([^/]+?)\s*)?/\s*(.+?)\.\s*(?:[—–-]{1,2}|\.)?\s*(?:(\d+ª?\s*\.?\s*ed(?:ição|\.)?)\s*(?:[—–-]{1,2}|\.)\s*)?(?:(?:Dados eletr[ôo]nicos|recurso digital)\s*\.?\s*(?:[—–-]{1,2}|\.)\s*)?([A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s,-]+?)\s*[:;,]\s*([A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s,-]+?),?\s*(\d{4})",
+        r"([A-ZÁÉÍÓÚÂÊÔÃÕÇ\d][^/:]+?)\s*(?:\[recurso[^\]]*\])?\s*(?::\s*([^/]+?)\s*)?(?:/\s*|\s+[I|]\s+(?=[A-ZÁÉÍÓÚÂÊÔÃÕÇ]|tradu[çc]|organiza|coordena|colabora))(.+?)\.\s*(?:[—–-]{1,2}|\.)?\s*(?:(\d+ª?\s*\.?\s*ed(?:ição|\.)?)\s*(?:[—–-]{1,2}|\.)\s*)?(?:(?:Dados eletr[ôo]nicos|recurso digital)\s*\.?\s*(?:[—–-]{1,2}|\.)\s*)?([A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s,-]+?)\s*[:;,]\s*([A-Za-zÁÉÍÓÚÂÊÔÃÕÇ\s,-]+?),?\s*(\d{4})",
         isbd_text,
         re.I,
     )
@@ -990,6 +1000,7 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
     for a in author_parts:
         a_clean = re.sub(r"\b(?:organiza[çc][ãa]o|organizad(?:or|ores|ora|oras)|coordena[çc][ãa]o|coordenad(?:or|ores)?)\b[:,\s]*", "", a, flags=re.I).strip()
         a_clean = strip_author_prefixes(a_clean)
+        a_clean = a_clean.strip(" .,;:")
         if len(a_clean) > 3 and not is_invalid_or_disclaimer_title(a_clean):
             resp_authors.append(a_clean)
 
@@ -1004,6 +1015,16 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
             authors_list = [f"{sp[1].strip()} {sp[0].strip()}"]
         else:
             authors_list = [auth_name]
+    if not authors_list:
+        # Entradas secundárias de autor na ficha ('I. Sobrenome, Nome.' ou '1. Sobrenome, Nome.' antes de 'II. Título')
+        for m_sec in re.finditer(
+            r"\b(?:I|1)\.\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-záéíóúâêôãõçÁÉÍÓÚÂÊÔÃÕÇ-]+(?:\s+[A-Za-záéíóúâêôãõçÁÉÍÓÚÂÊÔÃÕÇ-]+)*),\s+"
+            r"([A-ZÁÉÍÓÚÂÊÔÃÕÇ][A-Za-záéíóúâêôãõçÁÉÍÓÚÂÊÔÃÕÇ\.\s-]*?)\.\s+(?=(?:I{1,3}|[1-9])\.)",
+            page_text,
+        ):
+            nome = f"{m_sec.group(2).strip()} {m_sec.group(1).strip()}".strip()
+            if nome not in authors_list:
+                authors_list.append(nome)
 
     # Plausibility checks on extracted CIP fields:
     # 1. Year: CIP cards in Brazil started in 1971; modern publications cannot have CIP year < 1950 or > 2030
@@ -1055,7 +1076,7 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
     m_first = re.search(r"\b1\.\s+[A-Za-zÁÉÍÓÚÂÊÔÃÕÇ]", page_text)
     if m_first:
         tail = page_text[m_first.start():]
-        m_end = re.search(r"\s+I\.\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ]|\bCD[DU]\b", tail)
+        m_end = re.search(r"\s+I\.\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ]|\bC[DO][DUO]\b", tail)
         if m_end:
             tail = tail[:m_end.start()]
         invalid_subj = {
@@ -1063,8 +1084,10 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
             "orientadora", "universidade", "faculdade", "instituto", "edicao", "volume",
             "cdd", "cdu", "ilustrado", "bibliografia", "isbn", "issn", "doi",
         }
-        for piece in re.split(r"\b[1-9]\.\s+", tail):
+        for piece_idx, piece in enumerate(re.split(r"\b[1-9]\.\s+", tail)):
             subj = re.sub(r"\s+", " ", piece).strip(" .;,\n")
+            if piece_idx > 1 and re.match(r"^[A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÀ-ÿ-]+,\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ]", subj):
+                continue  # entrada secundária de autor ('Silva, Dílson'), não é assunto
             if not re.fullmatch(r"[A-Za-zÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõçÀà][A-Za-zÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõçÀà\s,-]{2,80}", subj):
                 continue
             subj_norm = unicodedata.normalize("NFKD", subj).encode("ascii", "ignore").decode().lower()

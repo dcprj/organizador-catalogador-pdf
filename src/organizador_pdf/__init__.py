@@ -1,6 +1,6 @@
 """Organizador e Catalogador Determinístico de PDFs."""
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 from .abnt_formatter import ABNTFormatter, format_abnt_reference
 from .classifier_jev import JevClassifier

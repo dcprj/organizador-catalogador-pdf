@@ -9,6 +9,7 @@ executes fallback search by title across the APIs with strict relevance and auth
 
 import copy
 import functools
+import html as html_lib
 import json
 import os
 import re
@@ -296,6 +297,14 @@ def confirmar_mesma_obra(
         titulo_em_sample = False
         if api_title and len(api_title) >= 4 and (api_title.lower() in sample_low or (doc_title and api_title.lower() in doc_title.lower())):
             titulo_em_sample = True
+        # Corroboração adicional: título da API presente (normalizado) na amostra ou compatível com o nome do arquivo
+        norm_api_t = normalizar_para_busca(api_title or "")
+        norm_sample = normalizar_para_busca(getattr(candidates, "sample_text", "") or "")
+        fn_title = getattr(candidates, "fn_title", None)
+        if len(norm_api_t) >= 8 and norm_api_t in norm_sample:
+            titulo_em_sample = True
+        elif fn_title and api_title and is_title_relevant(fn_title, api_title, threshold=0.50):
+            titulo_em_sample = True
 
         titulo_relevante = False
         if doc_title and api_title:
@@ -321,6 +330,11 @@ def confirmar_mesma_obra(
                     f"({provider_name}) para ISBN confirmado. Registro canônico adotado."
                 )
             return True, divergencia
+
+        # Título da API corroborado pelo texto/nome do arquivo: adota os metadados canônicos sem falso conflito
+        # contra título/autores ruidosos (cabeçalhos de seção, afiliações) extraídos do PDF.
+        if titulo_em_sample:
+            return True, None
 
         # Para outros identificadores ou identificadores em contexto fraco (ex: citações ou referências no fim):
         if doc_title and api_title:
@@ -786,6 +800,17 @@ def infer_thematic_area(
     return (area, subarea)
 
 
+def _eh_erro_transitorio_cache(val: Any) -> bool:
+    """True quando o item de cache representa erro transitório (HTTP 429/5xx ou falha de conexão/timeout)."""
+    if not isinstance(val, (tuple, list)) or len(val) < 2:
+        return False
+    st = val[1]
+    transitorios = (StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE, StatusConsultaProvedor.FALHA_CONEXAO)
+    if isinstance(st, StatusConsultaProvedor):
+        return st in transitorios
+    return isinstance(st, str) and st in ("ERRO_HTTP_OU_LIMITE", "FALHA_CONEXAO")
+
+
 def _serialize_cache_item(item: Any) -> Any:
     """Serializa estruturas de dados de cache bibliográfico para JSON seguro."""
     if isinstance(item, StatusConsultaProvedor):
@@ -866,7 +891,10 @@ class MetadataEnricher:
                     raw_data = json.load(f)
                     if isinstance(raw_data, dict):
                         for k, v in raw_data.items():
-                            self._cache[k] = _deserialize_cache_item(v)
+                            item = _deserialize_cache_item(v)
+                            if _eh_erro_transitorio_cache(item):
+                                continue  # purga erros transitórios (429/5xx/timeout) gravados em execuções antigas
+                            self._cache[k] = item
         except Exception as exc:
             logger.debug("Aviso ao carregar cache bibliográfico do disco: %s", exc)
 
@@ -876,7 +904,11 @@ class MetadataEnricher:
             return
         try:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
-            serialized = {k: _serialize_cache_item(v) for k, v in self._cache.items()}
+            serialized = {
+                k: _serialize_cache_item(v)
+                for k, v in self._cache.items()
+                if not _eh_erro_transitorio_cache(v)
+            }
             tmp_path = self._cache_file.with_suffix(".tmp")
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(serialized, f, ensure_ascii=False, indent=2)
@@ -1424,6 +1456,46 @@ class MetadataEnricher:
                 self.set_provider_status("openlibrary", StatusConsultaProvedor.DISPENSADO_JA_CONFIRMADO)
                 self._registrar_dispensa("OpenLibrary", f"isbn:{isbn}", "Campos essenciais já confirmados por fontes anteriores")
 
+            # Fallbacks adicionais por ISBN válido quando autoria ou ano seguem ausentes
+            if self.online and (not metadata.authors or not metadata.year):
+                expected_title = metadata.title or title_candidate
+                cr_meta = self.fetch_crossref_by_isbn(isbn)
+                if cr_meta:
+                    corresp, div = confirmar_mesma_obra(candidates, cr_meta, "Crossref", is_identifier_match=True)
+                    if corresp:
+                        self._merge_metadata(metadata, cr_meta, authoritative=False, provider="Crossref", candidates=candidates)
+                        sources_consulted.append("Crossref (ISBN)")
+                        if not metadata.isbn_source:
+                            metadata.isbn_source = "api_crossref"
+                        if div:
+                            metadata.conflitos_registrados.append(div)
+                    elif div:
+                        metadata.conflitos_registrados.append(div)
+                        metadata.needs_review = True
+                if not metadata.authors or not metadata.year:
+                    oa_isbn_meta = self.fetch_openalex_by_isbn(isbn, expected_title=expected_title)
+                    if oa_isbn_meta:
+                        corresp, div = confirmar_mesma_obra(candidates, oa_isbn_meta, "OpenAlex", is_identifier_match=True)
+                        if corresp:
+                            self._merge_metadata(metadata, oa_isbn_meta, authoritative=False, provider="OpenAlex", candidates=candidates)
+                            sources_consulted.append("OpenAlex (ISBN)")
+                            if not metadata.isbn_source:
+                                metadata.isbn_source = "api_openalex"
+                            if div:
+                                metadata.conflitos_registrados.append(div)
+                        elif div:
+                            metadata.conflitos_registrados.append(div)
+                            metadata.needs_review = True
+                if not metadata.authors:
+                    web_meta = self.fetch_web_search_by_isbn(
+                        isbn,
+                        expected_title=expected_title,
+                        sample_text=candidates.sample_text if candidates else None,
+                    )
+                    if web_meta:
+                        self._merge_metadata(metadata, web_meta, authoritative=False, provider="Web Search (ISBN)", candidates=candidates)
+                        sources_consulted.append("Web Search (ISBN)")
+
         # Consolidar status por provedor e isbn_verified (CA-02)
         metadata.status_por_provedor = {
             k: (v.value if hasattr(v, "value") else str(v))
@@ -1432,7 +1504,7 @@ class MetadataEnricher:
         isbn_confirmado = any(
             status_val == StatusConsultaProvedor.CONFIRMADO.value
             for prov, status_val in metadata.status_por_provedor.items()
-            if prov in ("brasil_api", "google_books", "openlibrary")
+            if prov in ("brasil_api", "google_books", "openlibrary", "crossref", "openalex")
         )
         metadata.isbn_verified = bool(isbn_confirmado)
 
@@ -1554,13 +1626,21 @@ class MetadataEnricher:
         )
         has_verified_id = identificador_confirmado_obra
 
+        title_source_aval = getattr(metadata, "title_source", None)
+        titulo_de_fonte_oficial = bool(
+            has_verified_id
+            or title_source_aval in (
+                "api_crossref", "api_brasilapi", "api_google_books", "api_openlibrary", "api_datacite", "api_openalex",
+            )
+        )
+
         # 1. Validações estritas de título
         if t in ("Sem Título", "Publicação Sem Título") or len(t) < 4:
             meta_conf = 0.1
             metadata.needs_review = True
             if "Documento sem título bibliográfico identificável" not in metadata.review_reasons:
                 metadata.review_reasons.append("Documento sem título bibliográfico identificável")
-        elif is_invalid_or_disclaimer_title(t):
+        elif is_invalid_or_disclaimer_title(t) and not titulo_de_fonte_oficial:
             meta_conf = 0.15
             metadata.needs_review = True
             msg = f"Título inválido, identificador ou disclaimer legal detectado ('{t}')"
@@ -1752,7 +1832,7 @@ class MetadataEnricher:
             t
             and t not in ("Sem Título", "Publicação Sem Título")
             and len(t) >= 4
-            and not is_invalid_or_disclaimer_title(t)
+            and (titulo_de_fonte_oficial or not is_invalid_or_disclaimer_title(t))
             and not t.startswith("---")
             and not (len(t.split()) <= 1 and t_lower in GENERIC_SINGLE_WORD_TITLES)
         )
@@ -1760,7 +1840,7 @@ class MetadataEnricher:
         # Ignora divergências que representem reconciliação pela base oficial canônica
         conflitos_reais = [
             c for c in metadata.conflitos_registrados
-            if not any(padrao in c.lower() for padrao in ("adotado como âncora", "registro canônico adotado", "adotad"))
+            if not any(padrao in c.lower() for padrao in ("adotado como âncora", "registro canônico adotado", "adotad", "mantido ano explícito", "mantido ano explicito"))
         ]
         tem_conflitos = len(conflitos_reais) > 0
 
@@ -1775,7 +1855,7 @@ class MetadataEnricher:
         elif any("Title Search" in s for s in sources_consulted) and not tem_conflitos and tem_autores:
             tem_fonte_confirmadora = True
             fonte_confirmadora_desc = "Busca por título confirmada com alta relevância e autoria compatível em base bibliográfica externa"
-        elif any(s in ("Crossref (DOI)", "Brasil API / CBL (ISBN)", "Google Books (ISBN)", "DataCite (DOI)", "OpenAlex (DOI)") for s in sources_consulted) and not tem_conflitos and tem_autores:
+        elif any(s in ("Crossref (DOI)", "Brasil API / CBL (ISBN)", "Google Books (ISBN)", "DataCite (DOI)", "OpenAlex (DOI)", "OpenLibrary (ISBN)", "Crossref (ISBN)", "OpenAlex (ISBN)", "Web Search (ISBN)") for s in sources_consulted) and not tem_conflitos and tem_autores:
             tem_fonte_confirmadora = True
             fonte_confirmadora_desc = f"Consulta direta confirmada ({', '.join(sources_consulted)}) com autoria compatível"
         elif getattr(metadata, "title_source", "") == "ficha_catalografica" and getattr(metadata, "cip_pages", None) and tem_titulo_solido and tem_autores and not tem_conflitos:
@@ -2068,6 +2148,19 @@ class MetadataEnricher:
             return None
         cache_key = f"brasilapi:isbn:{clean_isbn}"
         hit, val = self._get_from_cache(cache_key)
+        if hit and isinstance(val, tuple) and self.online:
+            # Complementação única de entradas antigas confirmadas sem autoria (ex.: corrida Promise.any da Brasil API)
+            res_old = val[0]
+            if (
+                res_old
+                and val[1] == StatusConsultaProvedor.CONFIRMADO
+                and not res_old.get("authors")
+                and not res_old.get("_providers_checked")
+            ):
+                completo = self._brasil_api_complementar(clean_isbn, res_old, ("google-books", "cbl", "mercado-editorial"))
+                completo["_providers_checked"] = True
+                self._set_cache(cache_key, (completo, val[1], val[2] if len(val) >= 3 else None))
+                hit, val = self._get_from_cache(cache_key)
         if hit:
             if isinstance(val, tuple):
                 res = val[0]
@@ -2097,8 +2190,10 @@ class MetadataEnricher:
         result = None
         status = StatusConsultaProvedor.NAO_ENCONTRADO
         erro_aviso: Optional[str] = None
+        http_code: Optional[int] = None
         try:
             resp = self.session.get(url, timeout=self._get_timeout())
+            http_code = resp.status_code if isinstance(resp.status_code, int) else None
             if resp.status_code == 200:
                 data = resp.json()
                 ret_isbn = data.get("isbn")
@@ -2185,6 +2280,23 @@ class MetadataEnricher:
             status = StatusConsultaProvedor.FALHA_CONEXAO
             erro_aviso = f"Erro na requisição à Brasil API / CBL: {e}"
 
+        # Multi-provider: completa autoria/ano ausentes (ou tenta provedores individuais em 404/5xx p/ ISBN brasileiro)
+        eh_isbn_brasileiro = clean_isbn.startswith(("97885", "97865", "85", "65"))
+        precisa_complemento = bool(result and (not result.get("authors") or not result.get("year")))
+        falhou_para_isbn_br = bool(
+            result is None
+            and eh_isbn_brasileiro
+            and http_code is not None
+            and (http_code == 404 or 500 <= http_code <= 599)
+        )
+        if precisa_complemento or falhou_para_isbn_br:
+            completo = self._brasil_api_complementar(clean_isbn, result)
+            if completo:
+                completo["_providers_checked"] = True
+                result = completo
+                status = StatusConsultaProvedor.CONFIRMADO
+                erro_aviso = None
+
         self._set_cache(cache_key, (result, status, erro_aviso))
         self.set_provider_status("brasil_api", status)
         self._registrar_consulta(
@@ -2198,6 +2310,69 @@ class MetadataEnricher:
         return result
 
     fetch_brasil_api_by_isbn = fetch_brasil_api_isbn
+
+    def _brasil_api_complementar(
+        self,
+        clean_isbn: str,
+        result: Optional[Dict[str, Any]],
+        providers: Tuple[str, ...] = ("cbl", "mercado-editorial", "google-books", "open-library"),
+    ) -> Optional[Dict[str, Any]]:
+        """Consulta provedores individuais da Brasil API e mescla campos ausentes (autores, ano, etc.)."""
+        base: Optional[Dict[str, Any]] = dict(result) if result else None
+        for prov in providers:
+            if base and base.get("authors") and base.get("year"):
+                break
+            try:
+                resp = self.session.get(
+                    f"https://brasilapi.com.br/api/isbn/v1/{clean_isbn}?providers={prov}",
+                    timeout=self._get_timeout(),
+                )
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+            except (requests.RequestException, ValueError) as e:
+                logger.debug("Brasil API provider %s error: %s", prov, e)
+                continue
+            if not isinstance(data, dict):
+                continue
+            ret_isbn = data.get("isbn")
+            if ret_isbn and not is_same_isbn(clean_isbn, ret_isbn):
+                continue
+            authors = [a.strip() for a in (data.get("authors") or []) if isinstance(a, str) and a.strip()]
+            year_raw = data.get("year")
+            try:
+                year = int(year_raw) if year_raw else None
+            except (TypeError, ValueError):
+                year = None
+            location = data.get("location")
+            city = location.split(",")[0].strip() if isinstance(location, str) and location else None
+            if base is None:
+                raw_title = data.get("title")
+                if not raw_title:
+                    continue
+                base = {
+                    "title": re.sub(r"^\(ED\)\s*", "", raw_title, flags=re.I).strip(),
+                    "subtitle": data.get("subtitle"),
+                    "authors": authors,
+                    "publisher": data.get("publisher"),
+                    "year": year,
+                    "city": city,
+                    "isbn": clean_isbn,
+                }
+                _anexar_subjects(base, data.get("subjects") or data.get("subject"))
+                continue
+            if not base.get("authors") and authors:
+                base["authors"] = authors
+            if not base.get("year") and year:
+                base["year"] = year
+            for campo, valor in (("subtitle", data.get("subtitle")), ("publisher", data.get("publisher")), ("city", city)):
+                if valor and not base.get(campo):
+                    base[campo] = valor
+            if not base.get("subjects"):
+                _anexar_subjects(base, data.get("subjects") or data.get("subject"))
+        if base is not None and not base.get("isbn"):
+            base["isbn"] = clean_isbn
+        return base
 
     # ----------------- CROSSREF API -----------------
     def fetch_crossref_by_doi(self, doi: str) -> Optional[Dict[str, Any]]:
@@ -2568,7 +2743,10 @@ class MetadataEnricher:
         cache_key = f"gbooks:title:{norm_title}"
         hit, val = self._get_from_cache(cache_key)
         if hit:
-            st = StatusConsultaProvedor.RESPOSTA_SEM_CONFIRMACAO if val else StatusConsultaProvedor.NAO_ENCONTRADO
+            if isinstance(val, tuple) and len(val) == 2:
+                val, st = val
+            else:
+                st = StatusConsultaProvedor.RESPOSTA_SEM_CONFIRMACAO if val else StatusConsultaProvedor.NAO_ENCONTRADO
             self._registrar_consulta(
                 fonte="Google Books",
                 consulta=f"title:{title}",
@@ -2581,8 +2759,13 @@ class MetadataEnricher:
         url = "https://www.googleapis.com/books/v1/volumes"
         params = {"q": f"intitle:{title}", "maxResults": 3}
         result = self._query_google_books(url, params)
-        self._set_cache(cache_key, result)
-        st = StatusConsultaProvedor.RESPOSTA_SEM_CONFIRMACAO if result else StatusConsultaProvedor.NAO_ENCONTRADO
+        if result:
+            st = StatusConsultaProvedor.RESPOSTA_SEM_CONFIRMACAO
+        elif getattr(self._local, "gb_last_error", False):
+            st = StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE
+        else:
+            st = StatusConsultaProvedor.NAO_ENCONTRADO
+        self._set_cache(cache_key, (result, st))
         self._registrar_consulta(
             fonte="Google Books",
             consulta=f"title:{title}",
@@ -2594,11 +2777,16 @@ class MetadataEnricher:
 
     def _query_google_books(self, url: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         is_isbn_query = "isbn:" in str(params.get("q", ""))
+        self._local.gb_last_error = False
         try:
             req_params = dict(params)
             if self.google_books_api_key:
                 req_params["key"] = self.google_books_api_key
             resp = self.session.get(url, params=req_params, timeout=self._get_timeout())
+            if isinstance(resp.status_code, int) and resp.status_code == 429:
+                # 1 retry automático após breve espera; se persistir o 429, segue o fluxo normal
+                time.sleep(1.2)
+                resp = self.session.get(url, params=req_params, timeout=self._get_timeout())
             if resp.status_code == 200:
                 data = resp.json()
                 items = data.get("items", [])
@@ -2643,20 +2831,25 @@ class MetadataEnricher:
                     self.set_provider_status("google_books", StatusConsultaProvedor.NAO_ENCONTRADO)
             elif resp.status_code in (429, 403):
                 logger.warning("Google Books API quota exceeded or forbidden (HTTP %s).", resp.status_code)
+                self._local.gb_last_error = True
                 if is_isbn_query:
                     self.set_provider_status("google_books", StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE)
             elif resp.status_code in (500, 502, 503, 504):
+                self._local.gb_last_error = True
                 if is_isbn_query:
                     self.set_provider_status("google_books", StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE)
             else:
+                self._local.gb_last_error = True
                 if is_isbn_query:
                     self.set_provider_status("google_books", StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE)
         except (requests.Timeout, requests.ConnectionError) as e:
             logger.debug("Google Books API connection/timeout error: %s", e)
+            self._local.gb_last_error = True
             if is_isbn_query:
                 self.set_provider_status("google_books", StatusConsultaProvedor.FALHA_CONEXAO)
         except requests.RequestException as e:
             logger.debug("Google Books API query error: %s", e)
+            self._local.gb_last_error = True
             if is_isbn_query:
                 self.set_provider_status("google_books", StatusConsultaProvedor.FALHA_CONEXAO)
         return None
@@ -2743,6 +2936,23 @@ class MetadataEnricher:
             return None
         cache_key = f"openlib:isbn:{clean_isbn}"
         hit, val = self._get_from_cache(cache_key)
+        if hit and isinstance(val, tuple) and self.online:
+            res_old = val[0]
+            if (
+                res_old
+                and val[1] == StatusConsultaProvedor.CONFIRMADO
+                and not res_old.get("authors")
+                and not res_old.get("_authors_checked")
+            ):
+                novo = self._openlibrary_jscmd_data(clean_isbn)
+                completo = dict(res_old)
+                if novo and novo[0] and novo[0].get("authors"):
+                    for k, v in novo[0].items():
+                        if v and not completo.get(k):
+                            completo[k] = v
+                completo["_authors_checked"] = True
+                self._set_cache(cache_key, (completo, val[1], val[2] if len(val) >= 3 else None))
+                hit, val = self._get_from_cache(cache_key)
         if hit:
             if isinstance(val, tuple):
                 res = val[0]
@@ -2772,62 +2982,68 @@ class MetadataEnricher:
         result = None
         status = StatusConsultaProvedor.NAO_ENCONTRADO
         erro_aviso: Optional[str] = None
-        try:
-            resp = self.session.get(url, timeout=self._get_timeout())
-            if resp.status_code == 200:
-                data = resp.json()
-                ret_isbns = data.get("isbn_13", []) + data.get("isbn_10", [])
-                if ret_isbns:
-                    if any(is_same_isbn(clean_isbn, x) for x in ret_isbns):
-                        status = StatusConsultaProvedor.CONFIRMADO
+        jscmd = self._openlibrary_jscmd_data(clean_isbn)
+        if jscmd is not None:
+            result, status, erro_aviso = jscmd
+        else:
+            try:
+                resp = self.session.get(url, timeout=self._get_timeout())
+                if resp.status_code == 200:
+                    data = resp.json()
+                    ret_isbns = data.get("isbn_13", []) + data.get("isbn_10", [])
+                    if ret_isbns:
+                        if any(is_same_isbn(clean_isbn, x) for x in ret_isbns):
+                            status = StatusConsultaProvedor.CONFIRMADO
+                        else:
+                            logger.warning("OpenLibrary retornou registro sem o ISBN consultado (%s). Rejeitando resposta.", clean_isbn)
+                            status = StatusConsultaProvedor.DIVERGENTE
+                            erro_aviso = f"ISBN retornado divergente: {clean_isbn} não encontrado em {ret_isbns}"
+                            self._set_cache(cache_key, (None, status, erro_aviso))
+                            self.set_provider_status("openlibrary", status)
+                            self._registrar_consulta(
+                                fonte="OpenLibrary",
+                                consulta=f"isbn:{clean_isbn}",
+                                status=status,
+                                resultado_encontrado=False,
+                                erro_ou_aviso=erro_aviso,
+                            )
+                            return None
                     else:
-                        logger.warning("OpenLibrary retornou registro sem o ISBN consultado (%s). Rejeitando resposta.", clean_isbn)
-                        status = StatusConsultaProvedor.DIVERGENTE
-                        erro_aviso = f"ISBN retornado divergente: {clean_isbn} não encontrado em {ret_isbns}"
-                        self._set_cache(cache_key, (None, status, erro_aviso))
-                        self.set_provider_status("openlibrary", status)
-                        self._registrar_consulta(
-                            fonte="OpenLibrary",
-                            consulta=f"isbn:{clean_isbn}",
-                            status=status,
-                            resultado_encontrado=False,
-                            erro_ou_aviso=erro_aviso,
-                        )
-                        return None
+                        status = StatusConsultaProvedor.RESPOSTA_SEM_CONFIRMACAO
+
+                    publish_places = data.get("publish_places", [])
+                    city = publish_places[0].strip() if publish_places and isinstance(publish_places[0], str) else None
+
+                    result = {
+                        "title": data.get("title"),
+                        "subtitle": data.get("subtitle"),
+                        "authors": self._openlibrary_resolver_autores(data),
+                        "publisher": data.get("publishers", [None])[0] if data.get("publishers") else None,
+                        "city": city,
+                        "year": int(data["publish_date"][-4:]) if data.get("publish_date") and data["publish_date"][-4:].isdigit() else None,
+                        "isbn": clean_isbn if status == StatusConsultaProvedor.CONFIRMADO else None,
+                        "_authors_checked": True,
+                    }
+                    _anexar_subjects(result, data.get("subjects") or data.get("subject"))
+                elif resp.status_code == 404:
+                    status = StatusConsultaProvedor.NAO_ENCONTRADO
+                elif resp.status_code == 429:
+                    status = StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE
+                    erro_aviso = "HTTP 429: Limite de requisições excedido na OpenLibrary."
+                elif resp.status_code in (500, 502, 503, 504):
+                    status = StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE
+                    erro_aviso = f"HTTP {resp.status_code}: Instabilidade/erro de servidor na OpenLibrary."
                 else:
-                    status = StatusConsultaProvedor.RESPOSTA_SEM_CONFIRMACAO
-
-                publish_places = data.get("publish_places", [])
-                city = publish_places[0].strip() if publish_places and isinstance(publish_places[0], str) else None
-
-                result = {
-                    "title": data.get("title"),
-                    "subtitle": data.get("subtitle"),
-                    "publisher": data.get("publishers", [None])[0] if data.get("publishers") else None,
-                    "city": city,
-                    "year": int(data["publish_date"][-4:]) if data.get("publish_date") and data["publish_date"][-4:].isdigit() else None,
-                    "isbn": clean_isbn if status == StatusConsultaProvedor.CONFIRMADO else None,
-                }
-                _anexar_subjects(result, data.get("subjects") or data.get("subject"))
-            elif resp.status_code == 404:
-                status = StatusConsultaProvedor.NAO_ENCONTRADO
-            elif resp.status_code == 429:
-                status = StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE
-                erro_aviso = "HTTP 429: Limite de requisições excedido na OpenLibrary."
-            elif resp.status_code in (500, 502, 503, 504):
-                status = StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE
-                erro_aviso = f"HTTP {resp.status_code}: Instabilidade/erro de servidor na OpenLibrary."
-            else:
-                status = StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE
-                erro_aviso = f"HTTP {resp.status_code}: Resposta inesperada da OpenLibrary."
-        except (requests.Timeout, requests.ConnectionError) as e:
-            logger.debug("OpenLibrary connection/timeout error: %s", e)
-            status = StatusConsultaProvedor.FALHA_CONEXAO
-            erro_aviso = f"Falha de conexão ou timeout na OpenLibrary: {e}"
-        except requests.RequestException as e:
-            logger.debug("OpenLibrary ISBN error: %s", e)
-            status = StatusConsultaProvedor.FALHA_CONEXAO
-            erro_aviso = f"Erro na requisição à OpenLibrary: {e}"
+                    status = StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE
+                    erro_aviso = f"HTTP {resp.status_code}: Resposta inesperada da OpenLibrary."
+            except (requests.Timeout, requests.ConnectionError) as e:
+                logger.debug("OpenLibrary connection/timeout error: %s", e)
+                status = StatusConsultaProvedor.FALHA_CONEXAO
+                erro_aviso = f"Falha de conexão ou timeout na OpenLibrary: {e}"
+            except requests.RequestException as e:
+                logger.debug("OpenLibrary ISBN error: %s", e)
+                status = StatusConsultaProvedor.FALHA_CONEXAO
+                erro_aviso = f"Erro na requisição à OpenLibrary: {e}"
 
         self._set_cache(cache_key, (result, status, erro_aviso))
         self.set_provider_status("openlibrary", status)
@@ -2840,6 +3056,74 @@ class MetadataEnricher:
             erro_ou_aviso=erro_aviso,
         )
         return result
+
+    def _openlibrary_resolver_autores(self, data: Dict[str, Any]) -> List[str]:
+        """Resolve autores de um registro /isbn/*.json (by_statement ou referências /authors/OL...)."""
+        names: List[str] = []
+        for ref in (data.get("authors") or [])[:3]:
+            key = ref.get("key") if isinstance(ref, dict) else None
+            if not key:
+                continue
+            try:
+                r = self.session.get(f"https://openlibrary.org{key}.json", timeout=self._get_timeout())
+                if r.status_code == 200:
+                    nm = (r.json() or {}).get("name")
+                    if isinstance(nm, str) and nm.strip():
+                        names.append(nm.strip())
+            except (requests.RequestException, ValueError, AttributeError):
+                continue
+        if not names:
+            by = data.get("by_statement")
+            if isinstance(by, str) and by.strip():
+                for part in re.split(r"\s*(?:;|,|\be\b|\band\b|&)\s*", by.strip(" .")):
+                    part = part.strip(" .")
+                    if len(part) > 3:
+                        names.append(part)
+        return names
+
+    def _openlibrary_jscmd_data(self, clean_isbn: str) -> Optional[Tuple[Optional[Dict[str, Any]], StatusConsultaProvedor, Optional[str]]]:
+        """Consulta ``api/books?jscmd=data`` (autores, editora, local, ano, assuntos). None se vazio/erro."""
+        url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{clean_isbn}&format=json&jscmd=data"
+        try:
+            resp = self.session.get(url, timeout=self._get_timeout())
+            if resp.status_code != 200:
+                return None
+            payload = resp.json()
+        except (requests.RequestException, ValueError):
+            return None
+        entry = payload.get(f"ISBN:{clean_isbn}") if isinstance(payload, dict) else None
+        if not isinstance(entry, dict) or not entry.get("title"):
+            return None
+        identifiers = entry.get("identifiers") or {}
+        ret_isbns = list(identifiers.get("isbn_13") or []) + list(identifiers.get("isbn_10") or [])
+        if ret_isbns:
+            if any(is_same_isbn(clean_isbn, x) for x in ret_isbns):
+                status = StatusConsultaProvedor.CONFIRMADO
+            else:
+                msg = f"ISBN retornado divergente: {clean_isbn} não encontrado em {ret_isbns}"
+                return None, StatusConsultaProvedor.DIVERGENTE, msg
+        else:
+            status = StatusConsultaProvedor.RESPOSTA_SEM_CONFIRMACAO
+        authors = [a.get("name", "").strip() for a in (entry.get("authors") or []) if isinstance(a, dict) and a.get("name")]
+        if not authors:
+            by = entry.get("by_statement")
+            if isinstance(by, str) and by.strip():
+                authors = [x.strip(" .") for x in re.split(r"\s*(?:;|,|\be\b|\band\b|&)\s*", by.strip(" .")) if len(x.strip(" .")) > 3]
+        publishers = entry.get("publishers") or []
+        places = entry.get("publish_places") or []
+        m_year = re.search(r"\b(19\d{2}|20\d{2})\b", str(entry.get("publish_date") or ""))
+        result: Dict[str, Any] = {
+            "title": entry.get("title"),
+            "subtitle": entry.get("subtitle"),
+            "authors": authors,
+            "publisher": publishers[0].get("name") if publishers and isinstance(publishers[0], dict) else None,
+            "city": places[0].get("name") if places and isinstance(places[0], dict) else None,
+            "year": int(m_year.group(1)) if m_year else None,
+            "isbn": clean_isbn if status == StatusConsultaProvedor.CONFIRMADO else None,
+            "_authors_checked": True,
+        }
+        _anexar_subjects(result, [x.get("name") for x in (entry.get("subjects") or []) if isinstance(x, dict) and x.get("name")])
+        return result, status, None
 
     def fetch_openlibrary_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Search OpenLibrary API by title."""
@@ -2917,6 +3201,232 @@ class MetadataEnricher:
             resultado_encontrado=bool(result),
             metadados=result or {},
             erro_ou_aviso=erro_aviso,
+        )
+        return result
+
+    # ----------------- FALLBACKS DE ISBN (Crossref / OpenAlex / Busca Web) -----------------
+    def _set_status_sem_rebaixar(self, provider: str, status: StatusConsultaProvedor) -> None:
+        """Atualiza o status do provedor sem rebaixar uma confirmação anterior (ex.: DOI já CONFIRMADO)."""
+        atual = self.provider_status.get(provider)
+        if atual == StatusConsultaProvedor.CONFIRMADO and status != StatusConsultaProvedor.CONFIRMADO:
+            return
+        self.set_provider_status(provider, status)
+
+    def _consulta_isbn_cacheada(self, cache_key: str, fonte: str, consulta: str, provider: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        hit, val = self._get_from_cache(cache_key)
+        if not hit:
+            return False, None
+        if isinstance(val, tuple):
+            res, st = val[0], val[1]
+            cached_err = val[2] if len(val) >= 3 else None
+        else:
+            res, cached_err = val, None
+            st = StatusConsultaProvedor.CONFIRMADO if res else StatusConsultaProvedor.NAO_ENCONTRADO
+        self._set_status_sem_rebaixar(provider, st)
+        self._registrar_consulta(
+            fonte=fonte, consulta=consulta, status=st, resultado_encontrado=bool(res),
+            metadados=res or {}, erro_ou_aviso=cached_err,
+        )
+        return True, res
+
+    def fetch_crossref_by_isbn(self, isbn: str) -> Optional[Dict[str, Any]]:
+        """Consulta o Crossref por ISBN (filter=isbn:) e confirma o ISBN retornado."""
+        clean_isbn = re.sub(r"[^0-9X]", "", str(isbn).upper())
+        if not is_valid_isbn(clean_isbn, strict=False):
+            return None
+        cache_key = f"crossref:isbn:{clean_isbn}"
+        consulta = f"isbn:{clean_isbn}"
+        hit, res = self._consulta_isbn_cacheada(cache_key, "Crossref", consulta, "crossref")
+        if hit:
+            return res
+
+        result = None
+        status = StatusConsultaProvedor.NAO_ENCONTRADO
+        erro_aviso: Optional[str] = None
+        try:
+            resp = self.session.get(
+                "https://api.crossref.org/works",
+                params={"filter": f"isbn:{clean_isbn}", "rows": 3},
+                timeout=self._get_timeout(),
+            )
+            if resp.status_code == 200:
+                items = (resp.json().get("message") or {}).get("items") or []
+                for item in items:
+                    isbns_item = [re.sub(r"[^0-9Xx]", "", str(x).split("/")[-1]) for x in item.get("ISBN", [])]
+                    if any(is_same_isbn(clean_isbn, x) for x in isbns_item):
+                        parsed = self._parse_crossref_item(item)
+                        if parsed and parsed.get("title"):
+                            parsed["isbn"] = clean_isbn
+                            result = parsed
+                            status = StatusConsultaProvedor.CONFIRMADO
+                            break
+            elif resp.status_code == 404:
+                status = StatusConsultaProvedor.NAO_ENCONTRADO
+            else:
+                status = StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE
+                erro_aviso = f"HTTP {resp.status_code} na consulta Crossref por ISBN."
+        except (requests.Timeout, requests.ConnectionError, requests.RequestException, ValueError) as e:
+            logger.debug("Crossref ISBN lookup error: %s", e)
+            status = StatusConsultaProvedor.FALHA_CONEXAO
+            erro_aviso = f"Falha na consulta Crossref por ISBN: {e}"
+
+        self._set_cache(cache_key, (result, status, erro_aviso))
+        self._set_status_sem_rebaixar("crossref", status)
+        self._registrar_consulta(
+            fonte="Crossref", consulta=consulta, status=status, resultado_encontrado=bool(result),
+            metadados=result or {}, erro_ou_aviso=erro_aviso,
+        )
+        return result
+
+    def fetch_openalex_by_isbn(self, isbn: str, expected_title: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Consulta o OpenAlex por ISBN (e, na ausência, por título esperado com relevância >= 0.80)."""
+        clean_isbn = re.sub(r"[^0-9X]", "", str(isbn).upper())
+        if not is_valid_isbn(clean_isbn, strict=False):
+            return None
+        cache_key = f"openalex:isbn:{clean_isbn}"
+        consulta = f"isbn:{clean_isbn}"
+        hit, res = self._consulta_isbn_cacheada(cache_key, "OpenAlex", consulta, "openalex")
+        if hit:
+            return res
+
+        url = "https://api.openalex.org/works"
+        result = None
+        status = StatusConsultaProvedor.NAO_ENCONTRADO
+        erro_aviso: Optional[str] = None
+        try:
+            resp = self.session.get(
+                url,
+                params={"filter": f"ids.isbn:https://isbnsearch.org/isbn/{clean_isbn}", "per-page": 3},
+                timeout=self._get_timeout(),
+            )
+            if resp.status_code == 200:
+                for item in resp.json().get("results") or []:
+                    parsed = self._parse_openalex_item(item)
+                    if not parsed or not parsed.get("title"):
+                        continue
+                    if expected_title and not is_title_relevant(expected_title, parsed["title"], threshold=0.50):
+                        continue
+                    parsed["isbn"] = clean_isbn
+                    result = parsed
+                    status = StatusConsultaProvedor.CONFIRMADO
+                    break
+            elif resp.status_code != 404:
+                status = StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE
+                erro_aviso = f"HTTP {resp.status_code} na consulta OpenAlex por ISBN."
+            if result is None and expected_title and status != StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE:
+                resp2 = self.session.get(
+                    url, params={"search": expected_title, "per-page": 3}, timeout=self._get_timeout()
+                )
+                if resp2.status_code == 200:
+                    for item in resp2.json().get("results") or []:
+                        parsed = self._parse_openalex_item(item)
+                        if (
+                            parsed
+                            and parsed.get("title")
+                            and parsed.get("authors")
+                            and is_title_relevant(expected_title, parsed["title"], threshold=0.80)
+                        ):
+                            result = parsed
+                            status = StatusConsultaProvedor.RESPOSTA_SEM_CONFIRMACAO
+                            break
+        except (requests.Timeout, requests.ConnectionError, requests.RequestException, ValueError) as e:
+            logger.debug("OpenAlex ISBN lookup error: %s", e)
+            status = StatusConsultaProvedor.FALHA_CONEXAO
+            erro_aviso = f"Falha na consulta OpenAlex por ISBN: {e}"
+
+        self._set_cache(cache_key, (result, status, erro_aviso))
+        self._set_status_sem_rebaixar("openalex", status)
+        self._registrar_consulta(
+            fonte="OpenAlex", consulta=consulta, status=status, resultado_encontrado=bool(result),
+            metadados=result or {}, erro_ou_aviso=erro_aviso,
+        )
+        return result
+
+    _WEB_AUTOR_RE = re.compile(
+        r"(?i:autor(?:es|a)?|author(?:s)?|por|by)\s*[:\-]?\s*"
+        r"([A-ZÀ-Ý][a-zà-ÿ]+(?:\s+(?:de|da|do|dos|das|e|[A-ZÀ-Ý][a-zà-ÿ\.]+)){1,4}"
+        r"(?:\s*[,;/e&]\s*[A-ZÀ-Ý][a-zà-ÿ]+(?:\s+(?:de|da|do|dos|das|[A-ZÀ-Ý][a-zà-ÿ\.]+)){1,4})*)"
+    )
+    _WEB_NOME_RE = re.compile(r"[A-ZÀ-Ý][a-zà-ÿ]+(?:\s+(?:de|da|do|dos|das|e|[A-ZÀ-Ý][a-zà-ÿ\.]+)){1,3}")
+
+    def fetch_web_search_by_isbn(
+        self,
+        isbn: str,
+        expected_title: Optional[str] = None,
+        sample_text: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Último recurso: busca web pública por ISBN extraindo autoria de forma determinística (sem alucinação)."""
+        from .classifier_jev import is_likely_person_name
+
+        clean_isbn = re.sub(r"[^0-9X]", "", str(isbn).upper())
+        if not is_valid_isbn(clean_isbn, strict=False):
+            return None
+        cache_key = f"websearch:isbn:{clean_isbn}"
+        consulta = f"isbn:{clean_isbn}"
+        hit, res = self._consulta_isbn_cacheada(cache_key, "Web Search (ISBN)", consulta, "web_search_isbn")
+        if hit:
+            return res
+
+        result = None
+        status = StatusConsultaProvedor.NAO_ENCONTRADO
+        erro_aviso: Optional[str] = None
+        try:
+            resp = self.session.get(
+                "https://html.duckduckgo.com/html/",
+                params={"q": f'"{clean_isbn}"'},
+                headers={"User-Agent": USER_AGENT},
+                timeout=(3.0, 5.0),
+            )
+            if resp.status_code == 200:
+                texto = html_lib.unescape(re.sub(r"<[^>]+>", " ", resp.text or ""))
+                texto = re.sub(r"\s+", " ", texto).strip()
+                if clean_isbn in re.sub(r"[-\s]", "", texto):
+                    authors: List[str] = []
+                    for m in self._WEB_AUTOR_RE.finditer(texto):
+                        for nome in re.split(r"\s*[,;/&]\s*|\s+e\s+(?=[A-ZÀ-Ý])", m.group(1)):
+                            nome = nome.strip(" .")
+                            if nome and nome not in authors:
+                                authors.append(nome)
+                    authors = [a for a in filter_institutional_authors(authors) if is_likely_person_name(a)]
+                    if not authors and sample_text:
+                        texto_low = texto.lower()
+                        for m in self._WEB_NOME_RE.finditer(sample_text[:8000]):
+                            nome = m.group(0).strip(" .")
+                            if nome.lower() in texto_low and is_likely_person_name(nome) and nome not in authors:
+                                authors.append(nome)
+                        authors = filter_institutional_authors(authors)[:4]
+                    ja_confirmado = any(
+                        self.provider_status.get(k) == StatusConsultaProvedor.CONFIRMADO
+                        for k in ("brasil_api", "google_books", "openlibrary")
+                    )
+                    titulo_compativel = bool(
+                        expected_title
+                        and normalizar_para_busca(expected_title)
+                        and normalizar_para_busca(expected_title) in normalizar_para_busca(texto)
+                    )
+                    if authors and (titulo_compativel or ja_confirmado or not expected_title):
+                        m_year = re.search(r"\b(19\d{2}|20\d{2})\b", texto)
+                        result = {
+                            "title": expected_title,
+                            "authors": authors[:4],
+                            "year": int(m_year.group(1)) if m_year else None,
+                            "isbn": clean_isbn,
+                            "source": "web_isbn_search",
+                        }
+                        status = StatusConsultaProvedor.RESPOSTA_SEM_CONFIRMACAO
+            elif resp.status_code != 404:
+                status = StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE
+                erro_aviso = f"HTTP {resp.status_code} na busca web por ISBN."
+        except (requests.Timeout, requests.ConnectionError, requests.RequestException, ValueError) as e:
+            logger.debug("Web search ISBN error: %s", e)
+            status = StatusConsultaProvedor.FALHA_CONEXAO
+            erro_aviso = f"Falha na busca web por ISBN: {e}"
+
+        self._set_cache(cache_key, (result, status, erro_aviso))
+        self.set_provider_status("web_search_isbn", status)
+        self._registrar_consulta(
+            fonte="Web Search (ISBN)", consulta=consulta, status=status, resultado_encontrado=bool(result),
+            metadados=result or {}, erro_ou_aviso=erro_aviso,
         )
         return result
 

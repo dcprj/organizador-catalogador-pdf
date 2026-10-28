@@ -5,6 +5,25 @@ Todas as mudanças notáveis deste projeto são documentadas aqui.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.1] - 2026-10-28
+
+### Adicionado
+- **Tolerância a OCR em `parse_page_cip`**:
+  - Reconhece `COO`/`CDO` como CDD/CDU, autor com ponto antes da vírgula (`Conez., Célia Martins`) e a barra `/` lida como ` I ` ou `|`; limpa pontuação residual dos autores e recorre às entradas secundárias de autor da ficha quando a responsabilidade não é extraída.
+- **Brasil API Multi-Provider**:
+  - Quando o registro vem sem autores/ano (ou falha em 404/5xx para ISBN brasileiro), consulta `?providers=cbl|mercado-editorial|google-books|open-library` e mescla os campos ausentes; entradas antigas de cache confirmadas sem autoria são complementadas uma única vez.
+- **OpenLibrary `jscmd=data` e Cascata por ISBN**:
+  - Extração de autores, editora, local, ano e assuntos via `api/books?jscmd=data`; resolução de autores no fallback `/isbn/*.json`.
+  - Novos `fetch_crossref_by_isbn`, `fetch_openalex_by_isbn` e `fetch_web_search_by_isbn` (determinístico, sem alucinação), acionados somente quando autoria ou ano seguem ausentes.
+
+### Alterado
+- **Blindagem do Cache em Disco**:
+  - Erros transitórios (HTTP 429/5xx, timeout, falha de conexão) não são mais persistidos nem carregados do disco (purga de entradas antigas), mantendo-se apenas em memória na sessão; Google Books ganha 1 retry após 429 e cache de título em formato `(resultado, status)`.
+- **Títulos Interrogativos Canônicos e Subtítulos Longos**:
+  - Aceita *O que é lugar de fala?*, *Como trabalha um psicanalista?* e títulos `Título: Subtítulo` de até 27 palavras; continuam rejeitadas perguntas de prova/ficha e cabeçalhos como `BACKGROUND AND OBJECTIVES` ou `Programa de Mestrado...`.
+- **Reconciliação de DOI/ISBN e Ano**:
+  - `confirmar_mesma_obra` corrobora o título da API pela amostra normalizada ou pelo nome do arquivo; títulos de fontes oficiais confirmadas não geram aviso de título inválido; diferença de ano <= 2 anos ("mantido ano explícito") deixa de ser conflito irreconciliável.
+
 ## [0.5.0] - 2026-10-28
 
 ### Adicionado
