@@ -1,8 +1,8 @@
 # Organizador e Catalogador Inteligente de PDFs — Especificação e Fonte Única da Verdade
 
 > **Documento Mestre Definitivo do Projeto**  
-> **Versão:** 0.4.4 (Resiliência de Rede em APIs Externas, Higienização de Nomes e Descarte de Citações de Periódicos)  
-> **Status:** Produção / 100% Testado (313 testes automatizados aprovados)  
+> **Versão:** 0.5.0 (Organização por Assunto Principal e Especificação em 3 Níveis, com Catálogo Taxonômico Multi-Domínio)  
+> **Status:** Produção / 100% Testado (suíte pytest automatizada)  
 > **Finalidade:** Servir como a Fonte Única da Verdade para documentação, manutenção e recriação integral do sistema.
 
 ---
@@ -93,6 +93,9 @@ A aplicação evoluiu através de quatro grandes fases arquiteturais:
 * **Expansão da Suíte de Testes**:
   * Total de **301 testes automatizados via pytest** (100% de aprovação, execução offline).
 
+### Fase 5: Taxonomia Multi-Domínio em 3 Níveis (v0.5.0)
+* Árvore `<Assunto Principal>/<Especificação>/<Plural do Tipo>/` guiada pelo motor taxonômico ponderado (`taxonomia.py`), extração de assuntos/CDD da CIP, `subjects` das APIs com aliases em inglês, amortecimento de "Psiquiatria", equivalência semântica JEV (`_areas_jev_compativeis`) e `area_principal`/`subarea` garantidos no Frontmatter YAML 2.0.
+
 ---
 
 ## 3. Requisitos Não Funcionais (RNF)
@@ -137,6 +140,7 @@ Ponto de entrada único via Typer com comandos e flags:
 * Classificação da obra baseada na **Tabela de Áreas do Conhecimento do CNPq**:
   * **Grandes Áreas**: Ciências Exatas e da Terra, Ciências Biológicas, Engenharias, Ciências da Saúde, Ciências Agrárias, Ciências Sociais Aplicadas, Ciências Humanas, Linguística Letras e Artes.
   * **Subáreas Temáticas**: Especialidade correspondente (ex.: Psicologia Social, Epistemologia, Engenharia de Software, etc.).
+* **Catálogo Taxonômico Multi-Domínio (v0.5.0)**: `taxonomia.py` define 10 macroáreas e 65 especificações (`CATALOGO_TAXONOMICO`, `MACRO_CDD`, `ALIASES_ASSUNTOS_INGLES`). `infer_thematic_area` pontua por evidências (título +15, CIP +12, assuntos externos +8, CDD +10/+4, autores +8, amostra até +6), traduz assuntos em inglês, amortece o co-assunto "Psiquiatria" em obras de Psicologia e persiste sempre `area_principal`/`subarea` no Frontmatter.
 * **Modo Padrão (`jev_remoto` / `remoto`)**:
   * Utiliza a API da TypeSafe AI / Jev enviando apenas até 3.000 caracteres de texto nativo dos metadados de abertura.
   * Validação antecipada (fail-fast): levanta `ErroDeConfiguracao` se sem chave e `ErroDeClassificacaoRemota` se sem SDK instalado.
@@ -254,9 +258,9 @@ tags:
 * **Orçamento Dinâmico MAX_PATH (Windows)**: Monitoramento do caminho absoluto para garantir conformidade com o teto de 260 caracteres do Windows, truncando o título preservando palavras inteiras.
 * **Resolução de Conflitos**: Sufixos numéricos sequenciais ` (2)`, ` (3)` sem sobrescrita.
 * **Estrutura de Pastas de Destino**:
-  * **Organização Regular Hierárquica CNPq (`--estrutura cnpq`, padrão oficial)**:
-    `<DESTINO>/<Grande_Área_CNPq>/<Subárea_CNPq>/<Plural_do_Tipo>/`
-    *(Ex.: `/Biblioteca/Ciências Humanas/Psicologia/Livros/` ou `/Biblioteca/Filosofia/Epistemologia/Livros/`)*
+  * **Organização Regular Hierárquica de 3 Níveis (`--estrutura cnpq`, padrão oficial, v0.5.0)**:
+    `<DESTINO>/<Assunto Principal>/<Especificação>/<Plural_do_Tipo>/`
+    *(Ex.: `/Biblioteca/Psicologia/Neuropsicologia/Livros/` ou `/Biblioteca/Filosofia/História da Filosofia/Livros/`)*
   * **Organização Regular Plana (`--estrutura plana`)**:
     `<DESTINO>/<Plural_do_Tipo>/`
   * **Quarentena de Revisão Manual**:

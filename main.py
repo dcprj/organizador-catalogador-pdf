@@ -96,8 +96,15 @@ Classificações Suportadas:
     parser.add_argument(
         "--estrutura",
         choices=["plana", "cnpq"],
-        default="plana",
-        help="Estrutura de organização das pastas no destino: 'plana' (direto por categoria) ou 'cnpq' (hierárquica).",
+        default="cnpq",
+        help="Estrutura de organização das pastas no destino: 'cnpq' (hierárquica, padrão) ou 'plana' (direto por categoria).",
+    )
+    parser.add_argument(
+        "--plana",
+        dest="estrutura",
+        action="store_const",
+        const="plana",
+        help="Atalho para organizar em pasta plana por categoria (<destino>/<tipo>/).",
     )
     parser.add_argument(
         "--cnpq",

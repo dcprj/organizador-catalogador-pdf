@@ -43,8 +43,14 @@ def test_pipeline_organizer_e2e(tmp_path: Path, sample_pdf_generator):
     # Original PDF should have been moved out of input_dir
     assert not source_pdf.exists()
 
-    # Moved PDF and Markdown should exist in <output_dir>/artigo/ with standardized name
-    target_class_dir = output_dir / res.classification
+    # Novo default hierárquico: <output_dir>/<Assunto Principal>/<Especificação>/<Plural do Tipo>/
+    meta = res.metadata
+    target_class_dir = (
+        output_dir
+        / meta.area_principal
+        / (meta.subarea or meta.area_principal)
+        / meta.plural_do_tipo
+    )
     assert target_class_dir.exists()
 
     pdf_files = list(target_class_dir.glob("*.pdf"))
@@ -94,8 +100,29 @@ def test_cli_execution_e2e(tmp_path: Path, sample_pdf_generator):
     assert "RESUMO DE EXECUÇÃO" in proc.stdout
     assert "Total de PDFs processados: 1" in proc.stdout
 
-    # Check that apostila was created in out directory with standardized name
-    apostila_dir = output_dir / "apostila"
+    # Default hierárquico: <destino>/<Assunto>/<Especificação>/Apostilas/ (4 partes com o arquivo)
+    pdfs = list(output_dir.rglob("*.pdf"))
+    assert len(pdfs) == 1
+    assert pdfs[0].parent.name == "Apostilas"
+    assert len(pdfs[0].relative_to(output_dir).parts) == 4
+    assert len(list(pdfs[0].parent.glob("*.md"))) == 1
+    assert not (output_dir / "apostila").exists()
+
+    # Atalho --plana: <destino>/apostila/
+    plana_in = tmp_path / "cli_in_plana"
+    plana_out = tmp_path / "cli_out_plana"
+    plana_in.mkdir()
+    plana_out.mkdir()
+    pdf_plana = sample_pdf_generator("redes2.pdf", "Apostila Redes", pages)
+    pdf_plana.rename(plana_in / "redes2.pdf")
+    proc_plana = subprocess.run(
+        [str(venv_python), "main.py", "--input", str(plana_in), "--output", str(plana_out), "--plana"],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).parent.parent),
+    )
+    assert proc_plana.returncode == 0
+    apostila_dir = plana_out / "apostila"
     assert apostila_dir.exists()
     assert len(list(apostila_dir.glob("*.pdf"))) == 1
     assert len(list(apostila_dir.glob("*.md"))) == 1

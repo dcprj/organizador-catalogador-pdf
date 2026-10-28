@@ -177,7 +177,7 @@ def test_quarantine_revisao_manual_routing(tmp_path: Path, sample_pdf_generator)
     )
     mock_enricher.enrich.return_value = flagged_meta
 
-    organizer = PipelineOrganizer(enricher=mock_enricher)
+    organizer = PipelineOrganizer(enricher=mock_enricher, estrutura="plana")
 
     # 1. With quarantine enabled (default)
     res_quarantine = organizer.process_pdf(

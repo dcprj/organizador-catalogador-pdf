@@ -337,6 +337,8 @@ class ExtractedCandidates(BaseModel):
     raw_year: Optional[int] = None
     raw_city: Optional[str] = None
     raw_area: Optional[str] = None
+    raw_subjects: List[str] = Field(default_factory=list)
+    raw_cdd: Optional[str] = None
     doi: Optional[str] = None
     doi_source: Optional[str] = None
     isbn: Optional[str] = None

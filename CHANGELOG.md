@@ -5,6 +5,27 @@ Todas as mudanças notáveis deste projeto são documentadas aqui.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.0] - 2026-10-28
+
+### Adicionado
+- **Árvore Padrão de 3 Níveis**:
+  - Organização regular em `<Assunto Principal>/<Especificação>/<Plural do Tipo>/` (ex.: `Psicologia/Neuropsicologia/Livros/`).
+- **Motor Taxonômico Ponderado Multi-Domínio**:
+  - Novo módulo `taxonomia.py` (`CATALOGO_TAXONOMICO`, `MACRO_CDD`) e reescrita de `infer_thematic_area` em 10 macroáreas e 65 especificações (55+), com pontuação por evidências: título/subtítulo (+15), assunto interno CIP (+12), assuntos externos (+8), CDD/CDU (+10, macroárea +4), autores canônicos (+8) e amostra textual (teto +6). Subáreas específicas vencem guarda-chuvas.
+- **Extração Completa de Assuntos e CDD da CIP**:
+  - `parse_page_cip` passa a extrair os assuntos e a CDD/CDU da ficha catalográfica.
+- **Coleta de `subjects` das 5 APIs com Tradução de Aliases em Inglês**:
+  - Assuntos retornados pelas APIs externas alimentam o motor; descritores em inglês são traduzidos via `ALIASES_ASSUNTOS_INGLES` (usado apenas em assuntos, nunca no corpo do texto).
+- **Amortecimento do Co-assunto "Psiquiatria"**:
+  - O termo genérico "psiquiatria" (e CDD `616.89*` específicas de psicoterapia/TCC/psicodiagnóstico) deixa de sequestrar obras de Psicologia quando o título não o declara.
+- **Equivalência Semântica JEV**:
+  - `_areas_jev_compativeis` reconhece macroáreas equivalentes (ex.: *Computação* ≡ *Ciência da Computação*) em `compatibilidade_jev_assunto`.
+- **Frontmatter YAML 2.0**:
+  - `area_principal` e `subarea` sempre persistidos (nunca nulos).
+
+### Alterado
+- Normalização textual (`_norm_ascii`) trata hífens, underscores e barras como espaços; `_contar_termos` deduplica singular/plural.
+
 ## [0.4.4] - 2026-10-27
 
 ### Corrigido

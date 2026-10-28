@@ -485,7 +485,7 @@ class PipelineOrganizer:
         online: Optional[bool] = None,
         max_paginas: int = 10,
         max_caracteres: int = 30000,
-        estrutura: str = "plana",
+        estrutura: str = "cnpq",
         typesafe_api_key: Optional[str] = None,
         classificador_modo: str = "jev_remoto",
         **kwargs,

@@ -8,6 +8,7 @@ executes fallback search by title across the APIs with strict relevance and auth
 """
 
 import copy
+import functools
 import json
 import os
 import re
@@ -23,6 +24,8 @@ from requests.adapters import HTTPAdapter
 from datetime import datetime, timezone
 from urllib3.util import Retry
 from dotenv import load_dotenv
+
+from .taxonomia import ALIASES_ASSUNTOS_INGLES, CATALOGO_TAXONOMICO, MACRO_CDD
 
 from .models import (
     PublicationMetadata,
@@ -514,6 +517,112 @@ def _limpar_amostra_para_tematica(sample_text: str) -> str:
     return text
 
 
+def _anexar_subjects(result: Optional[Dict[str, Any]], raw: Any) -> None:
+    """Preserva em ``result["subjects"]`` (lista de str, sem duplicatas) descritores retornados por APIs.
+
+    Aceita strings, listas de strings ou dicts com ``name``/``display_name``. Só cria a chave se houver conteúdo.
+    """
+    if not isinstance(result, dict) or not raw:
+        return
+    itens = raw if isinstance(raw, (list, tuple, set)) else [raw]
+    subjects: List[str] = []
+    for it in itens:
+        if isinstance(it, dict):
+            it = it.get("name") or it.get("display_name")
+        if not isinstance(it, str):
+            continue
+        for parte in re.split(r"\s*/\s*", it.strip()) if "/" in it else [it.strip()]:
+            if parte and parte not in subjects:
+                subjects.append(parte)
+    if subjects:
+        result["subjects"] = subjects
+
+
+_CDD_RE = re.compile(r"(\d{3}(?:\.\d+)?)")
+
+
+def _norm_ascii(text: Optional[str]) -> str:
+    raw = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower()
+    raw = re.sub(r"[-_–—/]+", " ", raw)
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+@functools.lru_cache(maxsize=4096)
+def _termo_regex(term: str) -> "re.Pattern[str]":
+    return re.compile(r"(?<![a-z0-9])" + re.escape(term) + r"s?(?![a-z0-9])")
+
+
+def _contar_termos(norm_text: str, termos: Tuple[str, ...]) -> int:
+    """Conta termos distintos (palavra inteira/expressão) presentes no texto normalizado."""
+    if not norm_text:
+        return 0
+    vistos: Set[str] = set()
+    for t in termos:
+        nt = _norm_ascii(t)
+        if not nt:
+            continue
+        chave = nt[:-1] if len(nt) > 4 and nt.endswith("s") else nt
+        if chave in vistos:
+            continue
+        if _termo_regex(nt).search(norm_text):
+            vistos.add(chave)
+    return len(vistos)
+
+
+def _expandir_aliases_ingles(subject_norm: str) -> str:
+    """Anexa traduções canônicas PT-BR a um assunto normalizado em inglês (apenas para ``subjects``)."""
+    extras: List[str] = []
+    if subject_norm in ALIASES_ASSUNTOS_INGLES:
+        extras.append(ALIASES_ASSUNTOS_INGLES[subject_norm])
+    else:
+        for chave, traducao in ALIASES_ASSUNTOS_INGLES.items():
+            if re.search(r"(?<![a-z0-9])" + re.escape(chave) + r"(?![a-z0-9])", subject_norm):
+                extras.append(traducao)
+    return " ".join([subject_norm] + extras) if extras else subject_norm
+
+
+def _variantes_autor(author: str) -> List[str]:
+    """Normaliza autor e gera a variante 'Nome Sobrenome' a partir de 'SOBRENOME, Nome'."""
+    norm = _norm_ascii(author).strip()
+    variantes = [norm]
+    if "," in norm:
+        sobrenome, _, nome = norm.partition(",")
+        variantes.append(f"{nome.strip()} {sobrenome.strip()}".strip())
+    return variantes
+
+
+_GRUPOS_AREA_JEV: Tuple[frozenset, ...] = (
+    frozenset({"computacao", "ciencia da computacao", "ciencias da computacao", "informatica"}),
+    frozenset({"ciencias da saude", "saude", "medicina", "ciencias medicas"}),
+    frozenset({"ciencias sociais", "sociologia", "antropologia", "ciencia politica"}),
+    frozenset({"administracao", "gestao", "negocios", "ciencias contabeis"}),
+    frozenset({"linguistica letras e artes", "letras", "linguistica", "artes"}),
+)
+
+
+def _areas_jev_compativeis(
+    meta_area: Optional[str],
+    jev_area: Optional[str],
+    meta_sub: Optional[str] = None,
+    jev_sub: Optional[str] = None,
+) -> bool:
+    """Compara macroáreas do motor temático e do JEV por igualdade, grupo de equivalência ou subárea específica."""
+    na, nb = _norm_ascii(meta_area), _norm_ascii(jev_area)
+    if na and na == nb:
+        return True
+    if na and nb and any(na in g and nb in g for g in _GRUPOS_AREA_JEV):
+        return True
+    ns, nj = _norm_ascii(meta_sub), _norm_ascii(jev_sub)
+    return bool(ns and nj and ns not in {"geral", "outros"} and nj not in {"geral", "outros"} and ns == nj)
+
+
+def _normalizar_cdd(cdd: Optional[str]) -> str:
+    if not cdd:
+        return ""
+    m = _CDD_RE.search(str(cdd))
+    return m.group(1) if m else ""
+
+
 def infer_thematic_area(
     title: Optional[str] = None,
     subtitle: Optional[str] = None,
@@ -521,128 +630,156 @@ def infer_thematic_area(
     sample_text: str = "",
     cand_area: Optional[str] = None,
     return_rule: bool = False,
+    external_subjects: Optional[List[str]] = None,
+    cdd: Optional[str] = None,
 ) -> Tuple[str, str] | Tuple[str, str, str]:
-    """Infere a área macro do conhecimento e subárea temática segundo taxonomias acadêmicas (ex.: CNPq).
+    """Infere (Assunto Principal, Especificação) por motor determinístico ponderado por evidências.
 
-    Mapeia confiavelmente obras de Psicologia Analítica / Junguiana e impede que caiam em 'Outros/Outros'
-    ou em categorias acidentais como 'Feminino/Feminino' ou 'Educação'.
+    Pontuação por subárea do catálogo (``taxonomia.CATALOGO_TAXONOMICO``):
+    assunto interno CIP (``cand_area``) +12/termo e assuntos externos (``external_subjects``, com
+    aliases em inglês traduzidos) +8/termo; CDD/CDU específico +10 e macroárea +4 (Saúde não recebe
+    +4 em CDD 616.891*/616.89075); título/subtítulo +15/termo; autor canônico +8 (exceto se o título
+    declara outra subárea específica); amostra de texto +1.5/termo distinto, com teto de +6.
+    O termo genérico "psiquiatria" em assuntos/amostra é amortecido quando o título não o declara e
+    há subárea de Psicologia com pontuação >= 7.
+    Subáreas específicas vencem guarda-chuvas, que só vencem sem especialidade com >= 3.0 pontos.
     """
     auths = authors or []
     clean_sample = _limpar_amostra_para_tematica(sample_text or "")
-    title_text = f"{title or ''} {subtitle or ''}".lower()
-    title_norm = unicodedata.normalize("NFKD", title_text).encode("ascii", "ignore").decode().lower()
-    cand_norm = unicodedata.normalize("NFKD", cand_area or "").encode("ascii", "ignore").decode().lower()
+    title_norm = _norm_ascii(f"{title or ''} {subtitle or ''}")
+    norm_sample = _norm_ascii(clean_sample[:3500])
 
-    all_text = f"{title or ''} {subtitle or ''} {' '.join(auths)} {clean_sample[:3000]} {cand_area or ''}".lower()
-    norm_text = unicodedata.normalize("NFKD", all_text).encode("ascii", "ignore").decode().lower()
-    norm_sample = unicodedata.normalize("NFKD", clean_sample[:3000]).encode("ascii", "ignore").decode().lower()
+    invalid_areas = {
+        "titulo", "autor", "brasil", "recurso", "serie", "coautor", "orientador",
+        "orientadora", "universidade", "faculdade", "instituto", "edicao", "volume",
+        "cdd", "cdu", "ilustrado", "bibliografia", "isbn", "issn", "doi", "feminino",
+    }
+    subjects_raw: List[str] = []
+    cand_valido = bool(
+        cand_area and _norm_ascii(cand_area) not in invalid_areas and len(cand_area.strip()) >= 3
+    )
+    if cand_valido:
+        subjects_raw.append(cand_area.strip())  # type: ignore[union-attr]
+    ext_norm_parts: List[str] = []
+    for s in external_subjects or []:
+        if s and _norm_ascii(s) not in invalid_areas and len(s.strip()) >= 3:
+            subjects_raw.append(s.strip())
+            ext_norm_parts.append(_expandir_aliases_ingles(_norm_ascii(s)))
+    cand_norm_txt = _norm_ascii(cand_area) if cand_valido else ""
+    ext_norm_txt = " | ".join(ext_norm_parts)
+    subjects_norm = " | ".join(p for p in (cand_norm_txt, ext_norm_txt) if p)
+
+    author_variants = [v for a in auths for v in _variantes_autor(a)]
+
+    cdd_norm = _normalizar_cdd(cdd)
+    cdd_best_len = 0
+    cdd_hits: Dict[int, int] = {}
+    if cdd_norm:
+        for idx, ent in enumerate(CATALOGO_TAXONOMICO):
+            ml = max((len(p) for p in ent.cdd if cdd_norm.startswith(p)), default=0)
+            if ml:
+                cdd_hits[idx] = ml
+                cdd_best_len = max(cdd_best_len, ml)
+    macro_areas: set = set()
+    if cdd_norm:
+        try:
+            cdd_int = int(cdd_norm[:3])
+        except ValueError:
+            cdd_int = -1
+        for area_name, faixas in MACRO_CDD.items():
+            if any(lo <= cdd_int <= hi for lo, hi in faixas):
+                macro_areas.add(area_name)
+
+    cdd_psico_especifico = cdd_norm.startswith(("616.891", "616.89075"))
+
+    scores: List[float] = []
+    title_hits: List[int] = []
+    for idx, ent in enumerate(CATALOGO_TAXONOMICO):
+        n_cand = _contar_termos(cand_norm_txt, ent.keywords)
+        n_all = _contar_termos(subjects_norm, ent.keywords)
+        s_subj = 12.0 * n_cand + 8.0 * max(0, n_all - n_cand)
+        s_title_n = _contar_termos(title_norm, ent.keywords)
+        s_cdd = 0.0
+        if cdd_hits.get(idx) and cdd_hits[idx] == cdd_best_len:
+            s_cdd += 10.0
+        if ent.area in macro_areas and not (
+            ent.area == "Ciências da Saúde" and cdd_psico_especifico
+        ):
+            s_cdd += 4.0
+        s_sample = min(6.0, 1.5 * _contar_termos(norm_sample, ent.keywords))
+        scores.append(s_subj + 15.0 * s_title_n + s_cdd + s_sample)
+        title_hits.append(s_title_n)
+
+    # Autores canônicos (+7), exceto quando o título declara explicitamente outra subárea específica
+    title_declares_specific = any(
+        title_hits[i] > 0 and not e.umbrella for i, e in enumerate(CATALOGO_TAXONOMICO)
+    )
+    if author_variants:
+        for idx, ent in enumerate(CATALOGO_TAXONOMICO):
+            if not ent.authors:
+                continue
+            if title_declares_specific and title_hits[idx] == 0 and not ent.umbrella:
+                continue
+            n = sum(
+                1 for a in ent.authors
+                if any(_termo_regex(_norm_ascii(a)).search(v) for v in author_variants)
+            )
+            scores[idx] += 8.0 * n
+
+    # Amortecimento do co-assunto genérico "Psiquiatria" quando o título não o declara e há Psicologia forte
+    if (
+        "psiquiatria" not in title_norm
+        and "psiquiatric" not in title_norm
+        and any(e.area == "Psicologia" and scores[i] >= 7.0 for i, e in enumerate(CATALOGO_TAXONOMICO))
+    ):
+        for idx, ent in enumerate(CATALOGO_TAXONOMICO):
+            if ent.subarea != "Psiquiatria":
+                continue
+            kws_sem_generico = tuple(k for k in ent.keywords if _norm_ascii(k) != "psiquiatria")
+            n_cand = _contar_termos(cand_norm_txt, ent.keywords)
+            n_all_old = _contar_termos(subjects_norm, ent.keywords)
+            n_all_new = _contar_termos(subjects_norm, kws_sem_generico)
+            n_cand_new = _contar_termos(cand_norm_txt, kws_sem_generico)
+            old_subj = 12.0 * n_cand + 8.0 * max(0, n_all_old - n_cand)
+            new_subj = 12.0 * n_cand + 8.0 * max(0, n_all_new - n_cand_new)
+            old_sample = min(6.0, 1.5 * _contar_termos(norm_sample, ent.keywords))
+            new_sample = min(6.0, 1.5 * _contar_termos(norm_sample, kws_sem_generico))
+            scores[idx] += (new_subj - old_subj) + (new_sample - old_sample)
+
+    best_spec = max(
+        ((s, -i) for i, s in enumerate(scores) if not CATALOGO_TAXONOMICO[i].umbrella and s >= 3.0),
+        default=None,
+    )
+    best_umb = max(
+        ((s, -i) for i, s in enumerate(scores) if CATALOGO_TAXONOMICO[i].umbrella and s >= 1.5),
+        default=None,
+    )
+    chosen = best_spec or best_umb
 
     area, subarea, rule = "Outros", "Geral", "fallback_default"
-
-
-    # 1. Detecção de Psicologia Analítica / Junguiana
-    is_jungian_author = any(
-        any(ja in unicodedata.normalize("NFKD", a).encode("ascii", "ignore").decode().lower() for ja in JUNGIAN_AUTHORS)
-        for a in auths
-    )
-    is_jungian_topic = any(kw in norm_text for kw in JUNGIAN_KEYWORDS)
-    if is_jungian_author or is_jungian_topic:
-        area, subarea, rule = "Psicologia", "Psicologia Analítica", "descritores_junguianos"
-    # 2a. Fenomenologia e Abordagens Humanistas (prioridade por título/assunto para evitar falsos positivos por biografia)
-    elif any(kw in title_norm or kw in cand_norm for kw in [
-        "fenomenologia", "fenomenologico", "fenomenologica", "fenomenologicas",
-        "humanismo", "humanista", "merleau-ponty", "husserl",
-    ]):
-        area, subarea, rule = "Psicologia", "Fenomenologia", "descritores_fenomenologia"
-    # 2b. Gestalt-Terapia (prioridade por autoria e título; ocorrências em texto exigem consistência)
-    elif any(
-        any(ga in unicodedata.normalize("NFKD", a).encode("ascii", "ignore").decode().lower() for ga in [
-            "perls", "fritz perls", "laura perls", "paul goodman", "fukumitsu", "lilian meyer frazao",
-            "ginger", "serge ginger", "erving polster", "miriam polster", "walter ribeiro", "yontef",
-        ])
-        for a in auths
-    ) or any(kw in title_norm or kw in cand_norm for kw in [
-        "gestalt-terapia", "gestalt terapia", "gestalt", "gestaltica", "gestaltico",
-        "clinica gestaltica", "abordagem gestaltica", "terapia gestalt",
-    ]) or (
-        len(re.findall(r"\bgestalt(?:-terapia|ica|ico| terapia)?\b", norm_sample)) >= 2
-        and not any(kw in title_norm for kw in ["fenomenologia", "fenomenologico", "humanismo"])
-    ):
-        area, subarea, rule = "Psicologia", "Gestalt-Terapia", "descritores_gestalt_terapia"
-    # 2b. Avaliação Psicológica e Psicometria (prioridade antes de termos educacionais)
-    elif any(kw in norm_text for kw in [
-        "avaliacao psicologica", "psicometria", "psicodiagnostico",
-        "instrumentos de avaliacao", "testes psicologicos", "testagem psicologica",
-    ]):
-        area, subarea, rule = "Psicologia", "Avaliação Psicológica", "descritores_avaliacao_psicologica_psicometria"
-    # 3. Psicologia Geral, Psicanálise e outras abordagens clínicas/saúde mental
-    elif any(kw in norm_text for kw in [
-        "psicologia", "psicanalise", "freud", "lacan", "terapia cognitivo",
-        "behaviorismo", "neuropsicologia", "psicopatologia", "psicoterapia",
-        "saude mental", "psiquiatria",
-    ]):
-        if "psicanalise" in norm_text or "freud" in norm_text or "lacan" in norm_text:
-            area, subarea, rule = "Psicologia", "Psicanálise", "descritores_psicanalise"
-        elif "neuropsicologia" in norm_text:
-            area, subarea, rule = "Psicologia", "Neuropsicologia", "descritores_neuropsicologia"
-        elif "psicologia social" in norm_text:
-            area, subarea, rule = "Psicologia", "Psicologia Social", "descritores_psicologia_social"
-        elif any(k in norm_text for k in ["psicologia clinica", "psicoterapia", "saude mental", "psiquiatria", "psicopatologia"]):
-            area, subarea, rule = "Psicologia", "Psicologia Clínica", "descritores_psicologia_clinica_saude_mental"
+    if chosen is not None:
+        ent = CATALOGO_TAXONOMICO[-chosen[1]]
+        area, subarea, rule = ent.area, ent.subarea, ent.rule
+        if ent.subarea == "Filosofia Contemporânea":
+            foucault_ctx = f"{title_norm} {norm_sample} {subjects_norm} {' '.join(author_variants)}"
+            if "foucault" in foucault_ctx:
+                rule = "descritores_foucault"
+    elif cand_area and subjects_raw and subjects_raw[0] == cand_area.strip():
+        # Fallback: área candidata válida da ficha catalográfica (CIP) ajustada à taxonomia
+        cand_clean = subjects_raw[0]
+        cand_norm = _norm_ascii(cand_clean)
+        if "psicologia" in cand_norm:
+            area, subarea, rule = "Psicologia", cand_clean.title(), f"area_cip_{cand_clean}"
+        elif "filosofia" in cand_norm:
+            area, subarea, rule = "Filosofia", cand_clean.title(), f"area_cip_{cand_clean}"
+        elif "fisiologia" in cand_norm:
+            area, subarea, rule = "Fisiologia", cand_clean.title(), f"area_cip_{cand_clean}"
+        elif "direito" in cand_norm:
+            area, subarea, rule = "Direito", cand_clean.title(), f"area_cip_{cand_clean}"
+        elif "educacao" in cand_norm or "pedagogia" in cand_norm:
+            area, subarea, rule = "Educação", cand_clean.title(), f"area_cip_{cand_clean}"
         else:
-            area, subarea, rule = "Psicologia", "Psicologia Geral", "descritores_psicologia_geral"
-    # 4. Fisiologia e Ciências Biomédicas
-    elif any(kw in norm_text for kw in ["fisiologia", "fisiopatologia", "fisiologia medica", "guyton"]):
-        area, subarea, rule = "Fisiologia", "Fisiologia Humana", "descritores_fisiologia"
-    # 5. Filosofia (incluindo Foucault e pensamento contemporâneo)
-    elif any(kw in norm_text for kw in [
-        "filosofia", "filosofica", "filosofico", "etica", "epistemologia",
-        "metafisica", "nietzsche", "kant", "hegel", "heidegger", "platao",
-        "aristoteles", "spinoza", "schopenhauer", "santo agostinho",
-        "foucault", "michel foucault", "college de france",
-    ]) or any("foucault" in a.lower() for a in auths):
-        if "foucault" in norm_text or any("foucault" in a.lower() for a in auths):
-            area, subarea, rule = "Filosofia", "Filosofia Contemporânea", "descritores_foucault"
-        else:
-            area, subarea, rule = "Filosofia", "Filosofia Geral", "descritores_filosofia"
-    # 6. Educação
-    elif any(kw in norm_text for kw in ["pedagogia", "educacao", "didatica", "ensino"]):
-        area, subarea, rule = "Educação", "Educação Geral", "descritores_educacao"
-    # 7. Direito
-    elif any(kw in norm_text for kw in ["direito civil", "direito penal", "direito constitucional", "jurisprudencia"]):
-        area, subarea, rule = "Direito", "Direito Geral", "descritores_direito"
-    # 8. Se veio uma área candidata válida da ficha catalográfica (CIP) ajustada à taxonomia CNPq
-    elif cand_area:
-        cand_clean = cand_area.strip()
-        cand_norm = unicodedata.normalize("NFKD", cand_clean).encode("ascii", "ignore").decode().lower()
-        invalid_areas = {
-            "titulo", "autor", "brasil", "recurso", "serie", "coautor", "orientador",
-            "orientadora", "universidade", "faculdade", "instituto", "edicao", "volume",
-            "cdd", "cdu", "ilustrado", "bibliografia", "isbn", "issn", "doi", "feminino",
-        }
-        if cand_norm not in invalid_areas and len(cand_clean) >= 3:
-            if any(k in cand_norm for k in ["gestalt", "gestalt-terapia", "gestaltica"]):
-                area, subarea, rule = "Psicologia", "Gestalt-Terapia", "area_cip_gestalt"
-            elif any(k in cand_norm for k in ["psicanalise", "freud", "lacan"]):
-                area, subarea, rule = "Psicologia", "Psicanálise", "area_cip_psicanalise"
-            elif any(k in cand_norm for k in ["avaliacao psicologica", "psicometria"]):
-                area, subarea, rule = "Psicologia", "Avaliação Psicológica", "area_cip_avaliacao"
-            elif "neuropsicologia" in cand_norm:
-                area, subarea, rule = "Psicologia", "Neuropsicologia", "area_cip_neuropsicologia"
-            elif "psicologia clinica" in cand_norm:
-                area, subarea, rule = "Psicologia", "Psicologia Clínica", "area_cip_psicologia_clinica"
-            elif "psicologia" in cand_norm:
-                area, subarea, rule = "Psicologia", cand_clean.title(), f"area_cip_{cand_clean}"
-            elif "filosofia" in cand_norm:
-                area, subarea, rule = "Filosofia", cand_clean.title(), f"area_cip_{cand_clean}"
-            elif "fisiologia" in cand_norm:
-                area, subarea, rule = "Fisiologia", cand_clean.title(), f"area_cip_{cand_clean}"
-            elif "direito" in cand_norm:
-                area, subarea, rule = "Direito", cand_clean.title(), f"area_cip_{cand_clean}"
-            elif "educacao" in cand_norm or "pedagogia" in cand_norm:
-                area, subarea, rule = "Educação", cand_clean.title(), f"area_cip_{cand_clean}"
-            else:
-                area, subarea, rule = cand_clean.title(), cand_clean.title(), f"area_cip_{cand_clean}"
+            area, subarea, rule = cand_clean.title(), cand_clean.title(), f"area_cip_{cand_clean}"
 
     if return_rule:
         return (area, subarea, rule)
@@ -970,6 +1107,8 @@ class MetadataEnricher:
             authors=candidates.raw_authors or [],
             sample_text=candidates.sample_text,
             cand_area=cand_area,
+            external_subjects=list(getattr(candidates, "raw_subjects", None) or []),
+            cdd=getattr(candidates, "raw_cdd", None),
             return_rule=True,
         )
 
@@ -1001,6 +1140,7 @@ class MetadataEnricher:
 
         self.provider_status = {}
         self.consultas_realizadas = []
+        self._local.external_subjects = []
 
         jev_assunto = getattr(jev_result, "assunto", "Outros")
         jev_subarea = getattr(jev_result, "subarea", "Geral")
@@ -1348,15 +1488,23 @@ class MetadataEnricher:
                     query_authors=fn_authors,
                 )
 
-        if metadata.area_principal == "Outros" or (metadata.authors and not candidates.raw_authors):
-            ap, sa, mr = infer_thematic_area(
-                title=metadata.title,
-                subtitle=metadata.subtitle,
-                authors=metadata.authors,
-                sample_text=candidates.sample_text,
-                cand_area=cand_area,
-                return_rule=True,
-            )
+        # Reavaliação temática final com todas as evidências (assuntos de APIs, CIP, CDD, título, autores)
+        external_subjects: List[str] = list(getattr(self._local, "external_subjects", None) or [])
+        for subj in (getattr(candidates, "raw_subjects", None) or []):
+            if subj and subj not in external_subjects:
+                external_subjects.append(subj)
+        ap, sa, mr = infer_thematic_area(
+            title=metadata.title,
+            subtitle=metadata.subtitle,
+            authors=metadata.authors,
+            sample_text=candidates.sample_text,
+            cand_area=cand_area,
+            external_subjects=external_subjects,
+            cdd=getattr(candidates, "raw_cdd", None),
+            return_rule=True,
+        )
+        # Preserva classificação anterior quando a nova não encontra nada e já havia resultado específico
+        if not (ap == "Outros" and metadata.area_principal not in (None, "", "Outros")):
             metadata.area_principal = ap
             metadata.subarea = sa
             metadata.area = ap
@@ -2016,6 +2164,7 @@ class MetadataEnricher:
                     "city": city,
                     "isbn": clean_isbn if status == StatusConsultaProvedor.CONFIRMADO else None,
                 }
+                _anexar_subjects(result, data.get("subjects") or data.get("subject"))
             elif resp.status_code == 404:
                 status = StatusConsultaProvedor.NAO_ENCONTRADO
             elif resp.status_code == 429:
@@ -2351,7 +2500,7 @@ class MetadataEnricher:
         if date_parts and date_parts[0]:
             year = date_parts[0][0]
 
-        return {
+        parsed = {
             "title": title,
             "subtitle": subtitle,
             "authors": authors,
@@ -2365,6 +2514,8 @@ class MetadataEnricher:
             "issn": issn,
             "url": item.get("URL"),
         }
+        _anexar_subjects(parsed, item.get("subject"))
+        return parsed
 
     # ----------------- GOOGLE BOOKS API -----------------
     def fetch_google_books_by_isbn(self, isbn: str) -> Optional[Dict[str, Any]]:
@@ -2570,7 +2721,7 @@ class MetadataEnricher:
             if not area:
                 area = str(categories[0]).split("/")[0].strip().title()
 
-        return {
+        parsed_gb = {
             "title": title,
             "subtitle": subtitle,
             "authors": raw_authors,
@@ -2580,6 +2731,8 @@ class MetadataEnricher:
             "pages": str(info.get("pageCount")) if info.get("pageCount") else None,
             "area": area,
         }
+        _anexar_subjects(parsed_gb, info.get("categories"))
+        return parsed_gb
 
     # ----------------- OPENLIBRARY API -----------------
     def fetch_openlibrary_by_isbn(self, isbn: str) -> Optional[Dict[str, Any]]:
@@ -2655,6 +2808,7 @@ class MetadataEnricher:
                     "year": int(data["publish_date"][-4:]) if data.get("publish_date") and data["publish_date"][-4:].isdigit() else None,
                     "isbn": clean_isbn if status == StatusConsultaProvedor.CONFIRMADO else None,
                 }
+                _anexar_subjects(result, data.get("subjects") or data.get("subject"))
             elif resp.status_code == 404:
                 status = StatusConsultaProvedor.NAO_ENCONTRADO
             elif resp.status_code == 429:
@@ -2734,6 +2888,7 @@ class MetadataEnricher:
                             "year": doc.get("first_publish_year"),
                             "isbn": valid_isbns[0] if valid_isbns else None,
                         }
+                        _anexar_subjects(result, doc.get("subject"))
                         break
                 status = StatusConsultaProvedor.RESPOSTA_SEM_CONFIRMACAO if result else StatusConsultaProvedor.NAO_ENCONTRADO
             elif resp.status_code == 429:
@@ -2984,7 +3139,7 @@ class MetadataEnricher:
         if doi_val and "doi.org/" in doi_val:
             doi_val = doi_val.split("doi.org/")[-1]
 
-        return {
+        parsed_oa = {
             "title": title,
             "authors": authors,
             "journal": journal,
@@ -2995,6 +3150,14 @@ class MetadataEnricher:
             "doi": doi_val,
             "issn": issn_l,
         }
+        oa_subjects: List[Any] = []
+        primary_topic = item.get("primary_topic")
+        if isinstance(primary_topic, dict):
+            oa_subjects.append(primary_topic)
+        oa_subjects.extend(t for t in (item.get("topics") or []) if isinstance(t, dict))
+        oa_subjects.extend(c for c in (item.get("concepts") or []) if isinstance(c, dict))
+        _anexar_subjects(parsed_oa, oa_subjects)
+        return parsed_oa
 
     # ----------------- DOAJ API -----------------
     def fetch_doaj_by_doi(self, doi: str) -> Optional[Dict[str, Any]]:
@@ -3980,6 +4143,15 @@ class MetadataEnricher:
         if not extra:
             return
 
+        # Coleta descritores de assunto das fontes aceitas para a reavaliação temática final
+        ext_subj = getattr(self._local, "external_subjects", None)
+        if ext_subj is None:
+            ext_subj = []
+            self._local.external_subjects = ext_subj
+        for subj in extra.get("subjects") or []:
+            if isinstance(subj, str) and subj.strip() and subj.strip() not in ext_subj:
+                ext_subj.append(subj.strip())
+
         from .classifier_jev import is_likely_person_name, is_invalid_or_disclaimer_title
 
         conf = 0.95 if authoritative else 0.80
@@ -4379,7 +4551,12 @@ class MetadataEnricher:
             if (
                 getattr(jev_result, "assunto", None)
                 and jev_result.assunto != "Outros"
-                and metadata.area_principal == jev_result.assunto
+                and _areas_jev_compativeis(
+                    metadata.area_principal,
+                    jev_result.assunto,
+                    metadata.subarea,
+                    getattr(jev_result, "subarea", None),
+                )
             ):
                 criterios.append("compatibilidade_jev_assunto")
 

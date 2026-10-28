@@ -459,6 +459,11 @@ class MarkdownConverter:
     """Gerador do Markdown de acompanhamento com Frontmatter YAML e ABNT."""
 
     @staticmethod
+    def _slugify(text: str) -> str:
+        """Converte texto em slug de tag (minúsculas, não-alfanuméricos viram '-')."""
+        return re.sub(r"[^\w]+", "-", (text or "").lower()).strip("-")
+
+    @staticmethod
     def build_yaml_frontmatter(metadata: PublicationMetadata) -> str:
         frontmatter_dict: Dict[str, Any] = {
             "versao_esquema": "2.0",
@@ -509,11 +514,9 @@ class MarkdownConverter:
             frontmatter_dict["ano"] = yr
 
         ar = metadata.area or metadata.area_principal
-        if ar and ar != "Outros":
-            frontmatter_dict["area_principal"] = ar
+        frontmatter_dict["area_principal"] = ar or "Outros"
         sub_ar = getattr(metadata, "subarea", None)
-        if sub_ar and sub_ar not in ("Geral", "Outros", ar):
-            frontmatter_dict["subarea"] = sub_ar
+        frontmatter_dict["subarea"] = sub_ar or "Geral"
 
         frontmatter_dict["identificadores"] = {
             "isbn": metadata.identificadores.isbn or "",
@@ -544,6 +547,12 @@ class MarkdownConverter:
                 tag_area = f"area/{area_slug}"
                 if tag_area not in tags:
                     tags.append(tag_area)
+        if sub_ar and sub_ar not in ("Geral", "Outros"):
+            sub_slug = MarkdownConverter._slugify(sub_ar)
+            if sub_slug:
+                tag_sub = f"subarea/{sub_slug}"
+                if tag_sub not in tags:
+                    tags.append(tag_sub)
         if metadata.needs_review:
             if "status/revisao" not in tags:
                 tags.append("status/revisao")

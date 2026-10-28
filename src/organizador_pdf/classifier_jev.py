@@ -854,6 +854,18 @@ def parse_filename_extended(pdf_path: str) -> Dict[str, Any]:
     return result
 
 
+def _propagar_cip_assuntos(candidates: Any, cip_meta: Dict[str, Any]) -> None:
+    """Propaga assuntos numerados e CDD/CDU da ficha CIP para os candidatos (sem duplicatas)."""
+    for subj in cip_meta.get("subjects") or []:
+        if subj and subj not in candidates.raw_subjects:
+            candidates.raw_subjects.append(subj)
+    if cip_meta.get("cdd") and not candidates.raw_cdd:
+        candidates.raw_cdd = cip_meta["cdd"]
+
+
+_CDD_CDU_RE = re.compile(r"\bCD[DU]\s*[:\-–]?\s*(\d{3}(?:\.\d+)?)")
+
+
 def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
     """Parse AACR2 / ISBD Brazilian Cataloging-in-Publication (CIP) card from a single page."""
     norm_low = page_text.lower()
@@ -1038,6 +1050,35 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
         if len(cand_subj) >= 3 and cand_subj_lower not in invalid_areas and not any(cand_subj_lower.startswith(w) for w in ["titulo", "autor"]):
             area = cand_subj.title()
 
+    # Todos os descritores numerados da CIP ('1. ... 2. ... 3. ...') e código CDD/CDU
+    subjects: List[str] = []
+    m_first = re.search(r"\b1\.\s+[A-Za-zÁÉÍÓÚÂÊÔÃÕÇ]", page_text)
+    if m_first:
+        tail = page_text[m_first.start():]
+        m_end = re.search(r"\s+I\.\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ]|\bCD[DU]\b", tail)
+        if m_end:
+            tail = tail[:m_end.start()]
+        invalid_subj = {
+            "titulo", "autor", "brasil", "recurso", "serie", "coautor", "orientador",
+            "orientadora", "universidade", "faculdade", "instituto", "edicao", "volume",
+            "cdd", "cdu", "ilustrado", "bibliografia", "isbn", "issn", "doi",
+        }
+        for piece in re.split(r"\b[1-9]\.\s+", tail):
+            subj = re.sub(r"\s+", " ", piece).strip(" .;,\n")
+            if not re.fullmatch(r"[A-Za-zÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõçÀà][A-Za-zÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõçÀà\s,-]{2,80}", subj):
+                continue
+            subj_norm = unicodedata.normalize("NFKD", subj).encode("ascii", "ignore").decode().lower()
+            if subj_norm in invalid_subj or subj_norm.startswith(("titulo", "autor")):
+                continue
+            if subj not in subjects:
+                subjects.append(subj)
+        subjects = subjects[:5]
+        if area is None and subjects:
+            # O 1º assunto válido (inclui acentuação minúscula) define a área quando o regex legado não casou
+            area = subjects[0].title()
+    m_cdd = _CDD_CDU_RE.search(orig_page_text)
+    cdd_code = m_cdd.group(1) if m_cdd else None
+
     return {
         "title": raw_title,
         "subtitle": sub_title,
@@ -1049,6 +1090,8 @@ def parse_page_cip(page_text: str) -> Optional[Dict[str, Any]]:
         "year": year,
         "isbn": isbn_val,
         "area": area,
+        "subjects": subjects,
+        "cdd": cdd_code,
         "cip_pages": cip_pages,
         "cip_year": cip_year,
         "reimpressao": reimpressao,
@@ -1295,6 +1338,7 @@ def extract_candidate_metadata(
                             candidates.is_isbn_strong = True
                         if cip_meta.get("area"):
                             candidates.raw_area = cip_meta["area"]
+                        _propagar_cip_assuntos(candidates, cip_meta)
                         if cip_meta.get("cip_pages"):
                             candidates.cip_pages = cip_meta["cip_pages"]
                         if cip_meta.get("cip_year"):
@@ -1423,6 +1467,7 @@ def extract_candidate_metadata(
                     candidates.isbn_source = "ficha_catalografica"
                 if cip_meta.get("area"):
                     candidates.raw_area = cip_meta["area"]
+                _propagar_cip_assuntos(candidates, cip_meta)
                 if cip_meta.get("cip_pages"):
                     candidates.cip_pages = cip_meta["cip_pages"]
                 if cip_meta.get("cip_year"):
@@ -1460,6 +1505,7 @@ def extract_candidate_metadata(
                 candidates.isbn_source = "ficha_catalografica"
             if cip_meta.get("area"):
                 candidates.raw_area = cip_meta["area"]
+            _propagar_cip_assuntos(candidates, cip_meta)
             if cip_meta.get("cip_pages"):
                 candidates.cip_pages = cip_meta["cip_pages"]
             if cip_meta.get("cip_year"):
@@ -1469,6 +1515,12 @@ def extract_candidate_metadata(
 
         ref_cut = re.split(r"\n\s*(?:refer[êe]ncias|references|bibliografia)\b", sample_text, flags=re.I)
         head_text = ref_cut[0] if ref_cut else sample_text
+
+    # CDD/CDU também pode estar fora do formato ISBD padrão da ficha CIP: tenta na amostra de abertura
+    if not candidates.raw_cdd:
+        m_cdd_sample = _CDD_CDU_RE.search(sample_text[:10000])
+        if m_cdd_sample:
+            candidates.raw_cdd = m_cdd_sample.group(1)
 
     # Garante que head_text corte referências bibliográficas para não herdar DOIs de obras citadas
     ref_split = re.split(r"\n\s*(?:refer[êe]ncias|references|bibliografia|obras\s+citadas)\b", head_text, flags=re.I)
@@ -2076,6 +2128,21 @@ class JevClassifier:
             else:
                 chosen_assunto = val_a.title()
             chosen_subj_conf = float(getattr(area_obj, "confidence", 0.85))
+
+        # Refinamento determinístico: adota subárea específica quando o motor taxonômico a encontra
+        from .metadata_api import infer_thematic_area
+        ref_area, ref_sub, ref_rule = infer_thematic_area(
+            title=candidates.raw_title or getattr(candidates, "fn_title", None),
+            subtitle=candidates.raw_subtitle,
+            authors=candidates.raw_authors,
+            sample_text=text,
+            cand_area=candidates.raw_area,
+            external_subjects=candidates.raw_subjects,
+            cdd=candidates.raw_cdd,
+            return_rule=True,
+        )
+        if ref_rule != "fallback_default":
+            chosen_assunto, chosen_subarea = ref_area, ref_sub
 
         justificativa = (
             f"Classificação Jev (TypeSafe remoto): Tipo '{chosen_class}' (confiança {chosen_confidence:.0%}) "
