@@ -1,7 +1,7 @@
 # Organizador e Catalogador Inteligente de PDFs — Especificação e Fonte Única da Verdade
 
 > **Documento Mestre Definitivo do Projeto**  
-> **Versão:** 0.5.1 (Enriquecimento Multi-Fonte de ISBN, CIP Tolerante a OCR e Redução de Falsos Conflitos, sobre a Taxonomia em 3 Níveis da 0.5.0)  
+> **Versão:** 0.5.2 (Unificação Taxonômica Bilíngue de Computação/Retrocomputação, Filtro de Colofão/DRM, Desambiguação Título-Autor, Reparo de Mojibake CP437 e Cadenciamento Anti-429)  
 > **Status:** Produção / 100% Testado (suíte pytest automatizada)  
 > **Finalidade:** Servir como a Fonte Única da Verdade para documentação, manutenção e recriação integral do sistema.
 

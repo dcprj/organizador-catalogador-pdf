@@ -606,12 +606,83 @@ def _variantes_autor(author: str) -> List[str]:
 
 
 _GRUPOS_AREA_JEV: Tuple[frozenset, ...] = (
-    frozenset({"computacao", "ciencia da computacao", "ciencias da computacao", "informatica"}),
+    frozenset({"computacao", "ciencia da computacao", "ciencias da computacao", "informatica", "tecnologia", "ciencias exatas e da terra"}),
     frozenset({"ciencias da saude", "saude", "medicina", "ciencias medicas"}),
     frozenset({"ciencias sociais", "sociologia", "antropologia", "ciencia politica"}),
     frozenset({"administracao", "gestao", "negocios", "ciencias contabeis"}),
     frozenset({"linguistica letras e artes", "letras", "linguistica", "artes"}),
 )
+
+_LOCK_CADENCIA = threading.Lock()
+_ULTIMA_CHAMADA_PROVEDOR: Dict[str, float] = {}
+_INTERVALOS_CADENCIA_PADRAO = {
+    "google_books": 0.35,
+    "openalex": 0.25,
+    "openlibrary": 0.20,
+    "crossref": 0.15,
+    "brasil_api": 0.15,
+}
+
+
+def _aguardar_cadencia_provedor(provedor: str, min_provider_interval: Optional[float] = None) -> None:
+    """Garante cadência mínima entre requisições HTTP reais por provedor (thread-safe, 0.0 sob pytest)."""
+    if os.getenv("PYTEST_CURRENT_TEST") and min_provider_interval is None:
+        return
+    intervalo = min_provider_interval
+    if intervalo is None:
+        env_ms = os.getenv("ORGPDF_MIN_INTERVAL_MS")
+        if env_ms:
+            try:
+                intervalo = float(env_ms) / 1000.0
+            except ValueError:
+                intervalo = None
+    if intervalo is None:
+        intervalo = _INTERVALOS_CADENCIA_PADRAO.get(provedor, 0.15)
+    if intervalo <= 0:
+        return
+    with _LOCK_CADENCIA:
+        agora = time.time()
+        ultima = _ULTIMA_CHAMADA_PROVEDOR.get(provedor, 0.0)
+        espera = intervalo - (agora - ultima)
+        if espera > 0:
+            time.sleep(espera)
+        _ULTIMA_CHAMADA_PROVEDOR[provedor] = time.time()
+
+
+def _normalizar_area_jev_fallback(jev_assunto: Optional[str], jev_subarea: Optional[str]) -> Tuple[str, str]:
+    """Normaliza classificações brutas do JEV para o catálogo canônico."""
+    assunto_norm = _norm_ascii(jev_assunto or "").strip().lower()
+    subarea_norm = _norm_ascii(jev_subarea or "").strip().lower()
+
+    # Crianças - Desenvolvimento
+    if "criancas desenvolvimento" in assunto_norm or "desenvolvimento infantil" in assunto_norm or "criancas desenvolvimento" in subarea_norm:
+        return "Psicologia", "Psicologia do Desenvolvimento"
+
+    # Ciências Exatas e da Terra / Tecnologia
+    if "ciencias exatas e da terra" in assunto_norm or "exatas" in assunto_norm:
+        if "tecnologia" in subarea_norm or any(t in subarea_norm for t in ("comput", "dado", "software", "program", "rede", "sistem", "ia", "algorit")):
+            return "Computação", "Computação Geral"
+        return "Computação", "Computação Geral"
+
+    # Tecnologia isolada
+    if assunto_norm == "tecnologia":
+        return "Computação", "Computação Geral"
+
+    # Ciências Sociais Aplicadas
+    if "ciencias sociais aplicadas" in assunto_norm:
+        if "direito" in subarea_norm:
+            return "Direito", "Direito Geral"
+        if "economia" in subarea_norm:
+            return "Economia", "Economia Política"
+        if any(t in subarea_norm for t in ("administra", "gestao", "negocio", "marketing")):
+            return "Administração", "Estratégia e Gestão"
+        if subarea_norm in ("geral", ""):
+            return "Outros", "Geral"
+        return "Administração", "Estratégia e Gestão"
+
+    area = (jev_assunto or "Outros").strip()
+    subarea = (jev_subarea or "Geral").strip()
+    return area, subarea
 
 
 def _areas_jev_compativeis(
@@ -845,6 +916,11 @@ class MetadataEnricher:
     _openalex_circuit_breaker_until: float = 0.0
     _OPENALEX_MIN_INTERVAL: float = 0.15
     _OPENALEX_COOLDOWN_SECONDS: float = 30.0
+
+    @staticmethod
+    def _aguardar_cadencia_provedor(provedor: str, min_interval: Optional[float] = None, min_provider_interval: Optional[float] = None) -> None:
+        interval = min_interval if min_interval is not None else min_provider_interval
+        _aguardar_cadencia_provedor(provedor, min_provider_interval=interval)
 
     def __init__(
         self,
@@ -1186,10 +1262,13 @@ class MetadataEnricher:
         )
 
         if not eh_generico_jev and (matched_rule in ("padrao_geral", "fallback_default") or area_princ == "Outros") and jev_assunto != "Outros":
-            metadata.area_principal = jev_assunto
-            metadata.area = jev_assunto
-            if jev_subarea and jev_subarea.lower() != "geral":
-                metadata.subarea = jev_subarea
+            norm_area, norm_sub = _normalizar_area_jev_fallback(jev_assunto, jev_subarea)
+            metadata.area_principal = norm_area
+            metadata.area = norm_area
+            if norm_sub and norm_sub.lower() != "geral":
+                metadata.subarea = norm_sub
+            else:
+                metadata.subarea = norm_sub or "Geral"
         else:
             metadata.area_principal = area_princ
             metadata.area = area_princ
@@ -1560,11 +1639,35 @@ class MetadataEnricher:
                     query_authors=fn_authors,
                 )
 
+        # Corroboração dupla de autoria local (fn_author + sample_text) quando buscas não retornaram autor
+        if not metadata.authors and getattr(candidates, "fn_author", None):
+            from .classifier_jev import is_likely_author_list, normalizar_lista_autores
+            fn_auth = candidates.fn_author
+            if is_likely_author_list(fn_auth):
+                auth_norm = _norm_ascii(fn_auth).lower()
+                auth_tokens = [
+                    t for t in re.split(r"\W+", auth_norm)
+                    if len(t) >= 4 and t not in {"silva", "santos", "oliveira", "souza", "costa", "pereira", "rodrigues", "almeida"}
+                ]
+                sample_norm = _norm_ascii(getattr(candidates, "sample_text", "") or "").lower()
+                if auth_tokens and any(tok in sample_norm for tok in auth_tokens):
+                    cleaned_auths = normalizar_lista_autores([fn_auth], book_title=metadata.title)
+                    if cleaned_auths:
+                        metadata.authors = cleaned_auths
+                        metadata.autor_principal = cleaned_auths[0]
+                        metadata.author_source = "corroboracao_arquivo_texto"
+
         # Reavaliação temática final com todas as evidências (assuntos de APIs, CIP, CDD, título, autores)
         external_subjects: List[str] = list(getattr(self._local, "external_subjects", None) or [])
         for subj in (getattr(candidates, "raw_subjects", None) or []):
             if subj and subj not in external_subjects:
                 external_subjects.append(subj)
+
+        # Se o título consolidado for curto ou genérico, injeta fn_title nos assuntos externos para preservar o sinal
+        fn_title_cand = getattr(candidates, "fn_title", None)
+        if fn_title_cand and (not metadata.title or len(metadata.title) < 10 or is_invalid_or_disclaimer_title(metadata.title)):
+            if fn_title_cand not in external_subjects:
+                external_subjects.append(fn_title_cand)
         ap, sa, mr = infer_thematic_area(
             title=metadata.title,
             subtitle=metadata.subtitle,
@@ -1581,6 +1684,24 @@ class MetadataEnricher:
             metadata.subarea = sa
             metadata.area = ap
             metadata.regra_classificacao_tematica = mr
+
+        # Corroboração Dupla de Autoria Local (fn_author + sample_text) quando APIs externas retornam sem autor
+        if not metadata.authors and getattr(candidates, "fn_author", None):
+            from .classifier_jev import is_likely_author_list, normalizar_lista_autores
+            cand_fn_a = candidates.fn_author.strip()
+            if is_likely_author_list(cand_fn_a):
+                fn_auth_clean = re.sub(r"(?i)\s+et\s+al\.?$", "", cand_fn_a).strip()
+                tokens = [t.strip() for t in re.split(r"[\s,]+", fn_auth_clean) if t.strip()]
+                cand_surnames = [
+                    unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode().lower()
+                    for t in tokens if len(t) >= 4
+                ]
+                sample_norm = unicodedata.normalize("NFKD", candidates.sample_text or "").encode("ascii", "ignore").decode().lower()
+                if cand_surnames and any(s in sample_norm for s in cand_surnames):
+                    norm_a = normalizar_lista_autores([cand_fn_a])
+                    if norm_a:
+                        metadata.authors = norm_a
+                        metadata.author_source = "corroboracao_arquivo_texto"
 
         metadata.source_apis = sources_consulted
         metadata.fontes_consultadas = list(self.consultas_realizadas)
@@ -1635,6 +1756,7 @@ class MetadataEnricher:
         )
 
         # 1. Validações estritas de título
+        t_words = [w for w in re.split(r"[\s\-_/]+", t) if w]
         if t in ("Sem Título", "Publicação Sem Título") or len(t) < 4:
             meta_conf = 0.1
             metadata.needs_review = True
@@ -1655,13 +1777,13 @@ class MetadataEnricher:
             metadata.needs_review = True
             if "Título contaminado com marcador de página ou cabeçalho" not in metadata.review_reasons:
                 metadata.review_reasons.append("Título contaminado com marcador de página ou cabeçalho")
-        elif len(t.split()) <= 1 and t_lower in GENERIC_SINGLE_WORD_TITLES:
+        elif len(t_words) <= 1 and t_lower in GENERIC_SINGLE_WORD_TITLES:
             meta_conf = 0.35
             metadata.needs_review = True
             msg = f"Título unipalavra ou fragmento genérico ('{t}')"
             if msg not in metadata.review_reasons:
                 metadata.review_reasons.append(msg)
-        elif len(t.split()) == 1 and not sources_consulted and not has_verified_id:
+        elif len(t_words) == 1 and not sources_consulted and not has_verified_id:
             meta_conf = 0.45
             metadata.needs_review = True
             msg = f"Título com palavra única ('{t}') sem confirmação bibliográfica"
@@ -1834,7 +1956,7 @@ class MetadataEnricher:
             and len(t) >= 4
             and (titulo_de_fonte_oficial or not is_invalid_or_disclaimer_title(t))
             and not t.startswith("---")
-            and not (len(t.split()) <= 1 and t_lower in GENERIC_SINGLE_WORD_TITLES)
+            and not (len([w for w in re.split(r"[\s\-_/]+", t) if w]) <= 1 and t_lower in GENERIC_SINGLE_WORD_TITLES)
         )
         tem_autores = bool(metadata.authors)
         # Ignora divergências que representem reconciliação pela base oficial canônica
@@ -1896,7 +2018,12 @@ class MetadataEnricher:
 
         tipo_documental_confiante = bool(
             metadata.classification not in ("outros", "arquivo_parcial")
-            and (jev_result is None or jev_result.classification_confidence >= 0.50)
+            and (
+                jev_result is None
+                or jev_result.classification_confidence >= 0.50
+                or has_verified_id
+                or (bool(sources_consulted) and metadata.classification in ("livro", "artigo", "artigo_cientifico", "tese", "dissertacao"))
+            )
         )
 
         assunto_meta = metadata.area_principal or metadata.area
@@ -2017,7 +2144,8 @@ class MetadataEnricher:
 
         candidate_authors = metadata.authors or query_authors or []
         clean_t = re.sub(r"[^\w\s]", "", title.lower()).strip()
-        if not candidate_authors and (len(clean_t.split()) <= 1 or clean_t in GENERIC_SUBJECT_TITLES):
+        clean_t_words = [w for w in re.split(r"[\s\-_/]+", clean_t) if w]
+        if not candidate_authors and (len(clean_t_words) <= 1 or clean_t in GENERIC_SUBJECT_TITLES):
             logger.info("Ignorando busca não-autoritativa por título genérico ('%s') sem autoria confirmada.", title)
             return
 
@@ -2192,6 +2320,7 @@ class MetadataEnricher:
         erro_aviso: Optional[str] = None
         http_code: Optional[int] = None
         try:
+            _aguardar_cadencia_provedor("brasil_api")
             resp = self.session.get(url, timeout=self._get_timeout())
             http_code = resp.status_code if isinstance(resp.status_code, int) else None
             if resp.status_code == 200:
@@ -2415,6 +2544,7 @@ class MetadataEnricher:
         status = StatusConsultaProvedor.NAO_ENCONTRADO
         erro_aviso: Optional[str] = None
         try:
+            _aguardar_cadencia_provedor("crossref")
             resp = self.session.get(url, timeout=self._get_timeout())
             if resp.status_code == 200:
                 item = resp.json().get("message", {})
@@ -2531,6 +2661,7 @@ class MetadataEnricher:
         status = StatusConsultaProvedor.NAO_ENCONTRADO
         erro_aviso: Optional[str] = None
         try:
+            _aguardar_cadencia_provedor("crossref")
             resp = self.session.get(url, timeout=self._get_timeout())
             if resp.status_code == 200:
                 data = resp.json().get("data", {})
@@ -2597,6 +2728,7 @@ class MetadataEnricher:
         status = StatusConsultaProvedor.NAO_ENCONTRADO
         erro_aviso: Optional[str] = None
         try:
+            _aguardar_cadencia_provedor("crossref")
             resp = self.session.get(url, params=params, timeout=self._get_timeout())
             if resp.status_code == 200:
                 items = resp.json().get("message", {}).get("items", [])
@@ -2782,10 +2914,13 @@ class MetadataEnricher:
             req_params = dict(params)
             if self.google_books_api_key:
                 req_params["key"] = self.google_books_api_key
+            _aguardar_cadencia_provedor("google_books")
             resp = self.session.get(url, params=req_params, timeout=self._get_timeout())
             if isinstance(resp.status_code, int) and resp.status_code == 429:
-                # 1 retry automático após breve espera; se persistir o 429, segue o fluxo normal
-                time.sleep(1.2)
+                sleep_s = 0.0 if os.getenv("PYTEST_CURRENT_TEST") else 1.0
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
+                _aguardar_cadencia_provedor("google_books")
                 resp = self.session.get(url, params=req_params, timeout=self._get_timeout())
             if resp.status_code == 200:
                 data = resp.json()
@@ -3085,6 +3220,7 @@ class MetadataEnricher:
         """Consulta ``api/books?jscmd=data`` (autores, editora, local, ano, assuntos). None se vazio/erro."""
         url = f"https://openlibrary.org/api/books?bibkeys=ISBN:{clean_isbn}&format=json&jscmd=data"
         try:
+            _aguardar_cadencia_provedor("openlibrary")
             resp = self.session.get(url, timeout=self._get_timeout())
             if resp.status_code != 200:
                 return None
@@ -3155,6 +3291,7 @@ class MetadataEnricher:
         status = StatusConsultaProvedor.NAO_ENCONTRADO
         erro_aviso: Optional[str] = None
         try:
+            _aguardar_cadencia_provedor("openlibrary")
             resp = self.session.get(url, params=params, timeout=self._get_timeout())
             if resp.status_code == 200:
                 docs = resp.json().get("docs", [])
@@ -3294,11 +3431,22 @@ class MetadataEnricher:
         status = StatusConsultaProvedor.NAO_ENCONTRADO
         erro_aviso: Optional[str] = None
         try:
+            _aguardar_cadencia_provedor("openalex")
             resp = self.session.get(
                 url,
                 params={"filter": f"ids.isbn:https://isbnsearch.org/isbn/{clean_isbn}", "per-page": 3},
                 timeout=self._get_timeout(),
             )
+            if resp.status_code == 429:
+                sleep_s = 0.0 if os.getenv("PYTEST_CURRENT_TEST") else 1.0
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
+                _aguardar_cadencia_provedor("openalex")
+                resp = self.session.get(
+                    url,
+                    params={"filter": f"ids.isbn:https://isbnsearch.org/isbn/{clean_isbn}", "per-page": 3},
+                    timeout=self._get_timeout(),
+                )
             if resp.status_code == 200:
                 for item in resp.json().get("results") or []:
                     parsed = self._parse_openalex_item(item)
@@ -3314,9 +3462,18 @@ class MetadataEnricher:
                 status = StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE
                 erro_aviso = f"HTTP {resp.status_code} na consulta OpenAlex por ISBN."
             if result is None and expected_title and status != StatusConsultaProvedor.ERRO_HTTP_OU_LIMITE:
+                _aguardar_cadencia_provedor("openalex")
                 resp2 = self.session.get(
                     url, params={"search": expected_title, "per-page": 3}, timeout=self._get_timeout()
                 )
+                if resp2.status_code == 429:
+                    sleep_s = 0.0 if os.getenv("PYTEST_CURRENT_TEST") else 1.0
+                    if sleep_s > 0:
+                        time.sleep(sleep_s)
+                    _aguardar_cadencia_provedor("openalex")
+                    resp2 = self.session.get(
+                        url, params={"search": expected_title, "per-page": 3}, timeout=self._get_timeout()
+                    )
                 if resp2.status_code == 200:
                     for item in resp2.json().get("results") or []:
                         parsed = self._parse_openalex_item(item)
@@ -3586,7 +3743,14 @@ class MetadataEnricher:
         MetadataEnricher._openalex_last_request_time = time.time()
 
         try:
+            _aguardar_cadencia_provedor("openalex")
             resp = self.session.get(url, params=params, headers=headers, timeout=self._get_timeout())
+            if resp.status_code == 429:
+                sleep_s = 0.0 if os.getenv("PYTEST_CURRENT_TEST") else 1.0
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
+                _aguardar_cadencia_provedor("openalex")
+                resp = self.session.get(url, params=params, headers=headers, timeout=self._get_timeout())
             if resp.status_code == 200:
                 results = resp.json().get("results", [])
                 for item in results:
@@ -3711,6 +3875,7 @@ class MetadataEnricher:
         url_ti = None
         erro_aviso = None
         try:
+            _aguardar_cadencia_provedor("crossref")
             resp = self.session.get(url, timeout=self._get_timeout())
             if resp.status_code == 200:
                 data = resp.json()
@@ -3783,6 +3948,7 @@ class MetadataEnricher:
         url_ti = None
         erro_aviso = None
         try:
+            _aguardar_cadencia_provedor("crossref")
             resp = self.session.get(url, timeout=self._get_timeout())
             if resp.status_code == 200:
                 data = resp.json()
@@ -4039,6 +4205,7 @@ class MetadataEnricher:
         url_ti = None
         erro_aviso = None
         try:
+            _aguardar_cadencia_provedor("openlibrary")
             resp = self.session.get(url, params=params, timeout=self._get_timeout())
             if resp.status_code == 200:
                 results = resp.json().get("resultList", {}).get("result", [])
@@ -4086,6 +4253,7 @@ class MetadataEnricher:
         url_ti = None
         erro_aviso = None
         try:
+            _aguardar_cadencia_provedor("openlibrary")
             resp = self.session.get(url, params=params, timeout=self._get_timeout())
             if resp.status_code == 200:
                 results = resp.json().get("resultList", {}).get("result", [])
@@ -4193,6 +4361,7 @@ class MetadataEnricher:
         url_ti = None
         erro_aviso = None
         try:
+            _aguardar_cadencia_provedor("openlibrary")
             resp = self.session.get(url, params=params, timeout=self._get_timeout())
             if resp.status_code == 200:
                 docs = resp.json().get("response", {}).get("docs", [])
@@ -4390,6 +4559,7 @@ class MetadataEnricher:
         url_ti = None
         erro_aviso = None
         try:
+            _aguardar_cadencia_provedor("openlibrary")
             resp = self.session.get(url, params=params, timeout=self._get_timeout())
             if resp.status_code == 200:
                 docs = resp.json().get("diaServerResponse", [{}])[0].get("response", {}).get("docs", [])
@@ -4583,6 +4753,7 @@ class MetadataEnricher:
         url_ti = None
         erro_aviso = None
         try:
+            _aguardar_cadencia_provedor("openlibrary")
             resp = self.session.get(url, params=params, timeout=self._get_timeout())
             if resp.status_code == 200:
                 results = resp.json().get("organic_results", [])
@@ -4662,7 +4833,12 @@ class MetadataEnricher:
             if isinstance(subj, str) and subj.strip() and subj.strip() not in ext_subj:
                 ext_subj.append(subj.strip())
 
-        from .classifier_jev import is_likely_person_name, is_invalid_or_disclaimer_title
+        from .classifier_jev import (
+            is_likely_person_name,
+            is_invalid_or_disclaimer_title,
+            normalizar_texto_bibliografico,
+            normalizar_lista_autores,
+        )
 
         conf = 0.95 if authoritative else 0.80
 
@@ -4670,6 +4846,7 @@ class MetadataEnricher:
         extra_title = extra.get("title")
         if extra_title:
             clean_title = re.sub(r"\[recurso eletr[ôo]nico\]|\[recurso digital\]", "", extra_title, flags=re.I).strip()
+            clean_title = normalizar_texto_bibliografico(clean_title) or clean_title
             if "inconsciente" in clean_title.lower():
                 clean_title = re.sub(r"\barqueiros\b", "arquétipos", clean_title, flags=re.I)
             if authoritative:
@@ -4702,18 +4879,22 @@ class MetadataEnricher:
 
         # 2. Subtítulo
         if extra.get("subtitle") and (authoritative or not base.subtitle):
-            base.subtitle = extra["subtitle"]
-            base.reconciliacao_campos["subtitulo"] = {
-                "valor_escolhido": extra["subtitle"],
-                "valor": extra["subtitle"],
-                "origem": provider,
-                "fonte": provider,
-                "evidencia": f"Subtítulo obtido da fonte {provider}",
-                "confianca": conf,
-            }
+            clean_sub = normalizar_texto_bibliografico(extra["subtitle"])
+            if clean_sub:
+                base.subtitle = clean_sub
+                base.reconciliacao_campos["subtitulo"] = {
+                    "valor_escolhido": clean_sub,
+                    "valor": clean_sub,
+                    "origem": provider,
+                    "fonte": provider,
+                    "evidencia": f"Subtítulo obtido da fonte {provider}",
+                    "confianca": conf,
+                }
 
         # 3. Autores
         extra_authors = extra.get("authors")
+        if extra_authors:
+            extra_authors = normalizar_lista_autores(extra_authors, book_title=base.title)
         if extra_authors:
             if authoritative or not base.authors:
                 base.authors = extra_authors
@@ -5015,13 +5196,20 @@ class MetadataEnricher:
             }
 
         # 12. Área temática
-        if extra.get("area") and (not base.area or base.area == "Outros"):
+        if extra.get("area"):
             cand_extra_area = str(extra["area"]).strip()
             norm_ea = unicodedata.normalize("NFKD", cand_extra_area).encode("ascii", "ignore").decode("ascii").lower()
             clean_token = re.sub(r"[^a-z]", "", norm_ea)
             if clean_token not in ("titulo", "autor", "serie", "assunto", "orientador"):
-                base.area = cand_extra_area
-                base.area_principal = cand_extra_area
+                if cand_extra_area not in ext_subj:
+                    ext_subj.append(cand_extra_area)
+                if not base.area or base.area == "Outros":
+                    norm_area, norm_sub = _normalizar_area_jev_fallback(cand_extra_area, getattr(base, "subarea", "Geral"))
+                    if norm_area != "Outros":
+                        base.area = norm_area
+                        base.area_principal = norm_area
+                        if norm_sub and norm_sub != "Geral":
+                            base.subarea = norm_sub
 
     def _avaliar_qualidade_reconciliacao(
         self,

@@ -17,6 +17,7 @@ Enhanced with:
 
 import os
 import re
+import html
 import logging
 import unicodedata
 from pathlib import Path
@@ -261,7 +262,7 @@ DIGITIZATION_DISCLAIMER_PATTERNS = [
     re.compile(r"\b(?:voc[êe]\s+pode\s+ajudar|contribuindo\s+de\s+v[áa]rias\s+maneiras|ajude\s+(?:o|a|nosso)|colabore\s+com|apoie\s+(?:o|a|nosso)|doa[çc][õo]es?|crowdfunding)\b", re.I),
     re.compile(r"\b(?:podendo\s+ajudar|pagar\s+custo|custos?\s+de\s+(?:servidor|hospedagem)|manuten[çc][ãa]o\s+d[oa]\s+(?:biblioteca|site))\b", re.I),
     re.compile(r"^(?:ou\s+ainda\s+podendo\s+ajudar)\b", re.I),
-    re.compile(r"\b(?:servidores?|compramos\s+para\s+postar|fa[çc]a\s+uma\s+doa[çc][ãa]o|chave\s+pix|fa[çc]a\s+um\s+pix|doar|doe|doando)\b", re.I),
+    re.compile(r"\b(?:servidores?|compramos\s+para\s+postar|fa[çc]a\s+uma\s+doa[çc][ãa]o|chave\s+pix|fa[çc]a\s+um\s+pix|doar|doando|doe\s+(?:via|qualquer|um|uma|pix|agora|aqui|r\$|\d))\b", re.I),
     re.compile(r"\b(?:a\s+presente\s+obra\s+[eé]\s+disponibilizada|uso\s+parcial\s+em\s+pesquisas|fim\s+exclusivo\s+de\s+compra\s+futura)\b", re.I),
     re.compile(r"\b(?:dados\s+de\s+odinright|odinright|elivros|elivros\.love|le\s+livros|lelivros|docero|minhateca|livraria\s+p[úu]blica|livros\s+gr[áa]tis)\b", re.I),
     re.compile(r"\b(?:converted\s+by\s+epubtopdf|epubtopdf|digitalizado\s+por|escaneado\s+por|distribui[çc][aã]o\s+gratuita\s+sem\s+fins\s+comerciais|apenas\s+para\s+uso\s+acad[êe]mico)\b", re.I),
@@ -300,7 +301,7 @@ JOURNAL_CITATION_OR_HEADER_PATTERNS = [
 
 # Nomes de operadores técnicos ou softwares descartados como autores de propriedades internas do PDF
 TECHNICAL_OPERATOR_AUTHOR_PATTERN = re.compile(
-    r"\b(?:daidigital|alfred|admin|administrator|guest|owner|propriet[áa]rio|user|usuario|digital|produ[çc][aã]o|diagrama[çc][aã]o|designer|desktop|editora|pagemaker|distiller|corel|indesign|illustrator|photoshop|ghostscript|pdfcreator|acrobat|unknown|desconhecido)\b",
+    r"\b(?:daidigital|alfred|admin|administrator|guest|owner|propriet[áa]rio|user|usuario|digital|produ[çc][aã]o|diagrama[çc][aã]o|designer|desktop|editora|pagemaker|distiller|corel|indesign|illustrator|photoshop|ghostscript|pdfcreator|acrobat|unknown|desconhecido|camscanner|scanner|onenote|calibre|foxit|nitro|wondershare|ilovepdf|smallpdf|pdfforge|power\s+g\d)\b",
     re.I,
 )
 
@@ -319,6 +320,10 @@ GENERIC_SINGLE_WORD_TITLES = {
     "criar", "artigo", "livro", "capítulo", "capitulo", "introdução", "introducao",
     "conclusão", "conclusao", "resumo", "abstract", "prefácio", "prefacio",
     "sumário", "sumario", "editorial", "texto", "ensaios", "ensaio", "anexo",
+    "objetivo", "objetivos", "curso", "indice", "índice", "versao", "versão", "credits",
+    "contents", "preface", "foreword", "index", "acknowledgments", "acknowledgements",
+    "dedication", "copyright", "glossary", "appendix", "oferta", "errata",
+    "apresentacao", "apresentação", "expediente", "colaboradores", "catalogo", "catálogo",
 }
 
 COMMON_CITY_TYPOS = {
@@ -356,6 +361,26 @@ COMMON_NON_PERSON_NOUNS = {
     "sonhos", "sonho", "reflexoes", "reflexões", "personalidade", "desenvolvimento",
     "vida", "homem", "natureza", "alma", "ioga", "taro", "tarô", "sombra", "sentimentos",
     "pratica", "prática", "psicoterapia", "sincronicidade", "animus", "anima", "feminino",
+    "introduction", "brief", "beginning", "mastering", "learning", "practical", "essential",
+    "essentials", "handbook", "cookbook", "guide", "definitive", "programming", "python",
+    "java", "javascript", "data", "science", "analytics", "analysis", "statistics",
+    "statistical", "machine", "deep", "neural", "networks", "network", "natural",
+    "language", "processing", "mining", "massive", "datasets", "big", "hadoop",
+    "spark", "apache", "yarn", "sql", "sqlite", "nosql", "database", "databases",
+    "banco", "dados", "software", "craftsman", "engineering", "architecture",
+    "design", "patterns", "clean", "code", "agile", "devops", "docker", "linux",
+    "cloud", "web", "html", "css", "business", "intelligence", "marketing",
+    "winning", "storytelling", "weapons", "destruction", "artificial", "bayesian",
+    "bayes", "think", "make", "your", "own", "coding", "speaking", "effective",
+    "eficaz", "basic", "small", "microsoft", "excel", "high", "impact", "visualization",
+    "social", "media", "automated", "trading", "bootstrap", "methods", "foundations",
+    "geoprocessing", "internet", "things", "principles", "scratch", "modern", "advanced",
+    "applied", "systems", "distributed", "security", "etica", "avaliacao", "clinica",
+    "terapia", "cognitiva", "neurociencias", "neuropsicologia", "psicopatologia",
+    "psicofarmacologia", "farmacologia", "fisiologia", "sociologia", "antropologia",
+    "filosofia", "educacao", "metodologia", "pesquisa", "organizacao", "gestao",
+    "codigo", "penal", "comentado", "cadernos", "caderno", "apostila", "slides",
+    "encontro", "aula", "top", "best", "free", "must", "read", "version", "versao",
 }
 
 
@@ -392,13 +417,43 @@ def sanitize_city(city: Optional[str]) -> Optional[str]:
     return c if len(c) >= 3 else None
 
 
+NON_ONOMASTIC_TITLE_PREPOSITIONS = re.compile(
+    r"\b(?:with|for|using|from|into|about|through|under|over|between|to|in|on|at|by|of|the|an|para|com|sobre|entre|como|uma|um|na|no|nas|nos|em|por)\b",
+    re.I,
+)
+
+ONOMASTIC_PARTICLES = {
+    "de", "da", "do", "dos", "das", "e", "van", "von", "del", "della", "la", "le", "di",
+    "ii", "iii", "iv", "jr", "jr.", "filho", "neto", "sobrinho"
+}
+
+
 def is_likely_person_name(name_cand: str) -> bool:
     """Verifica se a string tem formato de nome de pessoa e não contém substantivos comuns de títulos."""
-    cand = name_cand.strip(" -.,;:")
-    words = cand.split()
-    if not (1 <= len(words) <= 4):
+    if not name_cand or not isinstance(name_cand, str):
         return False
-    if any(unicodedata.normalize("NFKD", w).encode("ascii", "ignore").decode().lower() in COMMON_NON_PERSON_NOUNS for w in words):
+    cand = name_cand.replace("\xa0", " ").strip(" -.,;:")
+    if re.search(r"\d", cand):
+        cand_no_roman = re.sub(r"\b(?:II|III|IV|Jr\.?)\b", "", cand).strip()
+        if re.search(r"\d", cand_no_roman):
+            return False
+    # Rejeita títulos iniciados por artigos (ex: 'O Pacto...', 'A Aventura...', 'The Software...')
+    if re.match(r"^(?:o|a|os|as|the|an)\s+", cand, re.I) and not re.match(r"^[A-Za-z]\.\s+", cand):
+        return False
+    # Rejeita preposição 'a' no meio de frases (ex: 'Ensinando a Transgredir')
+    if re.search(r"\s+a\s+", cand, re.I):
+        return False
+    if NON_ONOMASTIC_TITLE_PREPOSITIONS.search(cand):
+        return False
+    words = cand.split()
+    max_len = 5 if any(
+        unicodedata.normalize("NFKD", w).encode("ascii", "ignore").decode().lower() in ONOMASTIC_PARTICLES
+        or len(w.rstrip(".")) == 1
+        for w in words
+    ) else 4
+    if not (1 <= len(words) <= max_len):
+        return False
+    if any(unicodedata.normalize("NFKD", w.strip(".,;:\"'“”")).encode("ascii", "ignore").decode().lower() in COMMON_NON_PERSON_NOUNS for w in words):
         return False
     if len(words) == 1:
         return cand.title() in (
@@ -413,16 +468,59 @@ def is_likely_person_name(name_cand: str) -> bool:
         sp = cand.split(",", 1)
         if len(sp) == 2 and len(sp[0].strip()) >= 2 and len(sp[1].strip()) >= 2:
             return True
-    if re.match(r"^[A-ZÁÉÍÓÚÂÊÔÃÕÇ\.\s]+\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+$", cand):
+    if re.match(r"^[A-ZÁÉÍÓÚÂÊÔÃÕÇ\.\s']+\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç']+(?:\s+(?:II|III|IV|Jr\.?))?$", cand):
         return True
-    if re.match(r"^(?:[A-Za-z]\.?\s*){1,3}[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+$", cand, re.I):
+    if re.match(r"^(?:[A-Za-z]\.?\s*){1,3}[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç']+(?:\s+(?:II|III|IV|Jr\.?))?$", cand, re.I):
         return True
-    if all(re.match(r"^[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+$", w) for w in words if len(w) > 2):
+    if all(re.match(r"^[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç']+$", w) or w.lower() in ONOMASTIC_PARTICLES or len(w.rstrip(".")) == 1 for w in words):
         return True
     cand_lower = unicodedata.normalize("NFKD", cand).encode("ascii", "ignore").decode().lower().strip()
     if cand_lower in ("c.g. jung", "c. g. jung", "cg jung", "carl gustav jung", "carl jung", "sallie nichols", "murray stein", "judith harris"):
         return True
     return False
+
+
+def is_likely_author_list(cand: Optional[str]) -> bool:
+    """Verifica se a string representa um autor ou lista válida de autores (coautoria)."""
+    if not cand or not isinstance(cand, str):
+        return False
+    c = cand.replace("\xa0", " ").strip(" -.,;:")
+    has_et_al = bool(re.search(r"(?i)\bet\s+al\.?$", c))
+    c = re.sub(r"(?i)\s+et\s+al\.?$", "", c).strip()
+    if not c or len(c) < 3:
+        return False
+
+    # Caso com 'et al.' explícito: ex: 'Morana et al', 'Couto et al.', 'Gonçalves et al'
+    if has_et_al:
+        c_norm = unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode().lower()
+        if c_norm not in COMMON_NON_PERSON_NOUNS and not re.search(r"\d", c):
+            return True
+
+    # SOBRENOME, Nome (ex: 'BENTO, Cida', 'hooks, bell', 'Silva, Maria', 'Downey, Allen B.')
+    if "," in c and " and " not in c and "&" not in c and ";" not in c:
+        parts = [p.strip() for p in c.split(",") if p.strip()]
+        if len(parts) == 2 and len(parts[0].split()) == 1 and len(parts[1].split()) >= 1:
+            p0_norm = unicodedata.normalize("NFKD", parts[0]).encode("ascii", "ignore").decode().lower()
+            p1_norm = unicodedata.normalize("NFKD", parts[1]).encode("ascii", "ignore").decode().lower()
+            if p0_norm not in COMMON_NON_PERSON_NOUNS and p1_norm not in COMMON_NON_PERSON_NOUNS:
+                if not re.search(r"\d", c) and not NON_ONOMASTIC_TITLE_PREPOSITIONS.search(parts[0]):
+                    return True
+
+    seps = re.split(r"(?:\s*&\s*|\s+and\s+|\s*;\s*)", c, flags=re.I)
+    sub_parts = []
+    for s in seps:
+        s = s.strip()
+        if not s:
+            continue
+        if "," in s:
+            cp = [p.strip() for p in s.split(",") if p.strip()]
+            if len(cp) > 1 and all(len(p.split()) >= 2 for p in cp):
+                sub_parts.extend(cp)
+            else:
+                sub_parts.append(s)
+        else:
+            sub_parts.append(s)
+    return bool(sub_parts and all(is_likely_person_name(p) for p in sub_parts))
 
 
 SUSPICIOUS_CITY_NAMES = {
@@ -480,12 +578,56 @@ def is_suspicious_city(
     return False
 
 
+_LIGATURE_MAP = {
+    "\ufb00": "ff",
+    "\ufb01": "fi",
+    "\ufb02": "fl",
+    "\ufb03": "ffi",
+    "\ufb04": "ffl",
+    "\ufb05": "ft",
+    "\ufb06": "st",
+}
+
+
+def _repair_cp437_token(token: str) -> str:
+    if re.search(r"[╔╚╗╝═║╦╩╠╣Ωⁿτπ⌡Θφσ]", token):
+        try:
+            return token.encode("cp437").decode("cp1252")
+        except UnicodeError:
+            return token
+    return token
+
+
+def normalizar_texto_bibliografico(texto: Optional[str]) -> Optional[str]:
+    """Repara entidades HTML, ligaduras tipográficas, \xa0 e mojibake CP437 -> CP1252."""
+    if not texto or not isinstance(texto, str):
+        return texto
+    t = html.unescape(texto)
+    t = t.replace("\xa0", " ")
+    for lig, rep in _LIGATURE_MAP.items():
+        if lig in t:
+            t = t.replace(lig, rep)
+    if re.search(r"[╔╚╗╝═║╦╩╠╣Ωⁿτπ⌡Θφσ]", t):
+        tokens = re.split(r"(\s+)", t)
+        t = "".join(_repair_cp437_token(tok) for tok in tokens)
+    return unicodedata.normalize("NFC", t)
+
+
 def sanitize_title_candidate(title: Optional[str]) -> Optional[str]:
     """Limpa cabeçalhos, marcadores de página, códigos de catalogação e créditos editoriais do título."""
     if not title:
         return None
+    title = normalizar_texto_bibliografico(title)
+    if not title:
+        return None
     # Substitui underscores por espaços para evitar aglutinação unipalavra
     t = title.replace("_", " ").strip()
+
+    # Se o título não contiver espaços e tiver >= 2 hífens conectando palavras alfabéticas, converte em espaços
+    if " " not in t and t.count("-") >= 2:
+        parts = t.split("-")
+        if all(re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", p) for p in parts if p):
+            t = t.replace("-", " ")
 
     # 1. Remove marcadores de quebra e página, com ou sem colchete e traços
     t = re.sub(r"^-{3,}\s*\[.*?\]\s*-{3,}\s*", "", t)
@@ -513,6 +655,9 @@ def sanitize_title_candidate(title: Optional[str]) -> Optional[str]:
 
 def sanitize_subtitle_candidate(subtitle: Optional[str]) -> Optional[str]:
     """Sanitiza subtítulos removendo créditos editoriais, URLs e resíduos de diagramação."""
+    if not subtitle:
+        return None
+    subtitle = normalizar_texto_bibliografico(subtitle)
     if not subtitle:
         return None
     s = subtitle.strip()
@@ -558,6 +703,7 @@ def is_prose_or_paragraph_title(text: Optional[str]) -> bool:
         "incentivou este projeto", "ao leitor", "dedico este", "agradeço a",
         "agradecemos a", "à minha família", "à memória de", "colocando à disposição",
         "livros de maior influência", "do presente conteúdo",
+        "cada item descrito em ",
     ]
     if any(m in lower for m in prose_markers):
         return True
@@ -592,6 +738,53 @@ def is_invalid_or_disclaimer_title(title: Optional[str]) -> bool:
         return True
     if is_prose_or_paragraph_title(t) or is_prose_or_paragraph_title(t_norm):
         return True
+
+    # Palavras espaçadas letra a letra (ex: 'O F E R T A', 'P R O M O Ç Ã O', 'S U M Á R I O')
+    if re.match(r"^(?:[A-Za-zÀ-ÖØ-öø-ÿ]\s+){3,}[A-Za-zÀ-ÖØ-öø-ÿ]$", t):
+        return True
+
+    # Cidades de editoras internacionais (O'Reilly, Pearson, Packt)
+    if (t.count("•") + t.count("·")) >= 2:
+        return True
+    if re.search(r"\b(?:Sebastopol|Farnham|Upper\s+Saddle\s+River|Birmingham\s*[-•–—]\s*Mumbai)\b", t, re.I):
+        return True
+
+    # Marcas d'água de DRM ou compra pessoal
+    if re.search(
+        r"\b(?:licenciado\s+para|comprado\s+por|adquirido\s+por|uso\s+exclusivo\s+de|documento\s+licenciado|licensed\s+to|purchased\s+by)\b",
+        t,
+        re.I,
+    ):
+        return True
+    if re.search(r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b", t) or re.search(r"\bcpf\s*:?\s*\d{3}", t, re.I):
+        return True
+
+    # Cabeçalhos estruturais, carimbo CRB, blurbs de elogio, versões e edições
+    if re.search(r"\bCRB[-/\s]*\d+\b", t, re.I):
+        return True
+    if re.match(
+        r"^(?:table\s+of\s+contents|brief\s+contents|credits(?:\s+and\s+acknowledgments?)?|acknowledgments?|about\s+the\s+(?:author|authors|reviewer|reviewers|technical\s+reviewer)|(?:more\s+)?(?:advance\s+)?praise\s+for\b.*|elogios\s+a\b.*|what\s+(?:readers|people|experts)\s+are\s+saying\b.*)$",
+        t,
+        re.I,
+    ):
+        return True
+    if re.match(r"^(?:vers[ãa]o|version|release)\s*\d+(?:\.\d+)*[a-z0-9\-]*$", t, re.I):
+        return True
+    if re.match(r"^(?:\d+\s*[ªºa]?\s*edi[çc][ãa]o|\d+(?:st|nd|rd|th)\s+edition|revised\s+edition|second\s+edition|third\s+edition|early\s+release)$", t, re.I):
+        return True
+    if re.match(r"^(?:endere[çc]o\s+eletr[ôo]nico|com\s+a\s+colabora[çc][ãa]o\s+de|fotos?\s+(?:da\s+)?capa\b.*|capa\s+e\s+projeto\s+gr[áa]fico\b.*)$", t, re.I):
+        return True
+    if re.search(r"\?utm_(?:source|medium|campaign)\b|utm\s+source=", t, re.I):
+        return True
+
+    # Disclaimers editoriais médicos/jurídicos
+    if re.search(
+        r"\b(?:durante\s+o\s+processo\s+de\s+edi[çc][ãa]o|foram\s+tomados\s+todos\s+os\s+cuidados|esfor[çc]os\s+para\s+assegurar\s+que\s+as\s+informa[çc][õo]es|se\s+responsabiliza\s+pelos\s+v[íi]cios|no\s+part\s+of\s+this\s+publication\s+may\s+be\s+reproduced)\b",
+        t,
+        re.I,
+    ):
+        return True
+
     # Rejeita ruído de scanner, CamScanner, marcas d'água e emails
     if re.search(r"\b(?:camscanner|scanned\s+by|digitalizado\s+por)\b", t, re.I) or re.search(r"\b(?:camscanner|scanned\s+by|digitalizado\s+por)\b", t_norm, re.I):
         return True
@@ -674,6 +867,93 @@ def strip_author_prefixes(author: str) -> str:
     return cleaned
 
 
+DEGREE_TOKEN_RE = re.compile(
+    r"^(?:Ph\.?D\.?|M\.?D\.?|M\.?Sc\.?|B\.?Sc\.?|D\.?Sc\.?|D\.?Phil\.?|MBBS|MB|BS|FRCP|FRCPsych|FRS|FBA|FMedSci|FBPharmacolS|FSB|Hon|MA|BA|RN|Psy\.?D\.?)$",
+    re.I,
+)
+
+
+def _limpar_graus_academicos(name: str) -> str:
+    if "," in name:
+        parts = [p.strip() for p in name.split(",", 1)]
+        if len(parts) == 2:
+            post_str = re.sub(r"\bMB\s+BS\b", "MBBS", parts[1], flags=re.I)
+            post_words = [w.strip() for w in re.split(r"[\s,]+", post_str) if w.strip()]
+            if post_words and all(DEGREE_TOKEN_RE.match(w) for w in post_words):
+                return parts[0]
+    return name
+
+
+def normalizar_lista_autores(authors: Optional[List[str]], book_title: Optional[str] = None) -> List[str]:
+    """Limpa, divide coautores e valida lista de nomes de autores."""
+    if not authors:
+        return []
+    cleaned_list: List[str] = []
+    title_norm = unicodedata.normalize("NFKD", book_title or "").encode("ascii", "ignore").decode().lower().strip()
+
+    for raw_a in authors:
+        if not raw_a or not isinstance(raw_a, str):
+            continue
+        a = normalizar_texto_bibliografico(raw_a) or ""
+        a = a.replace("\xa0", " ").strip()
+        # Colapsar hífens duplicados com espaço
+        a = re.sub(r"-\s+-", "-", a)
+        # Remover prefixos numéricos de página/cutter no início
+        a = re.sub(r"^\d+\s+", "", a).strip()
+        # Remover marcadores inline de papel editorial: (orgs.), (org.), etc.
+        a = re.sub(r"\s*\(\s*(?:orgs?|eds?|coords?|organizad(?:or|ores)?)\s*\.?\s*\)", "", a, flags=re.I).strip()
+        # Remover sufixos coletivos & colaboradores / e colaboradores
+        a = re.sub(r"(?i)\s+(?:&|e)\s+colaboradores\b", "", a).strip()
+        # Remover titulações acadêmicas pós-nominais
+        a = _limpar_graus_academicos(a)
+        # Strip author prefixes (Dr., Prof., etc.)
+        a = strip_author_prefixes(a)
+
+        # Dividir strings com múltiplos coautores unidos por &, and, ;
+        seps = re.split(r"(?:\s*&\s*|\s+and\s+|\s*;\s*)", a, flags=re.I)
+        sub_authors = []
+        for s in seps:
+            s = _limpar_graus_academicos(s.strip())
+            if not s:
+                continue
+            if "," in s:
+                cp = [p.strip() for p in s.split(",") if p.strip()]
+                # Se todos os segmentos separados por vírgula tiverem >= 2 palavras, são múltiplos autores
+                if len(cp) > 1 and all(len(p.split()) >= 2 for p in cp):
+                    sub_authors.extend(cp)
+                else:
+                    sub_authors.append(s)
+            else:
+                sub_authors.append(s)
+
+        for sa in sub_authors:
+            cand_a = _limpar_graus_academicos(strip_author_prefixes(sa.strip(" -.,;:\"'“”«»[]()")))
+            if not cand_a or len(cand_a) < 3:
+                continue
+            # Rejeitar operadores técnicos
+            if TECHNICAL_OPERATOR_AUTHOR_PATTERN.search(cand_a):
+                continue
+            # Rejeitar disclaimers se não for nome plausível de pessoa
+            if not is_likely_person_name(cand_a) and is_invalid_or_disclaimer_title(cand_a):
+                continue
+            # Rejeitar cidades com estado/UF (ex: 'Pacaembu - SP')
+            if re.search(r"\b[A-Za-zÀ-ÖØ-öø-ÿ\s]+-\s*[A-Z]{2}\b", cand_a):
+                continue
+            # Rejeitar palavras espaçadas
+            if re.match(r"^(?:[A-Za-z]\s+){3,}[A-Za-z]$", cand_a):
+                continue
+            # Rejeitar se idêntico ao título do livro ou contiver substantivos de título não-onomásticos
+            cand_a_norm = unicodedata.normalize("NFKD", cand_a).encode("ascii", "ignore").decode().lower().strip()
+            if title_norm and cand_a_norm == title_norm:
+                continue
+            if any(w in COMMON_NON_PERSON_NOUNS for w in re.findall(r"[a-z]+", cand_a_norm)):
+                continue
+            if cand_a not in cleaned_list:
+                cleaned_list.append(cand_a)
+
+    return cleaned_list
+
+
 def extract_native_sample_text_with_count(
     pdf_path: str,
     head_pages: int = 10,
@@ -743,6 +1023,8 @@ def extract_native_sample_text_with_count(
             "Nenhum texto nativo extraível — o PDF provavelmente é digitalizado/escaneado. "
             "Dica: use uma ferramenta de OCR (ex.: ocrmypdf) para adicionar camada de texto antes de catalogar."
         )
+    combined_text = normalizar_texto_bibliografico(combined_text) or ""
+    pages_text = [normalizar_texto_bibliografico(p) or "" for p in pages_text]
     return combined_text, pages_text, total
 
 
@@ -779,8 +1061,24 @@ def parse_filename_extended(pdf_path: str) -> Dict[str, Any]:
     # Remove generic classification prefix like 'Livro - ', 'Artigo - ', etc.
     cleaned_stem = re.sub(r"^(?:livro|artigo|apostila|revista)\s*-\s*", "", stem, flags=re.IGNORECASE).strip()
 
+    # Detect initial year in parentheses or prefix: "(2008) - ..." or "2008 - ..."
+    m_lead_yr = re.match(r"^[\(\[]?((?:19|20)\d{2})[\)\]]?\s*-\s*", cleaned_stem)
+    if m_lead_yr:
+        result["year"] = int(m_lead_yr.group(1))
+        cleaned_stem = cleaned_stem[m_lead_yr.end():].strip()
+    else:
+        # Strip series name in parentheses e.g. "(Robert C. Martin Series) Sandro Mancuso - ..."
+        cleaned_stem = re.sub(r"^[\(\[][^\)\]]+[\)\]]\s*[-–—]?\s*", "", cleaned_stem).strip()
+
     # 1. Calibre / multi-part format separated by ' - '
     parts = [p.strip() for p in cleaned_stem.split(" - ") if p.strip()]
+
+    # Clean release and edition tags from parts, e.g. "(Early Release)", ", 2Ed"
+    parts = [
+        re.sub(r",\s*\d+\s*ed\b.*$", "", re.sub(r"\s*\((?:early\s+release|preview)\)", "", p, flags=re.I)).strip()
+        for p in parts
+    ]
+    parts = [p for p in parts if p]
 
     # Detect and extract volume / tomo part e.g. "Vol 16", "Volume 2", "Tomo 1"
     vol_found = None
@@ -821,29 +1119,80 @@ def parse_filename_extended(pdf_path: str) -> Dict[str, Any]:
         result["title"] = m_auths.group(2).replace("_", " ").strip().capitalize()
         return result
 
+    # 4. Check " by <Author>" when no " - "
+    if len(parts) == 1 and re.search(r"\s+by\s+", cleaned_stem, re.I):
+        m_by = re.split(r"\s+by\s+", cleaned_stem, flags=re.I)
+        if len(m_by) == 2 and is_likely_author_list(m_by[1]):
+            result["title"] = m_by[0].replace("_", " ").strip()
+            result["author"] = strip_author_prefixes(m_by[1].replace("_", " ").strip())
+            return result
+
     # Strip leading volume/chapter prefix e.g. "15 - ...", "OC 9_1 - ...", "Vol 1 - ..."
     if len(parts) >= 2 and re.match(r"^(?:\d{1,3}|[A-Z]{1,4}\s*\d+(?:[_\.]\d+)?|vol(?:ume)?\.?\s*\d+)$", parts[0], re.I):
         parts = parts[1:]
 
-    # 4. Standard: Author - Title OR Title - Author
-    if len(parts) >= 2:
+    # 5. Multi-part disambiguation (len(parts) >= 3)
+    if len(parts) >= 3:
+        p_last = parts[-1].replace("_", " ").strip()
+        p_first = parts[0].replace("_", " ").strip()
+        last_is_auth = is_likely_author_list(p_last)
+        first_is_auth = is_likely_author_list(p_first)
+
+        if last_is_auth and not first_is_auth:
+            author_raw = p_last
+            title_raw = " - ".join(parts[:-1]).replace("_", " ").strip()
+        elif first_is_auth and not last_is_auth:
+            author_raw = p_first
+            title_raw = " - ".join(parts[1:]).replace("_", " ").strip()
+        else:
+            author_raw = p_first if first_is_auth else None
+            title_raw = " - ".join(parts[1:]) if first_is_auth else " - ".join(parts)
+
+        if author_raw:
+            result["author"] = strip_author_prefixes(author_raw)
+        if title_raw:
+            m_yr = re.search(r"\s*[\(\[]((?:19|20)\d{2})[\)\]]$", title_raw)
+            if m_yr:
+                if not result.get("year"):
+                    result["year"] = int(m_yr.group(1))
+                title_raw = title_raw[:m_yr.start()].strip()
+            result["title"] = title_raw.rstrip(".").strip()
+        return result
+
+    # 6. Two parts (len(parts) == 2): Title - Author OR Author - Title
+    if len(parts) == 2:
         p0, p1 = parts[0].replace("_", " ").strip(), parts[1].replace("_", " ").strip()
-        p0_is_p = is_likely_person_name(p0)
-        p1_is_p = is_likely_person_name(p1)
+        p0_is_p = is_likely_author_list(p0)
+        p1_is_p = is_likely_author_list(p1)
+
+        if not p0_is_p and not p1_is_p:
+            p0_words = p0.split()
+            p1_words = p1.split()
+            if len(p0_words) == 1 and (p0[0].isupper() or p0.isupper()) and not re.search(r"\d", p0):
+                p0_norm = unicodedata.normalize("NFKD", p0).encode("ascii", "ignore").decode().lower()
+                if p0_norm not in COMMON_NON_PERSON_NOUNS and len(p0) >= 3:
+                    p0_is_p = True
+            elif len(p1_words) == 1 and (p1[0].isupper() or p1.isupper()) and not re.search(r"\d", p1):
+                p1_norm = unicodedata.normalize("NFKD", p1).encode("ascii", "ignore").decode().lower()
+                if p1_norm not in COMMON_NON_PERSON_NOUNS and len(p1) >= 3:
+                    p1_is_p = True
 
         if p0_is_p and not p1_is_p:
             author_raw, title_raw = p0, p1
         elif p1_is_p and not p0_is_p:
             author_raw, title_raw = p1, p0
-        elif p1 and (p1[0].islower() or p1.lower().startswith("uma ") or p1.lower().startswith("um ")):
+        elif not p0_is_p and not p1_is_p:
             author_raw, title_raw = None, f"{p0}: {p1}"
         else:
             author_raw, title_raw = p0, p1
 
         if author_raw:
-            if "," in author_raw:
+            if "," in author_raw and " and " not in author_raw and "&" not in author_raw and ";" not in author_raw:
                 sp = author_raw.split(",", 1)
-                author_formatted = f"{sp[1].strip()} {sp[0].strip()}"
+                if len(sp) == 2 and len(sp[0].strip().split()) == 1:
+                    author_formatted = f"{sp[1].strip()} {sp[0].strip()}"
+                else:
+                    author_formatted = author_raw
             else:
                 author_formatted = author_raw
             result["author"] = strip_author_prefixes(author_formatted)
@@ -854,10 +1203,8 @@ def parse_filename_extended(pdf_path: str) -> Dict[str, Any]:
                 if not result.get("year"):
                     result["year"] = int(m_yr.group(1))
                 title_raw = title_raw[:m_yr.start()].strip()
+            result["title"] = title_raw.rstrip(".").strip()
 
-        result["title"] = title_raw.rstrip(".").replace("_", " ") if title_raw else None
-        if result["author"]:
-            result["author"] = result["author"].replace("_", " ").strip()
         return result
 
     result["title"] = cleaned_stem.replace("_", " ").strip()
@@ -1317,8 +1664,12 @@ def extract_candidate_metadata(
                 raw_prop_author = pdf_meta.get("author")
                 if raw_prop_author:
                     clean_prop_a = strip_author_prefixes(str(raw_prop_author).strip())
+                    clean_prop_a_norm = unicodedata.normalize("NFKD", clean_prop_a).encode("ascii", "ignore").decode().lower().strip()
+                    cand_t_norm = unicodedata.normalize("NFKD", pdf_title_cand or fn_title or "").encode("ascii", "ignore").decode().lower().strip()
                     if (
                         len(clean_prop_a) >= 3
+                        and is_likely_author_list(clean_prop_a)
+                        and clean_prop_a_norm != cand_t_norm
                         and not TECHNICAL_OPERATOR_AUTHOR_PATTERN.search(clean_prop_a)
                         and not re.search(r"\b(?:microsoft|scanner|print|scan)\b", clean_prop_a, re.I)
                     ):
@@ -1443,8 +1794,12 @@ def extract_candidate_metadata(
         raw_prop_author = pdf_meta.get("author")
         if raw_prop_author:
             clean_prop_a = strip_author_prefixes(str(raw_prop_author).strip())
+            clean_prop_a_norm = unicodedata.normalize("NFKD", clean_prop_a).encode("ascii", "ignore").decode().lower().strip()
+            cand_t_norm = unicodedata.normalize("NFKD", pdf_title_cand or fn_title or "").encode("ascii", "ignore").decode().lower().strip()
             if (
                 len(clean_prop_a) >= 3
+                and is_likely_author_list(clean_prop_a)
+                and clean_prop_a_norm != cand_t_norm
                 and not TECHNICAL_OPERATOR_AUTHOR_PATTERN.search(clean_prop_a)
                 and not re.search(r"\b(?:microsoft|scanner|print|scan)\b", clean_prop_a, re.I)
             ):
@@ -1664,7 +2019,7 @@ def extract_candidate_metadata(
     if not candidates.raw_authors and len(meaningful_lines) > 1:
         for l in meaningful_lines[1:5]:
             if any(kw in l.lower() for kw in ["por:", "autor:", "autores:", "authors:"]):
-                clean_a = re.sub(r"^(?:por|autores?|authors?)[:\s]+", "", l, flags=re.I).strip()
+                clean_a = re.sub(r"^(?:por|autores|autor|authors|author)[:\s]+", "", l, flags=re.I).strip()
                 parsed_a = [
                     strip_author_prefixes(a.strip())
                     for a in re.split(r",|;|\se\s", clean_a)
@@ -1684,20 +2039,24 @@ def extract_candidate_metadata(
         and not any(w.lower() in ("psicologia", "historia", "manual", "curso", "introducao", "direito", "educacao", "politica", "clinica", "ensaio", "teoria", "analise", "estudo", "revistas", "revista", "artigo", "livro", "tese", "relatorio", "social") for w in words)
         and all(len(w) >= 2 for w in words)
     )
-    if looks_like_person_name or (cand_title_str and is_likely_person_name(cand_title_str)):
+    if looks_like_person_name or (cand_title_str and is_likely_author_list(cand_title_str)):
         if not candidates.raw_authors:
-            candidates.raw_authors = [cand_title_str.title()]
+            candidates.raw_authors = [cand_title_str.title() if cand_title_str.isupper() else cand_title_str]
             candidates.author_source = "texto_nativo"
-        candidates.raw_title = None
-        candidates.title_source = None
-        for next_line in meaningful_lines:
-            if next_line.strip() == cand_title_str:
-                continue
-            clean_next = sanitize_title_candidate(next_line)
-            if clean_next and not is_invalid_or_disclaimer_title(clean_next) and not is_likely_person_name(clean_next):
-                candidates.raw_title = clean_next
-                candidates.title_source = "texto_nativo"
-                break
+        if fn_title and not is_likely_author_list(fn_title):
+            candidates.raw_title = fn_title
+            candidates.title_source = "nome_arquivo"
+        else:
+            candidates.raw_title = None
+            candidates.title_source = None
+            for next_line in meaningful_lines:
+                if next_line.strip() == cand_title_str:
+                    continue
+                clean_next = sanitize_title_candidate(next_line)
+                if clean_next and not is_invalid_or_disclaimer_title(clean_next) and not is_likely_author_list(clean_next):
+                    candidates.raw_title = clean_next
+                    candidates.title_source = "texto_nativo"
+                    break
 
     if candidates.raw_title and fn_author:
         fn_auth_clean = re.sub(r"[^\w]", "", fn_author.lower())
@@ -1735,7 +2094,7 @@ def extract_candidate_metadata(
         if len(pdf_author_cand.split()) <= 1 and fn_author:
             candidates.raw_authors = [fn_author]
             candidates.author_source = "nome_arquivo"
-        else:
+        elif is_likely_author_list(pdf_author_cand):
             candidates.raw_authors = [pdf_author_cand]
             candidates.author_source = "propriedades_pdf"
 
@@ -1768,7 +2127,7 @@ def extract_candidate_metadata(
             or (len(fn_words) >= 2 and (candidates.raw_title.endswith(".") or "sobre" in cand_lower or "texto" in cand_lower or cand_lower.startswith("texto ")))
         )
         if deve_usar_fn_title and not is_invalid_or_disclaimer_title(fn_title_clean):
-            candidates.raw_title = fn_title_clean
+            candidates.raw_title = fn_title
             candidates.title_source = "nome_arquivo"
             if cand_is_disclaimer_or_fasciculo and fn_author:
                 candidates.raw_authors = [fn_author]
@@ -1816,9 +2175,9 @@ def extract_candidate_metadata(
     if candidates.raw_subtitle:
         candidates.raw_subtitle = sanitize_subtitle_candidate(candidates.raw_subtitle)
 
-    # Strip author prefixes from all authors
+    # Normaliza e valida a lista final de autores
     if candidates.raw_authors:
-        candidates.raw_authors = [strip_author_prefixes(a) for a in candidates.raw_authors if a.strip()]
+        candidates.raw_authors = normalizar_lista_autores(candidates.raw_authors, book_title=candidates.raw_title)
 
     # Popula candidatos detalhados e originais para rastreabilidade e auditoria (Passo 2)
     candidatos_det: Dict[str, CandidatoMetadado] = {}

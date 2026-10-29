@@ -142,6 +142,38 @@ ALIASES_ASSUNTOS_INGLES: Dict[str, str] = {
     "political economy": "economia politica",
     "linguistics": "linguistica",
     "literature": "literatura",
+    # Computação, Estatística Aplicada, Negócios e Psicologia Comportamental (v0.5.2)
+    "big data": "ciencia de dados",
+    "data mining": "mineracao de dados",
+    "data analytics": "analise de dados",
+    "data analysis": "analise de dados",
+    "data visualization": "visualizacao de dados",
+    "natural language processing": "processamento de linguagem natural",
+    "computer vision": "visao computacional",
+    "neural networks": "redes neurais",
+    "deep learning": "deep learning",
+    "statistical learning": "aprendizado estatistico",
+    "business intelligence": "business intelligence",
+    "business analytics": "analise de dados",
+    "predictive analytics": "analise preditiva",
+    "databases": "banco de dados",
+    "database management": "banco de dados",
+    "operating systems": "sistemas operacionais",
+    "distributed systems": "sistemas distribuidos",
+    "information security": "seguranca da informacao",
+    "cybersecurity": "seguranca da informacao",
+    "computer security": "seguranca da informacao",
+    "cloud computing": "computacao em nuvem",
+    "internet of things": "internet das coisas",
+    "embedded systems": "sistemas embarcados",
+    "computer programming": "programacao",
+    "programming languages": "linguagens de programacao",
+    "web development": "desenvolvimento web",
+    "computer architecture": "arquitetura de computadores",
+    "microcomputers": "microcomputadores",
+    "econometrics": "econometria",
+    "rule governed behavior": "comportamento governado por regras",
+    "behavior modification": "modificacao de comportamento",
 }
 
 CATALOGO_TAXONOMICO: List[EntradaTaxonomica] = [
@@ -159,8 +191,13 @@ CATALOGO_TAXONOMICO: List[EntradaTaxonomica] = [
        "marsha linehan, robert friedberg", "616.89142, 616.891425"),
     _e("Psicologia", "Análise do Comportamento", "descritores_analise_comportamento",
        "analise do comportamento, analise comportamental, behaviorismo, behaviorista, comportamento verbal, "
-       "contingencias de reforco, analise do comportamento aplicada, aba",
-       "b. f. skinner, burrhus frederic skinner, murray sidman, fred keller", "150.1943"),
+       "contingencias de reforco, analise do comportamento aplicada, aba, "
+       "comportamento governado por regras, skinneriano, skinneriana, analista do comportamento, analistas do comportamento, "
+       "modificacao de comportamento, modificacao do comportamento, reforco positivo, reforco negativo, controle aversivo, "
+       "equivalencia de estimulos, comportamento operante, condicionamento operante, ciencia e comportamento humano, "
+       "sobre o behaviorismo, skinner",
+       "b. f. skinner, burrhus frederic skinner, murray sidman, fred keller, "
+       "maria amelia matos, julio c. de rose, joao claudio todorow, roberto banaco", "150.1943"),
     _e("Psicologia", "Psicanálise", "descritores_psicanalise",
        "psicanalise, psicanalitica, psicanalitico, metapsicologia, aparelho psiquico, pulsao, complexo de edipo, "
        "clinica lacaniana, inconsciente freudiano, freud, lacan, "
@@ -216,9 +253,10 @@ CATALOGO_TAXONOMICO: List[EntradaTaxonomica] = [
     _e("Psicologia", "Psicologia do Desenvolvimento", "descritores_psicologia_desenvolvimento",
        "psicologia do desenvolvimento, desenvolvimento humano, desenvolvimento infantil, ciclo vital, "
        "psicologia da adolescencia, envelhecimento humano, crianca em desenvolvimento, "
-        "desenvolvimento da crianca, psicologia da infancia",
+       "desenvolvimento da crianca, psicologia da infancia, criancas desenvolvimento, infancia e adolescencia, "
+       "interacao pai bebe, interacao mae bebe, familia e o desenvolvimento individual",
        "diane papalia, jean piaget, lev vygotsky, henri wallon, erik erikson, john bowlby, "
-        "helen bee, kathleen berger"),
+       "helen bee, kathleen berger"),
     _e("Psicologia", "Psicologia da Aprendizagem", "descritores_psicologia_aprendizagem",
        "psicologia da aprendizagem, teorias da aprendizagem, aprendizagem significativa, "
        "dificuldades de aprendizagem, transtornos de aprendizagem",
@@ -266,7 +304,8 @@ CATALOGO_TAXONOMICO: List[EntradaTaxonomica] = [
     # ------------------------------------------------------------------ Administração
     _e("Administração", "Marketing", "descritores_marketing",
        "marketing, comportamento do consumidor, branding, gestao de marcas, pesquisa de mercado, "
-       "posicionamento de mercado, funil de vendas, marketing digital, endomarketing",
+       "posicionamento de mercado, funil de vendas, marketing digital, endomarketing, "
+       "artificial intelligence for marketing, digital marketing",
        "philip kotler, kevin lane keller, seth godin", "658.8"),
     _e("Administração", "Gestão de Pessoas", "descritores_gestao_pessoas",
        "gestao de pessoas, recursos humanos, administracao de recursos humanos, recrutamento e selecao, "
@@ -278,7 +317,8 @@ CATALOGO_TAXONOMICO: List[EntradaTaxonomica] = [
        "aswath damodaran, lawrence gitman, eliseu martins", "657, 658.15"),
     _e("Administração", "Estratégia e Gestão", "descritores_estrategia_gestao",
        "estrategia empresarial, planejamento estrategico, vantagem competitiva, governanca corporativa, "
-       "empreendedorismo, modelos de negocios, administracao geral, teoria geral da administracao",
+       "empreendedorismo, modelos de negocios, administracao geral, teoria geral da administracao, "
+       "business case analysis, pessoas na organizacao",
        "michael porter, peter drucker, henry mintzberg, alexander osterwalder", "658, 658.4"),
     _e("Administração", "Operações, Projetos e Logística", "descritores_operacoes_projetos_logistica",
        "logistica empresarial, cadeia de suprimentos, supply chain, gestao de operacoes, gestao da producao, "
@@ -380,20 +420,49 @@ CATALOGO_TAXONOMICO: List[EntradaTaxonomica] = [
     # ------------------------------------------------------------------ Computação
     _e("Computação", "Inteligência Artificial e Ciência de Dados", "descritores_ia_ciencia_dados",
        "inteligencia artificial, aprendizado de maquina, machine learning, deep learning, aprendizado por reforco, "
-       "redes neurais, ciencia de dados, processamento de linguagem natural", "", "006.3"),
+       "redes neurais, ciencia de dados, processamento de linguagem natural, artificial intelligence, neural network, "
+       "neural networks, data science, data scientist, data scientists, big data, data mining, mineracao de dados, "
+       "data analysis, data analytics, analise de dados, business analytics, predictive analytics, predictive modeling, "
+       "statistical learning, statistical computing, statistics for data, practical statistics, introduction to statistics, "
+       "bayesian, bayesian statistics, think bayes, bootstrap methods, probabilistic graphical models, data visualization, "
+       "visualizacao de dados, storytelling with data, winning with data, ggplot2, rstudio, r cookbook, pandas, numpy, "
+       "scipy, scikit-learn, tensorflow, pytorch, keras, text mining, sentiment analysis, social media mining, "
+       "computer vision, visao computacional, hadoop, mapreduce, apache spark, spark for data, apache pig, apache mahout, "
+       "apache flume, apache storm, yarn essentials, hive, hbase, cassandra, business intelligence, kaggle, "
+       "massive datasets, weapons of math destruction, ethical reasoning in big data", "", "006.3, 006.312, 005.7, 519.5"),
     _e("Computação", "Engenharia de Software", "descritores_engenharia_software",
        "engenharia de software, arquitetura de software, padroes de projeto, refatoracao, testes de software, "
-       "desenvolvimento agil",
-       "robert c. martin, martin fowler, ian sommerville, eric evans", "005.1"),
-    _e("Computação", "Algoritmos e Programação", "descritores_algoritmos_programacao",
-       "algoritmos, estruturas de dados, logica de programacao, linguagem python, linguagem java, compiladores",
-       "thomas cormen, donald knuth", "005.13"),
+       "desenvolvimento agil, software engineering, software architecture, software craftsman, software craftsmanship, "
+       "clean code, codigo limpo, design patterns, refactoring, agile software, scrum, kanban, devops, "
+       "continuous integration, continuous delivery, microservices, open source, codigo aberto, version control, iso 5807",
+       "robert c. martin, martin fowler, ian sommerville, eric evans, sandro mancuso, kent beck", "005.1, 005.12"),
     _e("Computação", "Redes, Sistemas e Segurança", "descritores_redes_sistemas_seguranca",
        "redes de computadores, protocolos tcp/ip, sistemas operacionais, sistemas distribuidos, banco de dados, "
-       "seguranca da informacao", "andrew tanenbaum, james kurose", "004.6, 005.4, 005.74"),
+       "seguranca da informacao, computer networks, tcp/ip, operating systems, linux, unix, ubuntu, debian, "
+       "shell script, docker, kubernetes, cloud computing, computacao em nuvem, distributed systems, bancos de dados, "
+       "database, databases, sql queries, sql basico, sqlite, mysql, postgresql, nosql, mongodb, redis, "
+       "cybersecurity, information security, cryptography, criptografia, pentest, internet of things, internet das coisas",
+       "andrew tanenbaum, james kurose", "004.6, 005.4, 005.74, 005.75, 005.8"),
+    _e("Computação", "Sistemas Embarcados e Retrocomputação", "descritores_embarcados_retrocomputacao",
+       "microsistemas, revista microsistemas, microcomputador, microcomputadores, microinformatica, retrocomputacao, "
+       "msx, zx spectrum, sinclair, tk85, tk90x, tk2000, tk3000, apple ii, trs-80, cp/m, z80, 8080, 6502, 68000, "
+       "linguagem assembly, assembler, linguagem de maquina, sistemas embarcados, embedded systems, microcontrolador, "
+       "microcontroladores, arduino, raspberry pi, eletronica digital, arquitetura de computadores", "", "004.16, 621.39"),
+    _e("Computação", "Algoritmos e Programação", "descritores_algoritmos_programacao",
+       "algoritmos, estruturas de dados, logica de programacao, linguagem python, linguagem java, compiladores, "
+       "algorithms, data structures, computer programming, programacao, python, python eficaz, lean python, "
+       "beginning python, mastering python, javascript, speaking javascript, typescript, linguagem c, c++, golang, "
+       "rust, ruby, perl, scala, julia, html, css, build websites, acessibilidade na web, small basic, visual basic, "
+       "linguagem basic, turbo pascal, delphi, cobol, fortran, latex, latex2e, regular expressions, functional programming, "
+       "object oriented, mandelbrot, geoprocessing, map scripting, automated trading",
+       "thomas cormen, donald knuth", "005.13, 005.133, 005.2, 006.7"),
+    _e("Computação", "Computação Geral", "descritores_computacao_geral",
+       "computacao, ciencia da computacao, computer science, informatica, tecnologia da informacao, information technology",
+       "", "004, 005, 006", umbrella=True),
     # ------------------------------------------------------------------ Economia
     _e("Economia", "Macroeconomia e Microeconomia", "descritores_macro_microeconomia",
-       "macroeconomia, microeconomia, teoria economica, politica monetaria, inflacao, principios de economia",
+       "macroeconomia, microeconomia, teoria economica, politica monetaria, inflacao, principios de economia, "
+       "statistics for business and economics, business and economics, econometria, econometrics",
        "gregory mankiw, n. gregory mankiw, paul krugman, hal varian", "339, 338.5"),
     _e("Economia", "Economia Política", "descritores_economia_politica",
        "economia politica, desenvolvimento economico, historia economica, formacao economica",

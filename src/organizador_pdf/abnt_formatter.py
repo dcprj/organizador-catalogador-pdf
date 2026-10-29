@@ -81,6 +81,13 @@ def format_authors_abnt(authors: List[str], papel: str = "autor") -> str:
     if not authors:
         return ""
 
+    has_raw_et_al = any(re.search(r"\bet\s+al\b", str(a), re.I) for a in authors)
+
+    from .classifier_jev import normalizar_lista_autores
+    authors = normalizar_lista_autores(authors)
+    if not authors:
+        return ""
+
     # Clean empty authors or placeholder tokens
     clean_authors = [
         re.sub(r"(?i)\s+et\s+al\.?$", "", a.strip()).strip() for a in authors
@@ -90,7 +97,8 @@ def format_authors_abnt(authors: List[str], papel: str = "autor") -> str:
         return ""
 
     has_raw_et_al = (
-        len(authors) > len(clean_authors)
+        has_raw_et_al
+        or len(authors) > len(clean_authors)
         or any(re.search(r"\bet\s+al\b", a, re.I) for a in authors)
     )
 

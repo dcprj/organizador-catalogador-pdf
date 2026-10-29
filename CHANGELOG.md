@@ -5,6 +5,29 @@ Todas as mudanças notáveis deste projeto são documentadas aqui.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 projeto adota [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.5.2] - 2026-10-28
+
+### Adicionado
+- **Unificação Taxonômica Bilíngue em `Computação` e Novos Domínios (`taxonomia.py`)**:
+  - 31 novos aliases temáticos em inglês (`ALIASES_ASSUNTOS_INGLES`) e expansão bilíngue de `CATALOGO_TAXONOMICO` em *Inteligência Artificial e Ciência de Dados* (*Big Data, Data Mining, Hadoop, Spark, Pig, Mahout, RStudio, Bayesian, Data Visualization*), *Engenharia de Software* (*Software Craftsmanship, Clean Code, DevOps, Microservices, Open Source*), *Redes, Sistemas e Segurança* (*SQL, SQLite, NoSQL, Docker, Kubernetes, Cloud, Linux, IoT*) e *Algoritmos e Programação*.
+  - Novas especificações `Sistemas Embarcados e Retrocomputação` (*Revista Microsistemas, MSX, ZX Spectrum, TK85/TK90X, Z80, Arduino, Assembly*) e guarda-chuva `Computação Geral`, além de descritores adicionais para *Análise do Comportamento* (*comportamento governado por regras, skinneriano*), *Psicologia do Desenvolvimento*, *Administração* e *Economia*.
+- **Normalização Canônica de Fallback JEV (`_normalizar_area_jev_fallback`)**:
+  - Mapeia rótulos amplos não-canônicos do classificador remoto (como `Ciências Exatas e da Terra / Tecnologia` -> `Computação / Computação Geral` e `Crianças - Desenvolvimento` -> `Psicologia / Psicologia do Desenvolvimento`) para as 10 grandes áreas canônicas.
+- **Reparo Determinístico de Mojibake `CP437 -> CP1252`, Entidades HTML e Ligaduras (`normalizar_texto_bibliografico`)**:
+  - Restaura acentuação corrompida em PDFs acadêmicos legados (ex.: `╔tico` -> `Ético`, `ConseqⁿΩncias` -> `Conseqüências`, `adolescΩncia` -> `adolescência`), desescapa entidades HTML (`&amp;` -> `&`) e expande ligaduras tipográficas (`ﬁ` -> `fi`, `ﬂ` -> `fl`).
+- **Cadenciamento Anti-429 Thread-Safe (`_aguardar_cadencia_provedor`) e Corroboração Local de Autoria**:
+  - Espaçamento mínimo configurável por provedor em chamadas HTTP ao vivo para lotes > 1.030 PDFs, retries automáticos em `HTTP 429` no Google Books e OpenAlex, e corroboração dupla (`fn_author` + `sample_text`) quando bases externas retornam registro de ISBN sem autor.
+
+### Alterado
+- **Filtro de Colofão Internacional, Marcas d'Água DRM e Cabeçalhos Estruturais (`is_invalid_or_disclaimer_title`)**:
+  - Rejeita faixas de cidades editoriais (*O'Reilly, Pearson, Packt*), carimbos de licença/CPF (*Hotmart/Eduzz* `"Licenciado para..."`), registros de bibliotecário (`CRB-*`), cabeçalhos em inglês (`Table of Contents`, `Credits`, `Praise for...`), versões isoladas (`Version 1.0.9`) e palavras espaçadas (`O F E R T A`).
+- **Higienização e Divisão de Múltiplos Coautores (`normalizar_lista_autores`)**:
+  - Divide coautores unidos por `&`, `and` e `;` (e listas `Nome Sobrenome, Nome Sobrenome`), remove titulações pós-nominais (`PhD`, `MD`, `MB BS`, `DPhil`, `FRCP`, `FBA`) e marcadores `(orgs.)`, preservando sobrenomes compostos brasileiros com `e` (*Follador e Ambrosio*).
+- **Desambiguação Inteligente `Título - Autor.pdf` vs `Autor - Título.pdf` (`parse_filename_extended`)**:
+  - Suporta `Título - Autor`, `Título - Subtítulo - Autor`, sufixo `by <Autor>` e remoção de séries iniciais entre parênteses, evitando falsos autores conceituais (*Big Data*, *Deep Learning*, *Think Bayes*).
+- **Títulos Hifenizados e `tipo_documental_confiante`**:
+  - Títulos slugificados com múltiplos hífens são tokenizados corretamente sem falso alerta de palavra única; obras com identificador oficial confirmado (`has_verified_id`) não são penalizadas por baixa confiança heurística de tipo.
+
 ## [0.5.1] - 2026-10-28
 
 ### Adicionado
